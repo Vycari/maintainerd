@@ -70,7 +70,9 @@ For each non-`null` `config.commands.*`: confirm it's plausibly runnable.
 
 ### 6. GitHub labels exist
 ```bash
-gh label list --repo <config.repo> --json name --jq '.[].name'
+# --paginate, NOT `gh label list`: that caps at 30 by default, and a truncated
+# list makes existing labels report as missing (a FAIL the maintainer can't reproduce).
+gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'
 ```
 Every label in `config.labels.*` must exist. Missing → **FAIL** (the skill's `gh ... --label` call
 errors at runtime). With `--fix`, offer to create the missing ones (same `gh label create` as

@@ -432,12 +432,24 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
    they don't support a conclusion, the honest output is "cause not determined" — never a local run
    to find out.
 
-5. **Check that you can mark the PR before you file anything.** Confirm `config.depsFlow.blockedLabel`
-   exists on the repo (`gh label list`). If it doesn't, **stop this PR's failure pass here** — file
-   nothing, and report the missing label as the blocker. The label is the only cross-run memory in
-   this flow; filing an issue you can't mark means the next run re-diagnoses the same failure and
-   files another one, and the run after that files a third. An unfiled issue is a gap the report
-   names; an unmarkable issue is a duplicate generator. Never create the label yourself (invariant 6).
+5. **Check that you can mark the PR before you file anything.** Confirm
+   `config.depsFlow.blockedLabel` exists — by **exact name**, via the label endpoint:
+
+   ```bash
+   # 200 = exists, 404 = missing. URL-encode the name if it contains spaces or slashes.
+   gh api "repos/$REPO/labels/<config.depsFlow.blockedLabel>" --silent && echo present
+   ```
+
+   **Don't scan `gh label list` for this.** It returns 30 labels by default, so on a repo with a
+   large label set an existing label reads as missing — and this check fails *closed*, so a
+   false negative silently halts the failure pass and reports a blocker that isn't real. The
+   by-name endpoint is exact, needs no pagination, and can't partial-match a similarly named label.
+
+   If it genuinely doesn't exist, **stop this PR's failure pass here** — file nothing, and report the
+   missing label as the blocker. The label is the only cross-run memory in this flow; filing an issue
+   you can't mark means the next run re-diagnoses the same failure and files another one, and the run
+   after that files a third. An unfiled issue is a gap the report names; an unmarkable issue is a
+   duplicate generator. Never create the label yourself (invariant 6).
 
 6. **Dedup, then file one issue.** Find candidate issues, then confirm each is really one of yours:
 
