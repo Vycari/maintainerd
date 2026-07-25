@@ -195,19 +195,32 @@ set the key to `null`. This matches the `doctor` fix for the same finding.
 
 The labels in the config must exist in GitHub for the audits and auto-dev to apply them. Offer:
 
+**Always** (every repo needs these — the audits and any skill that opens work unattended):
+
 ```bash
 gh label create architecture --color BFD4F2 --description "audit-architecture findings" 2>/dev/null || true
 gh label create test-quality --color D4C5F9 --description "audit-tests findings" 2>/dev/null || true
 gh label create security     --color D93F0B --description "audit-security findings" 2>/dev/null || true
 gh label create dependencies --color 0366D6 --description "audit-deps findings" 2>/dev/null || true
 gh label create automated    --color EDEDED --description "Opened by a Maintainerd skill" 2>/dev/null || true
-# auto:* labels only if auto-dev is enabled — the auto:* state set plus the auto-dev PR label:
+```
+
+**Only if `autoDev.enabled` is `true`** — the six `auto:*` state labels plus the PR label:
+
+```bash
 gh label create auto:pr      --color 5319E7 --description "Opened by the auto-dev pipeline" 2>/dev/null || true
-# deps:blocked only if depsFlow is enabled — marks a dependency PR whose failure was diagnosed + filed:
+```
+
+**Only if `depsFlow.enabled` is `true`** — skip this entirely when the block is absent or disabled,
+which is the default:
+
+```bash
 gh label create deps:blocked --color B60205 --description "Dependency update breaks CI — diagnosed, see linked issue" 2>/dev/null || true
 ```
 
-Ask before creating; don't mutate the repo's label set unprompted.
+Ask before creating; don't mutate the repo's label set unprompted. Don't create a disabled feature's
+labels "just in case" — an unused label is a standing hint that automation is running here when it
+isn't, and `doctor` will flag the label as missing the moment the feature *is* enabled.
 
 ### 9. Report
 

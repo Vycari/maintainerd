@@ -93,13 +93,17 @@ will try to invoke a missing skill"). Cross-check against the plugins actually i
 - `orphanReclaimMinutes` (default `90` if absent), when present, is a positive number → else **WARN**.
 - If `autoDev.enabled` is `false`, skip — note it as a PASS ("auto-dev disabled").
 
-### 9. deps-flow coherence (only if `config.depsFlow.enabled` is `true`)
+### 9. deps-flow coherence
 
-The `dependabot` skill merges PRs, so a misconfiguration here has real blast radius — check it
-harder than the rest.
+First, the disabled path — **always checked**, so it always reports:
 
 - `depsFlow` absent, or `enabled` not `true` → PASS ("automated dependency merging disabled"). Say so
   explicitly rather than silently skipping: a maintainer who thinks it's on should see that it isn't.
+  Then skip the rest of this section.
+
+**When `config.depsFlow.enabled` is `true`**, run the checks below. The `dependabot` skill merges
+PRs, so a misconfiguration here has real blast radius — check it harder than the rest.
+
 - `blockedLabel` (default `deps:blocked`) exists on GitHub → else **FAIL**: the skill can't mark a
   diagnosed PR, so every run would re-diagnose the same failure. Fix: `/doctor --fix`.
 - `labels.dependencies` and `labels.automated` exist (covered by check 6) — the skill labels its
@@ -108,9 +112,11 @@ harder than the rest.
   **WARN** (it will never match, silently narrowing the policy). Containing `"major"` → **WARN**,
   not a failure: "majors auto-merge here; green CI doesn't prove a breaking API change is safe."
 - `mergeMethod` is one of `squash|merge|rebase` **and** is enabled on the repo:
+
   ```bash
   gh repo view <config.repo> --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed
   ```
+
   A method the repo forbids → **FAIL** (every merge attempt errors).
 - `botLogins` is a non-empty array of `*[bot]`-shaped logins → else **WARN** (a typo'd login means
   the skill silently sees an empty queue forever).
