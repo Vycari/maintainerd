@@ -120,6 +120,16 @@ Defaults to apply without asking (state them in the report):
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
 - `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.fallbackReviewMinutes`: `60`.
 - `autoDev.maxPrsInFlight`: `1` (single-PR pipeline; raise it to let the queue drain into several open PRs); `autoDev.orphanReclaimMinutes`: `90`.
+- `depsFlow`: **`enabled: false`**, plus the rest of the block at its schema defaults
+  (`botLogins: ["dependabot[bot]"]`, `autoMergeSemver: ["patch","minor"]`, `mergeMethod: "squash"`,
+  `maxMergesPerRun: 5`, `rebaseNudgeMinutes: 30`, `blockedLabel: "deps:blocked"`).
+
+**The one thing to ask about rather than default:** the `deps-flow` plugin's `dependabot` skill is
+the only maintainerd skill that **merges PRs**. If the repo has the plugin installed (or the user
+asks for Dependabot automation), ask explicitly whether a bot may merge dependency PRs here, and
+whether major bumps should be included (default: no — patch/minor only). **Write `enabled: false`
+unless they say yes in this session.** Never flip it to `true` as part of a re-run's "keep the
+config current" pass.
 
 Write `.claude/maintainerd.json` with the full schema. Every command the repo doesn't have must be
 explicit `null`, not omitted. Validate it parses:
@@ -193,6 +203,8 @@ gh label create dependencies --color 0366D6 --description "audit-deps findings" 
 gh label create automated    --color EDEDED --description "Opened by a Maintainerd skill" 2>/dev/null || true
 # auto:* labels only if auto-dev is enabled — the auto:* state set plus the auto-dev PR label:
 gh label create auto:pr      --color 5319E7 --description "Opened by the auto-dev pipeline" 2>/dev/null || true
+# deps:blocked only if depsFlow is enabled — marks a dependency PR whose failure was diagnosed + filed:
+gh label create deps:blocked --color B60205 --description "Dependency update breaks CI — diagnosed, see linked issue" 2>/dev/null || true
 ```
 
 Ask before creating; don't mutate the repo's label set unprompted.
@@ -219,4 +231,7 @@ Tell the user, concisely:
   actually installed, or `daily-update` will try to run a missing skill.
 - **Don't create labels or a PR template without asking.** These mutate the repo's GitHub/file
   state; confirm first.
+- **Don't enable `depsFlow` without an explicit yes.** It grants a skill permission to merge PRs in
+  this repo — the one setting in the config with real, irreversible blast radius. `false` is the
+  correct value whenever there's any doubt.
 - **Don't commit.** Write the files and let the user review and commit them.

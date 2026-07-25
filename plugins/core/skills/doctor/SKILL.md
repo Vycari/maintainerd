@@ -75,7 +75,8 @@ gh label list --repo <config.repo> --json name --jq '.[].name'
 Every label in `config.labels.*` must exist. Missing → **FAIL** (the skill's `gh ... --label` call
 errors at runtime). With `--fix`, offer to create the missing ones (same `gh label create` as
 `bootstrap`). If `config.autoDev.enabled`, the `config.autoDev.stateLabels.*` and `config.autoDev.prLabel`
-(default `auto:pr`) must also exist.
+(default `auto:pr`) must also exist. If `config.depsFlow.enabled`, so must
+`config.depsFlow.blockedLabel` (default `deps:blocked`).
 
 ### 7. daily-update roster
 Every skill in `config.dailyUpdate.subSkills` must be installed/available (a Maintainerd skill name,
@@ -92,12 +93,40 @@ will try to invoke a missing skill"). Cross-check against the plugins actually i
 - `orphanReclaimMinutes` (default `90` if absent), when present, is a positive number → else **WARN**.
 - If `autoDev.enabled` is `false`, skip — note it as a PASS ("auto-dev disabled").
 
-### 9. release coherence
+### 9. deps-flow coherence (only if `config.depsFlow.enabled` is `true`)
+
+The `dependabot` skill merges PRs, so a misconfiguration here has real blast radius — check it
+harder than the rest.
+
+- `depsFlow` absent, or `enabled` not `true` → PASS ("automated dependency merging disabled"). Say so
+  explicitly rather than silently skipping: a maintainer who thinks it's on should see that it isn't.
+- `blockedLabel` (default `deps:blocked`) exists on GitHub → else **FAIL**: the skill can't mark a
+  diagnosed PR, so every run would re-diagnose the same failure. Fix: `/doctor --fix`.
+- `labels.dependencies` and `labels.automated` exist (covered by check 6) — the skill labels its
+  broken-update issues with both.
+- `autoMergeSemver` is an array whose entries are all in `patch|minor|major`. An unknown entry →
+  **WARN** (it will never match, silently narrowing the policy). Containing `"major"` → **WARN**,
+  not a failure: "majors auto-merge here; green CI doesn't prove a breaking API change is safe."
+- `mergeMethod` is one of `squash|merge|rebase` **and** is enabled on the repo:
+  ```bash
+  gh repo view <config.repo> --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed
+  ```
+  A method the repo forbids → **FAIL** (every merge attempt errors).
+- `botLogins` is a non-empty array of `*[bot]`-shaped logins → else **WARN** (a typo'd login means
+  the skill silently sees an empty queue forever).
+- `maxMergesPerRun` ≥ 1, `rebaseNudgeMinutes` > 0, `drainPollMinutes` > 0, `drainMaxMinutes` > 0 →
+  else **WARN**.
+- Branch protection on `config.defaultBranch` requires status checks → advisory **WARN** if not:
+  without required checks the skill's own gate is the only thing standing between a red build and
+  the default branch. It still checks every check itself, so this is a defense-in-depth note, not a
+  failure.
+
+### 10. release coherence
 - `config.release` is `null` → PASS ("continuous-deploy repo, no versioned releases").
 - Non-null → `notesFile` (if set) exists; `versionCommand` references a real mechanism (an
   `npm version`/script that exists, a tool on PATH); `versionPushesTag` is a boolean. Gaps → **WARN**.
 
-### 10. Schedules (best-effort, advisory)
+### 11. Schedules (best-effort, advisory)
 Scheduled runs live in Claude Code's scheduling config, not the repo, so this can't always be
 verified from here. Don't fail on it. Advise: the audits and `daily-update` are designed to run on a
 schedule — list which skills the repo has installed that *want* scheduling, and suggest the user

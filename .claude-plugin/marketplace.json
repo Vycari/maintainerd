@@ -36,6 +36,12 @@
       "version": "0.1.0"
     },
     {
+      "name": "deps-flow",
+      "source": "./plugins/deps-flow",
+      "description": "Autonomous Dependabot queue management — the one maintainerd plugin that merges. dependabot gates each bot-authored dependency PR on all checks green, no requested changes, and a semver policy (patch/minor by default; majors held for you), merges one PR per non-overlapping file group, waits for the rebase, and repeats until the queue drains. A broken update is never fixed: it's diagnosed, filed as an issue, and labelled. Requires an explicit depsFlow.enabled opt-in.",
+      "version": "0.1.0"
+    },
+    {
       "name": "auto-dev",
       "source": "./plugins/auto-dev",
       "description": "Autonomous issue-to-PR pipeline driven by an auto:* GitHub label state machine: create-issue (turn a rough request into a buildable issue), auto-dev (triage -> plan -> build -> address-review; never merges), and review-queue (the maintainer's console). Configurable label names, markers, and branch prefixes.",

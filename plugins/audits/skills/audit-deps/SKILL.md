@@ -179,7 +179,9 @@ never a clean bill of health.
 - **Don't remove a "unused" dependency without triaging it** — build tools, config-loaded plugins, and
   type-only packages false-positive constantly. Confirm it's truly unreferenced first.
 - **Don't compete with Dependabot/Renovate** — if the repo runs one, dedup against its open PRs and
-  focus on what it doesn't cover (unused, phantom, deprecated, licenses).
+  focus on what it doesn't cover (unused, phantom, deprecated, licenses). Processing those bot PRs
+  (gating, merging, diagnosing failures) belongs to the `deps-flow` plugin's **`dependabot`** skill,
+  not here; this audit never merges anything.
 - **Don't operate on a dirty tree, skip pre-flight, `--no-verify`, or auto-merge.**
 
 ## When integrated with scheduling

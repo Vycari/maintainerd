@@ -20,9 +20,16 @@ skill generates that contract for any repo.
 | **research** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
 | **journal** | `worklog` | You want a day's shipped work captured into your Obsidian vault (user-scoped — spans all your repos). |
 | **auto-dev** | `create-issue`, `auto-dev`, `review-queue` | You want the autonomous issue→PR pipeline (from issue intake through build to review). |
+| **deps-flow** | `dependabot` | You want the Dependabot queue drained unattended — and you're willing to let a skill **merge**. |
 
 A repo installs only the plugins it wants. `auto-dev` works standalone (with `maintainerd-core`
 for config); the audits and repo-ops compose but don't require each other.
+
+> **`deps-flow` is the exception to the suite's "never auto-merges" rule.** Every other skill stops
+> at the merge gate; `dependabot` merges dependency PRs that pass a strict gate (all checks
+> concluded green, no requested changes, bump level within the repo's policy). It requires an
+> explicit `depsFlow.enabled: true` — an absent config block means *off*, never *defaults*. Run
+> `/dependabot dry-run` first.
 
 ## Setup in a new repo
 
@@ -92,6 +99,7 @@ maintainerd/
     research/  .claude-plugin/plugin.json  skills/{research-radar}/
     journal/   .claude-plugin/plugin.json  skills/{worklog}/
     auto-dev/  .claude-plugin/plugin.json  skills/{create-issue,auto-dev,review-queue}/
+    deps-flow/ .claude-plugin/plugin.json  skills/{dependabot}/
 ```
 
 ## Roadmap

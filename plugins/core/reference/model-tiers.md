@@ -52,6 +52,7 @@ Model ids change over time — check the current lineup with `/model` rather tha
 | `audit-tests` | **capable** (or `mid`) | "Is this mock decorative? is this assertion actually weak?" is judgment. It runs several times a day, so a `mid` rung is a reasonable cost trade if the repo has one. |
 | `audit-security` | **capable** | Taint paths and "don't "fix" what you don't understand" are the highest-stakes judgment in the suite. Don't down-tier security. |
 | `auto-dev` | **capable** | Writes code, drafts plans, adjudicates review feedback. Its `dry-run` mode (read-only report) is safe on **fast**. |
+| `dependabot` | **fast** | Gating and merging is mechanical — read check conclusions, compare version strings, call `gh pr merge`. Its one judgment-heavy step (diagnosing a broken update) is the exception the subagent lever exists for: delegate *that* to a `capable` subagent rather than up-tiering the whole routine. |
 | `research-radar` | **capable** (or `mid`) | Deriving themes and curating relevance is judgment; the arXiv fetch/parse around it is cheap but can't be split from the same run. |
 | `daily-update` / `daily-changelog` | **mid**/**capable** | Changelog synthesis is moderate judgment — readable summaries, honest grouping. `fast` tends to produce thin, mechanical notes. |
 

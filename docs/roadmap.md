@@ -18,7 +18,13 @@ suite's scope coherent.
 3. Anything that opens PRs runs the repo's pre-flight via `create-pr` (or `config.commands.*` inline).
 4. Unattended/scheduled skills are **capped per run**, **dedup against open work**, and where
    appropriate are **silent on clean** (no findings → no PR, no issue, no report).
-5. Never auto-merges. Human-in-the-loop for anything outward-facing.
+5. Never auto-merges. Human-in-the-loop for anything outward-facing. **One deliberate exception:**
+   the `deps-flow` plugin's `dependabot` skill merges bot-authored dependency PRs that pass a strict,
+   mechanical gate. It earns the exception by (a) shipping in its own plugin, so installing it *is*
+   the consent, (b) requiring an explicit `depsFlow.enabled: true` — an absent config block means
+   off, not defaults, and (c) confining the authority to PRs whose author is a configured bot, whose
+   checks have all concluded green, and whose bump level the repo opted into. Any future
+   merge-capable skill follows the same three rules.
 
 ---
 
@@ -30,7 +36,17 @@ suite's scope coherent.
 | `repo-ops` | `create-pr`, `address-review`, `code-review`, `release`, `daily-changelog`, `daily-update` |
 | `audits` | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` |
 | `research` | `research-radar` |
-| `auto-dev` | `auto-dev`, `review-queue` |
+| `auto-dev` | `auto-dev`, `review-queue`, `create-issue` |
+| `deps-flow` | `dependabot` |
+
+---
+
+## deps-flow (dependency PR throughput — the merge-capable corner)
+
+| Skill | Status | Source | What it does |
+| --- | --- | --- | --- |
+| ~~`dependabot`~~ | ✅ **Shipped** | new | Drain the Dependabot queue: gate each bot PR on all checks concluded green + no requested changes + a semver policy (`autoMergeSemver`, patch/minor by default; majors and `0.x` minors held for the human), merge one PR per non-overlapping file group, let Dependabot rebase the rest (nudging `@dependabot rebase` only when a rebase is genuinely stuck), repeat. A broken update is **never fixed** — diagnosed from CI logs + the release notes in the PR body, filed as one issue with an honest confidence line, PR labelled `deps:blocked` so no later run re-diagnoses it. Tick mode for scheduling, `drain` for clearing the queue now, `dry-run` for a read-only preview. |
+| `dependabot-config` | ✨ Net-new | — | The upstream half: author/maintain `.github/dependabot.yml` — ecosystems, grouping rules (fewer, larger PRs merge far better through the gate above), schedule, and ignore rules. Natural companion; would ship in the same plugin. |
 
 ---
 

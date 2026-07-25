@@ -74,6 +74,20 @@
     "maxPrsInFlight": 6,
     "orphanReclaimMinutes": 90
   },
+  "depsFlow": {
+    "enabled": true,
+    "botLogins": ["dependabot[bot]"],
+    "marker": "<!-- deps-flow -->",
+    "autoMergeSemver": ["patch", "minor"],
+    "holdPackages": ["obsidian"],
+    "mergeMethod": "squash",
+    "requireApproval": false,
+    "maxMergesPerRun": 5,
+    "rebaseNudgeMinutes": 30,
+    "blockedLabel": "deps:blocked",
+    "drainPollMinutes": 5,
+    "drainMaxMinutes": 90
+  },
   "researchRadar": {
     "themes": "derive",
     "userAgent": "research-radar/1.0 (mailto:allen@hutchison.org)"
