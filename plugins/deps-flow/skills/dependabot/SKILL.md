@@ -34,12 +34,15 @@ Before anything else, load the repo config (see
    absent `depsFlow` means *disabled*, not *use the defaults* — a skill that merges must never
    acquire that authority by omission. While disabled, do not merge, comment, label, or file
    anything.
-4. Read the keys this skill needs: `config.repo`, `config.defaultBranch`, `config.commands.*` (used
-   only to reproduce a failure locally when diagnosing — never to fix one), `config.labels.dependencies`
+4. Read the keys this skill needs: `config.repo`, `config.defaultBranch`, `config.labels.dependencies`
    and `config.labels.automated` (applied to the issues this skill files), and the whole
    `config.depsFlow` block — `botLogins`, `marker`, `autoMergeSemver`, `holdPackages`, `mergeMethod`,
    `requireApproval`, `maxMergesPerRun`, `rebaseNudgeMinutes`, `blockedLabel`, `drainPollMinutes`,
    `drainMaxMinutes`.
+
+   **It deliberately does not read `config.commands.*`.** This skill never runs the repo's build or
+   test commands: doing so would execute an untrusted dependency update in a credentialed
+   environment (invariant 4). CI runs them; this skill reads CI's results.
 5. For any `depsFlow` key that is absent, fall back to the documented default (table below) and say
    so in the exit report — **except `enabled`, which has no permissive default.**
 
@@ -72,8 +75,11 @@ Before anything else, load the repo config (see
    set. A human's PR is never this skill's business, even one that only bumps a dependency.
 4. **Never fix a broken update.** Do not push commits to a bot branch, do not edit code, do not pin
    or patch around a breakage, do not "just bump the peer dep too". A failing update is a signal for
-   the maintainer: diagnose it, file one issue, label the PR, move on. Reproducing the failure locally
-   in a throwaway checkout to *understand* it is allowed; committing anything is not.
+   the maintainer: diagnose it, file one issue, label the PR, move on. **Do not reproduce the failure
+   locally either** — not in a throwaway checkout, not read-only, not "just to understand it".
+   Checking out the branch and running the repo's commands executes the updated dependency's code
+   next to a `gh` token with merge rights. CI's logs are the only evidence this skill works from
+   (step 4).
 5. **Never close a dependency PR, and never post a Dependabot command that creates lasting state.**
    `@dependabot rebase` is the only command this skill may post. Never `@dependabot close`,
    `ignore …`, `merge`, `squash and merge`, or `recreate` — the ignore commands write a permanent
@@ -247,11 +253,21 @@ gh auth status
 gh repo view "$REPO" --json nameWithOwner        # $REPO = config.repo
 
 # Filter by author SERVER-side, so the limit applies to the bot's PRs and not to the first
-# page of everyone's. One --search per configured login (app/<name> drops the "[bot]" suffix).
+# page of everyone's. Build the query from config.depsFlow.botLogins — one author: qualifier
+# per configured login, NOT a hardcoded dependabot. GitHub ORs repeated author: qualifiers,
+# so every configured bot is covered by one query. An app login maps "<name>[bot]" -> "app/<name>".
+#   botLogins ["dependabot[bot]"]                    -> author:app/dependabot
+#   botLogins ["dependabot[bot]","renovate[bot]"]    -> author:app/dependabot author:app/renovate
 gh pr list --repo "$REPO" --state open --limit 200 \
-  --search "is:open author:app/dependabot" \
+  --search "is:open <one author: qualifier per config.depsFlow.botLogins entry>" \
   --json number,title,author,baseRefName,headRefName,headRefOid,isDraft,createdAt,updatedAt,labels,mergeable,mergeStateStatus,reviewDecision
 ```
+
+A repo that configured `renovate[bot]` and got a dependabot-only query would see an empty queue
+forever and never know — the skill would cheerfully report "queue empty" while the backlog grew. If
+you can't map a configured login to a search qualifier, **drop the `--search` filter entirely**, page
+through all open PRs, and filter on `author.login` client-side: slower is fine, silently skipping a
+configured bot is not.
 
 Then re-verify `author.login` against `config.depsFlow.botLogins` on the results — the search
 qualifier narrows the query, the login check is still the gate (condition 1).
@@ -416,18 +432,34 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
    they don't support a conclusion, the honest output is "cause not determined" — never a local run
    to find out.
 
-5. **Dedup, then file one issue.** Search for an existing marker issue for the same package:
+5. **Check that you can mark the PR before you file anything.** Confirm `config.depsFlow.blockedLabel`
+   exists on the repo (`gh label list`). If it doesn't, **stop this PR's failure pass here** — file
+   nothing, and report the missing label as the blocker. The label is the only cross-run memory in
+   this flow; filing an issue you can't mark means the next run re-diagnoses the same failure and
+   files another one, and the run after that files a third. An unfiled issue is a gap the report
+   names; an unmarkable issue is a duplicate generator. Never create the label yourself (invariant 6).
+
+6. **Dedup, then file one issue.** Find candidate issues, then confirm each is really one of yours:
 
    ```bash
+   # Candidates: same package, this repo's dependency label
    gh issue list --repo "$REPO" --state open --label "<config.labels.dependencies>" \
      --search "<package name> in:title" --json number,title
+
+   # A candidate counts as a match ONLY if its body carries the marker
+   gh issue view <N> --repo "$REPO" --json body --jq '.body' | grep -qF '<config.depsFlow.marker>'
    ```
 
-   If one exists for the same package, add a short comment only if the target version has changed
-   since; otherwise do nothing. Otherwise file the issue in the format below, labelled
+   **The label and title alone are not enough.** A human's issue about the same package would
+   otherwise suppress the broken-update issue entirely, or receive a bot comment on a thread it has
+   nothing to do with. Require `config.depsFlow.marker` in the body before treating a candidate as
+   this skill's own prior work.
+
+   If a real marker issue exists for the same package, add a short comment only if the target version
+   has changed since; otherwise do nothing. Otherwise file the issue in the format below, labelled
    `config.labels.dependencies` + `config.labels.automated`.
 
-6. **Label the PR** `config.depsFlow.blockedLabel` and post one marker comment linking the issue.
+7. **Label the PR** `config.depsFlow.blockedLabel` and post one marker comment linking the issue.
    **This is the cross-run memory** — it's what stops every future run from re-diagnosing the same
    failure. Leave the PR open: closing it is the maintainer's call, and Dependabot treats a closed PR
    as a signal to stop offering that version.
@@ -553,8 +585,10 @@ If the queue is empty: `dependabot — queue empty, nothing to do.` Don't pad it
 - **Don't merge past the cap** because the queue is nearly clear, and don't extend a drain past
   `drainMaxMinutes`.
 - **Don't create labels** — apply only the ones that already exist (`bootstrap` creates them). If
-  `blockedLabel` is missing, note it in the report and skip the labelling step rather than filing an
-  issue you can't mark.
+  `blockedLabel` is missing, **fail closed**: file nothing for that PR and report the missing label.
+  Filing an issue you can't mark makes every later run file another one.
+- **Don't treat a same-package issue as your own without the marker** — a human's issue would
+  otherwise silently suppress the broken-update report.
 
 ## When integrated with scheduling
 

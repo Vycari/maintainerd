@@ -212,11 +212,19 @@ gh label create auto:pr      --color 5319E7 --description "Opened by the auto-de
 ```
 
 **Only if `depsFlow.enabled` is `true`** — skip this entirely when the block is absent or disabled,
-which is the default:
+which is the default. Create the **configured** label, not the literal below: resolve
+`depsFlow.blockedLabel` from the config you just wrote, falling back to `deps:blocked` only when the
+key is absent. A repo that set a custom name and got `deps:blocked` created would fail `doctor` and
+the skill could never mark a blocked PR:
 
 ```bash
-gh label create deps:blocked --color B60205 --description "Dependency update breaks CI — diagnosed, see linked issue" 2>/dev/null || true
+# <blockedLabel> = config.depsFlow.blockedLabel, default "deps:blocked"
+gh label create "<blockedLabel>" --color B60205 --description "Dependency update breaks CI — diagnosed, see linked issue" 2>/dev/null || true
 ```
+
+The same rule applies to every command in this step: each one creates the name the config actually
+holds (`labels.*`, `autoDev.prLabel`), not the default it was written with. The defaults above are
+what a stock config contains, not values to paste over a customized one.
 
 Ask before creating; don't mutate the repo's label set unprompted. Don't create a disabled feature's
 labels "just in case" — an unused label is a standing hint that automation is running here when it
