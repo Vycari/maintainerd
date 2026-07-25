@@ -436,9 +436,22 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
    `config.depsFlow.blockedLabel` exists — by **exact name**, via the label endpoint:
 
    ```bash
-   # 200 = exists, 404 = missing. URL-encode the name if it contains spaces or slashes.
-   gh api "repos/$REPO/labels/<config.depsFlow.blockedLabel>" --silent && echo present
+   # Read the HTTP status, don't just test the exit code. URL-encode the name
+   # if it contains spaces or slashes (" " -> %20, "/" -> %2F).
+   gh api "repos/$REPO/labels/<config.depsFlow.blockedLabel>" --include --silent 2>&1 | head -1
    ```
+
+   Three outcomes, and they are **not** two:
+
+   | Status | Meaning | Do |
+   | --- | --- | --- |
+   | `200` | The label exists | Continue to step 6 |
+   | `404` | The label genuinely doesn't exist | Stop this PR's failure pass; report the missing label |
+   | anything else (`401`, `403`, rate limit, `5xx`, network) | You don't know | Stop, and report **"couldn't verify the label"** — not "label missing" |
+
+   A bare exit-code test collapses the last row into the middle one, and the two send the maintainer
+   somewhere different: "create the label" versus "your token expired". Same discipline as invariant
+   8 — a check you couldn't read is unknown, never a negative result.
 
    **Don't scan `gh label list` for this.** It returns 30 labels by default, so on a repo with a
    large label set an existing label reads as missing — and this check fails *closed*, so a
