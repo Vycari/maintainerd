@@ -120,6 +120,16 @@ Defaults to apply without asking (state them in the report):
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
 - `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.fallbackReviewMinutes`: `60`.
 - `autoDev.maxPrsInFlight`: `1` (single-PR pipeline; raise it to let the queue drain into several open PRs); `autoDev.orphanReclaimMinutes`: `90`.
+- `depsFlow`: **`enabled: false`**, plus the rest of the block at its schema defaults
+  (`botLogins: ["dependabot[bot]"]`, `autoMergeSemver: ["patch","minor"]`, `mergeMethod: "squash"`,
+  `maxMergesPerRun: 5`, `rebaseNudgeMinutes: 30`, `blockedLabel: "deps:blocked"`).
+
+**The one thing to ask about rather than default:** the `deps-flow` plugin's `dependabot` skill is
+the only maintainerd skill that **merges PRs**. If the repo has the plugin installed (or the user
+asks for Dependabot automation), ask explicitly whether a bot may merge dependency PRs here, and
+whether major bumps should be included (default: no — patch/minor only). **Write `enabled: false`
+unless they say yes in this session.** Never flip it to `true` as part of a re-run's "keep the
+config current" pass.
 
 Write `.claude/maintainerd.json` with the full schema. Every command the repo doesn't have must be
 explicit `null`, not omitted. Validate it parses:
@@ -185,17 +195,40 @@ set the key to `null`. This matches the `doctor` fix for the same finding.
 
 The labels in the config must exist in GitHub for the audits and auto-dev to apply them. Offer:
 
+**Always** (every repo needs these — the audits and any skill that opens work unattended):
+
 ```bash
 gh label create architecture --color BFD4F2 --description "audit-architecture findings" 2>/dev/null || true
 gh label create test-quality --color D4C5F9 --description "audit-tests findings" 2>/dev/null || true
 gh label create security     --color D93F0B --description "audit-security findings" 2>/dev/null || true
 gh label create dependencies --color 0366D6 --description "audit-deps findings" 2>/dev/null || true
 gh label create automated    --color EDEDED --description "Opened by a Maintainerd skill" 2>/dev/null || true
-# auto:* labels only if auto-dev is enabled — the auto:* state set plus the auto-dev PR label:
+```
+
+**Only if `autoDev.enabled` is `true`** — the six `auto:*` state labels plus the PR label:
+
+```bash
 gh label create auto:pr      --color 5319E7 --description "Opened by the auto-dev pipeline" 2>/dev/null || true
 ```
 
-Ask before creating; don't mutate the repo's label set unprompted.
+**Only if `depsFlow.enabled` is `true`** — skip this entirely when the block is absent or disabled,
+which is the default. Create the **configured** label, not the literal below: resolve
+`depsFlow.blockedLabel` from the config you just wrote, falling back to `deps:blocked` only when the
+key is absent. A repo that set a custom name and got `deps:blocked` created would fail `doctor` and
+the skill could never mark a blocked PR:
+
+```bash
+# <blockedLabel> = config.depsFlow.blockedLabel, default "deps:blocked"
+gh label create "<blockedLabel>" --color B60205 --description "Dependency update breaks CI — diagnosed, see linked issue" 2>/dev/null || true
+```
+
+The same rule applies to every command in this step: each one creates the name the config actually
+holds (`labels.*`, `autoDev.prLabel`), not the default it was written with. The defaults above are
+what a stock config contains, not values to paste over a customized one.
+
+Ask before creating; don't mutate the repo's label set unprompted. Don't create a disabled feature's
+labels "just in case" — an unused label is a standing hint that automation is running here when it
+isn't, and `doctor` will flag the label as missing the moment the feature *is* enabled.
 
 ### 9. Report
 
@@ -219,4 +252,7 @@ Tell the user, concisely:
   actually installed, or `daily-update` will try to run a missing skill.
 - **Don't create labels or a PR template without asking.** These mutate the repo's GitHub/file
   state; confirm first.
+- **Don't enable `depsFlow` without an explicit yes.** It grants a skill permission to merge PRs in
+  this repo — the one setting in the config with real, irreversible blast radius. `false` is the
+  correct value whenever there's any doubt.
 - **Don't commit.** Write the files and let the user review and commit them.

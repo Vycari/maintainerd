@@ -139,6 +139,24 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "orphanReclaimMinutes": 90    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
   },
 
+  // ── deps-flow (the `dependabot` skill) — the ONE skill that merges ─────────
+  // Absent, or `enabled` not true, = disabled. There is no permissive default here:
+  // merge authority is granted explicitly or not at all.
+  "depsFlow": {
+    "enabled":         false,                  // explicit opt-in to letting the skill merge in this repo
+    "botLogins":       ["dependabot[bot]"],    // whose PRs it may act on; add "renovate[bot]" if applicable
+    "marker":          "<!-- deps-flow -->",   // HTML comment stamped on its own comments/issues
+    "autoMergeSemver": ["patch", "minor"],     // bump levels eligible for auto-merge; anything else is held for the human
+    "holdPackages":    [],                     // package names (exact or *-globbed) never auto-merged at any level
+    "mergeMethod":     "squash",               // "squash" | "merge" | "rebase" — must be allowed by the repo's settings
+    "requireApproval": false,                  // true = also require reviewDecision == APPROVED, not just "nothing blocking"
+    "maxMergesPerRun": 5,                      // hard cap on merges per invocation (drain mode included)
+    "rebaseNudgeMinutes": 30,                  // how long a stale PR sits before a single `@dependabot rebase` nudge
+    "blockedLabel":    "deps:blocked",         // applied to a PR whose failure was diagnosed + filed; future runs skip it
+    "drainPollMinutes": 5,                     // pause between passes in `/dependabot drain`
+    "drainMaxMinutes":  90                     // wall-clock ceiling on a drain run
+  },
+
   // ── research-radar ─────────────────────────────────────────────────────────
   "researchRadar": {
     "themes":    "derive",  // "derive" (infer from repo) | ["explicit", "theme", "list"]
@@ -212,7 +230,7 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `researchRadar`, `review`, `release`
+### `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`
 
 - `labels.*` — GitHub label names the skills apply. They must already exist in the repo (bootstrap
   offers to create them).
@@ -249,6 +267,22 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   issue before a tick treats it as a crashed build to rebuild, rather than one running concurrently
   in an overlapping tick (which it leaves alone) — the guard against two ticks racing on the same
   build. All optional; absent → the documented defaults.
+- `depsFlow.*` *(the `dependabot` skill — the only maintainerd skill that merges)* — **the one block
+  whose absence means "off", not "use the defaults".** A missing block, or `enabled` anything other
+  than `true`, disables the skill entirely; merge authority is never acquired by omission. Once
+  enabled, the rest have the defaults shown: `botLogins` *(`["dependabot[bot]"]`)* is whose PRs the
+  skill may touch — authorship is checked by login, never inferred from a branch or title;
+  `autoMergeSemver` *(`["patch","minor"]`)* is the bump levels eligible for auto-merge, everything
+  else (majors, and `0.x` minors, which the skill classifies as major) is **held for the human**;
+  `holdPackages` *(`[]`)* never auto-merges regardless of level; `mergeMethod` *(`"squash"`)* must be
+  a method the repo allows; `requireApproval` *(`false`)* additionally demands an explicit approving
+  review; `maxMergesPerRun` *(`5`)* caps merges per invocation including drain mode;
+  `rebaseNudgeMinutes` *(`30`)* is how long a stale PR waits before one `@dependabot rebase` nudge
+  (Dependabot usually rebases unprompted, so the default action is to wait); `blockedLabel`
+  *(`"deps:blocked"`)* marks a PR whose CI failure has been diagnosed and filed as an issue, and is
+  the cross-run memory that stops re-diagnosis; `drainPollMinutes` *(`5`)* and `drainMaxMinutes`
+  *(`90`)* bound `/dependabot drain`. The skill files its issues under `labels.dependencies` +
+  `labels.automated`, so it dedups against `audit-deps` findings for free.
 - `researchRadar.themes` — `"derive"` to infer themes from the repo, or an explicit string array.
 - `review.bots` *(optional)* — extra automated-reviewer logins `address-review` should recognize.
   Defaults to `["coderabbitai[bot]", "gemini-code-assist[bot]"]`. Humans are auto-detected (any
