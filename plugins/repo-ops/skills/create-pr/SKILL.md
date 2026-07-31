@@ -133,6 +133,15 @@ EOF
 )"
 ```
 
+### Labels
+
+If the caller asked for labels on the PR — a human naming them, or another skill delegating here
+(the **auto-dev** pipeline passes its `config.autoDev.prLabel` so external review tooling can
+recognize automated PRs) — apply them with `--label` **on the create call above**, not with a
+follow-up `gh pr edit`. Review bots react to the `opened` webhook within seconds, and a label added
+afterwards doesn't retract a review that already started. Labels must already exist; this skill
+never creates them. Left unasked, don't invent labels — an unlabeled PR is the normal outcome here.
+
 ### Title conventions
 
 - Keep under 70 characters

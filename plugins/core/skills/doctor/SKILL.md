@@ -88,11 +88,30 @@ will try to invoke a missing skill"). Cross-check against the plugins actually i
 ### 8. auto-dev coherence (only if `config.autoDev.enabled`)
 - All six `stateLabels.*` exist on GitHub (covered in check 6).
 - `marker` is a non-empty HTML comment; `branchPrefix` is set; `excludedLabels` is an array.
-- `prLabel` (default `auto:pr` if absent) exists on GitHub — the pipeline stamps it on every PR, so a
-  missing label means every build's label step fails → **WARN** with the `gh label create` fix.
+- `prLabel` (default `auto:pr` if absent) exists on GitHub — **FAIL** with the `gh label create` fix
+  (same severity as check 6, which covers it). The pipeline stamps it on every PR it opens so the
+  maintainer can configure external review tooling to skip automated PRs; while it's missing, every
+  automated PR is unlabeled and that tooling reviews all of them.
 - `fallbackReviewMinutes` (default `60` if absent), when present, is a positive number → else **WARN**.
 - `maxPrsInFlight` (default `1` if absent), when present, is an integer ≥ 1 → else **WARN**.
 - `orphanReclaimMinutes` (default `90` if absent), when present, is a positive number → else **WARN**.
+- **The CodeRabbit ignore rule is wired up** — the consuming half of `prLabel`. Check this **only**
+  when `config.review.bots` includes `coderabbitai[bot]` — the key is optional and its default
+  includes it, so treat absent as included — and a `.coderabbit.yaml` (or `.coderabbit.yml`) exists
+  in the repo root. If **both** spellings exist, report **WARN** naming both paths and check neither
+  — which one CodeRabbit honors isn't knowable from here, so a verdict read off the wrong file is
+  worse than no verdict. Otherwise read `reviews.auto_review.labels`; if it does not
+  contain a negative match for `prLabel` (`!auto:pr` by default) → **WARN**: "automated PRs carry
+  `<prLabel>`, but CodeRabbit isn't configured to skip them — it reviews every pipeline PR alongside
+  auto-dev's own review." The fix is the `labels: ["!<prLabel>"]` key; with `--fix`, propose the edit
+  and apply it only on confirmation — never merge into an existing `labels` value unprompted (the
+  matchers combine, so a blind append can silence review on PRs the maintainer wants reviewed).
+
+  **If no `.coderabbit.yaml` exists, report nothing** — not even an INFO. CodeRabbit is equally
+  configurable from its web dashboard, so an absent file is not evidence of a missing rule, and a
+  finding that can't distinguish "misconfigured" from "configured elsewhere" is noise that trains
+  the maintainer to ignore the report. Other bots in `review.bots` have their own ignore
+  mechanisms and are out of scope here.
 - If `autoDev.enabled` is `false`, skip — note it as a PASS ("auto-dev disabled").
 
 ### 9. deps-flow coherence
@@ -164,7 +183,11 @@ If everything passes: `maintainerd doctor — all green. <n> checks passed.` Don
 ## What not to do
 
 - **Don't rewrite the config or guidelines.** doctor diagnoses; `bootstrap` (or the user) fixes.
-  The only mutation it performs is creating missing labels, and only with `--fix` + confirmation.
+  The only mutations it performs are creating missing labels and adding the CodeRabbit ignore rule,
+  both only with `--fix` + confirmation.
+- **Don't merge into an existing `.coderabbit.yaml` unprompted.** Show the proposed change and let
+  the user apply it. That file isn't maintainerd's, and its label matchers combine — a blind append
+  can silence review on PRs the maintainer wants reviewed.
 - **Don't run `config.commands.*` without `--run`.** They have side effects (and can be slow); the
   default check is static.
 - **Don't fail on things it can't verify** (schedules) — mark advisory, not FAIL.

@@ -121,7 +121,7 @@ Gather the current state in parallel (the branch prefix is the identity signal f
 
 ```bash
 # Open automated PRs (branch prefix is the identity signal)
-gh pr list --repo <config.repo> --state open --json number,headRefName,title,reviewDecision,mergeable \
+gh pr list --repo <config.repo> --state open --json number,headRefName,title,reviewDecision,mergeable,isDraft,labels \
   | jq --arg p '<config.autoDev.branchPrefix>' '[.[] | select(.headRefName | startswith($p))]'
 
 # All open issues, oldest first
@@ -134,6 +134,25 @@ gh pr list --repo <config.repo> --state closed --limit 10 --json number,headRefN
 ```
 
 If `gh` auth or repo resolution fails, print the failure in the exit report and stop — do not attempt repairs.
+
+**Re-stamp the PR label (self-heal).** The label the pipeline puts on its own PRs
+(`config.autoDev.prLabel`, default `auto:pr`) is what lets external tooling skip them, so a PR that
+missed it is a PR that gets reviewed by tooling that was configured to leave it alone. Applying the
+label can miss for ordinary reasons — the label didn't exist when the PR was opened, a transient
+`gh` failure, a PR opened by a delegated skill — and nothing else would ever fix it. So on **every**
+tick, using the `labels` already fetched above (no extra API call), add the label to any open
+automated PR that lacks it:
+
+```bash
+gh pr edit <N> --repo <config.repo> --add-label "<config.autoDev.prLabel>"
+```
+
+This is a cheap no-op on the normal path, where every open automated PR already carries the label.
+It is a **repair**, not the primary application — the primary application happens at PR-creation
+time (step 3, item 7), because a label added minutes later doesn't retract a review that external
+tooling already started. If the edit fails because the label doesn't exist, note it once in the exit
+report and continue — never create the label yourself (invariant 5); `/doctor` reports it and
+`/bootstrap` creates it.
 
 ### Step 1 — Reconcile finished work
 
@@ -200,10 +219,54 @@ Take the **oldest** eligible Ready issue (or a step-1 orphan). Then:
    - **Verified** → note what you exercised and observed in the PR body's test plan.
    - **Observed wrong behavior** → that's a real defect, not a passing build: fix it, re-run pre-flight + verification, and only proceed once it passes. If it can't be made to pass within this run's budget, leave the PR a **draft** and say so in the exit report — don't mark it ready.
    - **Can't verify in this sandbox** (no runtime, or it needs a service the sandbox lacks) → don't block the pipeline: say so plainly in the PR body (`behavioral verification not run in sandbox — needs manual check`) and in the exit report, then proceed pre-flight-gated. **Never claim verified when verification didn't run** — the same "not scanned, never clean" honesty the audits follow.
-7. Create the PR. **If the `create-pr` skill is installed, delegate to it** (it enforces the template, checklist, and AI-disclosure section, and runs the same pre-flight — but not behavioral verification, which is step 6's job). If it is not installed, run the pre-flight inline via `config.commands.*` (step 5 above) and open the PR directly with `gh pr create`. Honor `config.autoDev.openPrsAsDraft`: when `true`, open the PR as a draft (`gh pr create --draft`) and only mark it ready (`gh pr ready`) once it is complete, pre-flight is green, **and** behavioral verification has passed (or been honestly recorded as not-run-in-sandbox). The body must include `Fixes #<N>`, the marker line, and a note that this PR was produced by the auto-dev pipeline from the approved plan. **Apply the PR label** `config.autoDev.prLabel` (default `auto:pr`) to every PR the pipeline opens — `gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` — so external tooling (e.g. CodeRabbit) can recognize and specially handle automated PRs. The label must already exist (bootstrap creates it); if applying it fails because it doesn't, note that in the exit report and continue — never create the label yourself (invariant 5). This label is applied on top of, not instead of, whatever `create-pr` does; it never replaces the state machine's `auto:*` labels.
+7. Create the PR. **If the `create-pr` skill is installed, delegate to it** (it enforces the template, checklist, and AI-disclosure section, and runs the same pre-flight — but not behavioral verification, which is step 6's job). If it is not installed, run the pre-flight inline via `config.commands.*` (step 5 above) and open the PR directly with `gh pr create`. Honor `config.autoDev.openPrsAsDraft`: when `true`, open the PR as a draft (`gh pr create --draft`) and only mark it ready (`gh pr ready`) once it is complete, pre-flight is green, **and** behavioral verification has passed (or been honestly recorded as not-run-in-sandbox). The body must include `Fixes #<N>`, the marker line, and a note that this PR was produced by the auto-dev pipeline from the approved plan. **Apply the PR label** `config.autoDev.prLabel` (default `auto:pr`) to every PR the pipeline opens, so external tooling (e.g. CodeRabbit) can recognize and specially handle automated PRs — see **Labeling automated PRs** below for how and why the timing matters. This label is applied on top of, not instead of, whatever `create-pr` does; it never replaces the state machine's `auto:*` labels.
 8. Comment on the issue (marker) linking the PR.
 
-If the build cannot complete within this run's time/effort budget, push the WIP commits and open a **draft** PR (`gh pr create --draft`) before exiting — a bare pushed branch is invisible to the next tick, whose discovery queries only look at PRs and issues. The draft body still carries `Fixes #<N>` and the marker, plus a note that the build is incomplete and will be resumed. Never mark a PR ready for review (`gh pr ready`) while pre-flight checks fail, or while behavioral verification is failing, or — for a change with a runnable surface — while it was skipped without recording *why* it couldn't run (a genuine sandbox limitation, honestly noted, is allowed to proceed; silently skipping is not). (When `config.autoDev.openPrsAsDraft` is `true`, every PR already opens as a draft, so this incomplete-build path is just the normal flow held back from `gh pr ready`.)
+If the build cannot complete within this run's time/effort budget, push the WIP commits and open a **draft** PR (`gh pr create --draft`) before exiting — a bare pushed branch is invisible to the next tick, whose discovery queries only look at PRs and issues. The draft body still carries `Fixes #<N>` and the marker, plus a note that the build is incomplete and will be resumed, **and it carries the PR label like any other** (below) — a yielded build is still a PR the pipeline opened. Never mark a PR ready for review (`gh pr ready`) while pre-flight checks fail, or while behavioral verification is failing, or — for a change with a runnable surface — while it was skipped without recording *why* it couldn't run (a genuine sandbox limitation, honestly noted, is allowed to proceed; silently skipping is not). (When `config.autoDev.openPrsAsDraft` is `true`, every PR already opens as a draft, so this incomplete-build path is just the normal flow held back from `gh pr ready`.)
+
+#### Labeling automated PRs
+
+**Every** PR the pipeline opens carries `config.autoDev.prLabel` (default `auto:pr`) — the complete
+build in item 7, the yielded WIP draft above, and any PR opened by delegating to `create-pr`. There
+is no path that opens a PR without it. The label is what lets the maintainer configure external
+review tooling to stand down on automated PRs (CodeRabbit's `reviews.auto_review.labels` takes
+negative matches, e.g. `["!auto:pr"]`) and leave them to this pipeline's own review loop. Note that
+the label is *only* for external tooling: the pipeline still identifies its own PRs by
+`config.autoDev.branchPrefix` (step 0), so a missing label never confuses the state machine — it
+just leaks a PR past the maintainer's tooling config.
+
+**Apply it at creation, not afterwards.** External tooling reacts to the `opened` webhook within
+seconds, and a label added after the fact does not retract a review that already started. So pass
+it on the create call:
+
+```bash
+gh pr create --repo <config.repo> --base <config.defaultBranch> \
+  --label "<config.autoDev.prLabel>" [--draft] --title "…" --body "…"
+```
+
+When delegating to `create-pr`, tell it to apply `config.autoDev.prLabel` on the `gh pr create`
+call — it accepts caller-supplied labels for exactly this reason. Only fall back to
+`gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` if a PR somehow got
+opened without it.
+
+**If the label doesn't exist**, `gh pr create --label` fails — and on some `gh` versions it fails
+*after* pushing the branch, leaving no PR. Don't risk losing the build: confirm the label exists
+before the first create, with one `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'`
+(`--paginate`, not `gh label list`, whose 30-item default would report an existing label as
+missing). A tick opens at most a few PRs, so that single call covers all of them. If it's missing,
+open the PR **without** the label and record in the exit report that the PR is unlabeled and why.
+Never create the label yourself (invariant 5) — `/doctor` reports it, `/bootstrap` creates it.
+
+**Why proceed unlabeled rather than refuse to open the PR?** Because refusing strands the build. The
+commits are already pushed, and a bare pushed branch is invisible to the next tick — its discovery
+queries only look at PRs and issues. So a tick that stopped here would leave the work unreachable,
+and the following tick would reclaim the issue as an orphan and rebuild it from scratch, repeating
+for as long as the label is absent. The pipeline can't fix the cause itself (invariant 5 forbids
+creating labels), so the stop would persist until a human intervened, with each tick discarding a
+build. The unlabeled PR is the strictly better failure: the work survives, the exit report names the
+problem, `/doctor` FAILs on the missing label, and step 0's re-stamp labels the PR on the first tick
+after the label exists. The only cost is that external tooling may review that one PR — which is
+simply the behavior from before this label existed, not a regression.
 
 ### Step 4 — Triage pass (bounded)
 
