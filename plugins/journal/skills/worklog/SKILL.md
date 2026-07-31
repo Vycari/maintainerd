@@ -175,19 +175,40 @@ Follow **Append-safety** for all of these — glob/Read first, `Edit` (insert) i
 3. **Daily-note line** — compute the path from the daily-notes config + current date.
    - **Missing** → `Write` it from the configured `template` (fill date tokens for the current date),
      or a minimal note with the date heading and a `## Notes` section.
-   - **Exists** → `Read`, then `Edit` to insert `- **<Project>**: <one-line summary> — [[<note
-     basename>]]` into the notes section. If a line for this project + today is already there, update
-     it in place instead of adding a second.
+   - **Exists** → `Read`, then `Edit` to insert the project's single bullet (format below) into the
+     notes section. If a line for this project + today is already there, update it in place instead
+     of adding a second.
+
+   **The daily-note entry is exactly one bullet — hard rules.** The daily note is a skimmable index
+   of the day; the session note is where the detail lives, one click away through the wikilink.
+
+   - **One top-level bullet per project per day, and nothing under it.** No sub-bullets, no nested
+     lists, no continuation lines. If something feels too important to leave out of the daily note,
+     it belongs in the session note's Shipped or Decisions section — that's what the link is for.
+   - **Format:** `- **<Project>** — <headline> ([[<note basename>]])`
+   - **The headline is one short sentence** — roughly a dozen words, ~120 characters max before the
+     link. It's the answer to "what happened on this project today?", not a list of what happened:
+     lead with the day's shape ("11 PRs — mini-app nav, task destinations, parked-worker teardown"),
+     not a PR-by-PR enumeration. At most two or three `#numbers`, and only if they carry the
+     headline; no decisions, gotchas, metrics, or narrative — those all live in the session note.
+   - **Re-runs rewrite, they don't accrete.** When a later run updates the line (an evening session
+     extending a morning entry), *re-summarize the whole day into a fresh single sentence* — never
+     append clauses, "later:"/"evening:" segments, or extra bullets to the existing line. The line
+     should read the same whether it was written once at 6pm or updated five times.
 
 ### 4. Report
 
 Tell the user exactly what was written, with vault-relative paths: the new/updated session note, the
-hub link, and the daily-note line (show that one-line entry verbatim so they can eyeball it). Don't
-paste the whole session note back.
+hub link, and the daily-note line (show that one-line entry verbatim so they can eyeball it — if it
+doesn't fit on one line here, it's too long for the daily note too). Don't paste the whole session
+note back.
 
 ## Conventions
 
 - **One session note per (project, day).** Re-running extends it (found by globbing `Dev Log <date>*`).
+- **One bullet per (project, day) in the daily note — a single-sentence headline plus the wikilink,
+  never sub-bullets.** All depth goes in the session note. Re-runs rewrite the sentence; they never
+  extend it.
 - **Never clobber.** `Edit`-insert into existing notes; reserve `Write` for brand-new files. Read
   right before editing. Preserve front-matter, headings, and existing bullets.
 - **Match the vault's voice.** Mirror heading levels, bullet vs. checkbox usage, and wikilink style
