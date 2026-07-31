@@ -266,8 +266,14 @@ tuned one represents work you can't reconstruct. Check both spellings — `.code
     by side, explain what the combination will and won't review, and let the user decide.
   - _It already carries `!<prLabel>`_ → nothing to do; report it as already configured.
 
+- **Both exist** → **stop and report the conflict.** Don't pick one, don't merge them, don't write
+  either. Which file CodeRabbit actually honors when both are present isn't something to guess at,
+  and editing the ignored one produces a rule that silently does nothing — the same class of bug
+  this whole step exists to fix. Tell the user both spellings are present, name the paths, and let
+  them consolidate first.
+
 If the user declines, that's a normal outcome — say so and move on. CodeRabbit can also be
-configured from its web dashboard instead of a repo file, so a repo with no `.coderabbit.yaml` is
+configured from its web dashboard instead of a repo file, so a repo with neither spelling present is
 not evidence of anything broken; don't press the point.
 
 This step is CodeRabbit-specific because the negative-label matcher is. Other review bots in
@@ -298,9 +304,10 @@ Tell the user, concisely:
   actually installed, or `daily-update` will try to run a missing skill.
 - **Don't create labels or a PR template without asking.** These mutate the repo's GitHub/file
   state; confirm first.
-- **Don't rewrite an existing `.coderabbit.yaml`.** Maintainerd doesn't own that file. Propose the
-  one-key edit and let the user apply it; a merge that silences review on PRs they expected to be
-  reviewed is worse than no rule at all.
+- **Don't rewrite an existing `.coderabbit.yaml` or `.coderabbit.yml`.** Maintainerd doesn't own
+  that file, in either spelling. Propose the one-key edit and let the user apply it; a merge that
+  silences review on PRs they expected to be reviewed is worse than no rule at all. If both
+  spellings exist, stop and report rather than choosing one.
 - **Don't enable `depsFlow` without an explicit yes.** It grants a skill permission to merge PRs in
   this repo — the one setting in the config with real, irreversible blast radius. `false` is the
   correct value whenever there's any doubt.

@@ -98,7 +98,9 @@ will try to invoke a missing skill"). Cross-check against the plugins actually i
 - **The CodeRabbit ignore rule is wired up** — the consuming half of `prLabel`. Check this **only**
   when `config.review.bots` includes `coderabbitai[bot]` — the key is optional and its default
   includes it, so treat absent as included — and a `.coderabbit.yaml` (or `.coderabbit.yml`) exists
-  in the repo root. Read `reviews.auto_review.labels`; if it does not
+  in the repo root. If **both** spellings exist, report **WARN** naming both paths and check neither
+  — which one CodeRabbit honors isn't knowable from here, so a verdict read off the wrong file is
+  worse than no verdict. Otherwise read `reviews.auto_review.labels`; if it does not
   contain a negative match for `prLabel` (`!auto:pr` by default) → **WARN**: "automated PRs carry
   `<prLabel>`, but CodeRabbit isn't configured to skip them — it reviews every pipeline PR alongside
   auto-dev's own review." The fix is the `labels: ["!<prLabel>"]` key; with `--fix`, propose the edit
