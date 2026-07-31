@@ -129,7 +129,7 @@ per-repo pointer. The canonical `config-schema.md` now has a "User-level config"
 
 | Skill | Status | Source | What it does |
 | --- | --- | --- | --- |
-| ~~`worklog`~~ | ✅ **Shipped** | was `worklog` (global) | Summarize the day's shipped work into the user's Obsidian vault: session-summary note + project-hub link + daily-note line, from merged PRs enriched by the live session. Vault from user-level config; optional per-repo `journal` pointer maps the repo to its vault project. Append-safe (never clobbers prior entries). |
+| ~~`worklog`~~ | ✅ **Shipped** | was `worklog` (global) | Summarize the day's shipped work into the user's Obsidian vault: session-summary note + project-hub link + daily-note line, from merged PRs enriched by the live session. Vault from user-level config; optional per-repo `journal` pointer maps the repo to its vault project. Append-safe (never clobbers content it didn't write; its own daily-note line is rewritten in place on re-runs). |
 | `weekly-review` | ✨ Net-new | — | Roll the week's worklogs/PRs into a higher-level review note. (Speculative sibling.) |
 | `decision-log` | ✨ Net-new | — | Capture notable technical decisions as dated ADR-style notes. (Speculative sibling.) |
 

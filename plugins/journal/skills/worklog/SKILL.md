@@ -20,8 +20,11 @@ they work in. So its core setting — the vault — lives in a **user-level** co
 
 This is a hard requirement: the user runs Claude in **both the terminal and the desktop app**,
 sometimes for the same project on the same day. The skill must **only ever add to** the daily note
-and the project hub note — never replace, reorder, or drop existing content. Losing a prior entry is
-the worst possible outcome.
+and the project hub note — never replace, reorder, or drop content it didn't write this run. The
+single sanctioned exception is the skill's **own daily-note line for this (project, day)**: a re-run
+rewrites exactly that one line in place (rule 4 below; format in step 3). Everything else in the
+file — other projects' lines, meetings, personal notes — is untouchable. Losing a prior entry is the
+worst possible outcome.
 
 Rules that make this safe:
 
@@ -38,9 +41,12 @@ Rules that make this safe:
    project folder for an existing `Dev Log <today's date>*.md`. If one exists, **append** new items
    into its sections via `Edit` rather than creating a second note. Only `Write` a new note when none
    exists for today.
-4. **De-dupe, don't double-up.** If the daily note already has a line for this project today, update
-   that line in place instead of adding a second. If the hub already links today's note, don't add
-   the link twice.
+4. **De-dupe, don't double-up.** If the daily note already has a line for this project today,
+   rewrite that one line in place (re-summarizing the whole day — step 3's rules) instead of adding
+   a second. Scope the rewrite to exactly that line: use the full existing bullet as the `Edit`
+   anchor, so if another run changed it since your read, the edit *fails to match and you stop* —
+   re-read and retry — rather than silently clobbering the newer line. If the hub already links
+   today's note, don't add the link twice.
 5. **Honest about the limit.** Targeted inserts + read-right-before-write make *sequential* runs
    (terminal now, app later) fully safe. Two *truly simultaneous* runs can still race, and Obsidian's
    own sync can create conflict copies if two devices edit at once. There's no file locking here; if
