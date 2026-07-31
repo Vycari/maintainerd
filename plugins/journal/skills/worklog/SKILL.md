@@ -42,7 +42,11 @@ Rules that make this safe:
    into its sections via `Edit` rather than creating a second note. Only `Write` a new note when none
    exists for today.
 4. **De-dupe, don't double-up.** Count the daily note's existing bullets for this project first.
-   Zero → insert the new line. Exactly one → rewrite that line in place (re-summarizing the whole
+   Zero → insert the new line, then **re-read and re-count**: there's no file locking (rule 5), so
+   a concurrent run may have inserted between your read and your edit. If two bullets now exist,
+   both are same-day worklog output for this project — merge them into one line covering both (the
+   same rewrite a re-run would do); anything else unexpected, stop and tell the user.
+   Exactly one → rewrite that line in place (re-summarizing the whole
    day — step 3's rules) instead of adding a second. Two or more (a prior race or manual edit
    already broke the one-bullet contract) → stop and ask the user which to keep rather than
    silently updating one and leaving the rest. Scope any rewrite to exactly its line: use the full
