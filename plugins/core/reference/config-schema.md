@@ -255,9 +255,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `{date}` in `commitSubject` is replaced with the ISO date.
 - `autoDev.*` — the `auto:*` state-machine label names, the bot comment `marker`, the branch
   prefix, the labels that exclude an issue from auto-building, and whether PRs open as drafts.
-  `prLabel` *(default `auto:pr`)* is stamped on **every** PR the pipeline opens so external tooling
-  (e.g. a CodeRabbit config) can single out automated PRs — it's deliberately separate from the
-  generic `labels.automated` the audits share. `fallbackReviewMinutes` *(default `60`)* is how long
+  `prLabel` *(default `auto:pr`)* is stamped on **every** PR the pipeline opens — at creation time,
+  since review bots fire on the `opened` webhook — so external tooling can single out automated PRs
+  and leave them to auto-dev's own review loop. In CodeRabbit that's a negative match in
+  `.coderabbit.yaml`: `reviews.auto_review.labels: ["!auto:pr"]`. It's deliberately separate from the
+  generic `labels.automated` the audits share, so silencing automated *development* PRs doesn't also
+  silence review on audit PRs. `fallbackReviewMinutes` *(default `60`)* is how long
   a ready, CI-green automated PR may sit with no review activity before auto-dev posts a one-per-PR
   **fallback self-review** to fill the gap when CodeRabbit is rate-limited. `maxPrsInFlight`
   *(default `1`)* caps how many automated PRs may be open at once — `1` is the classic single-PR
