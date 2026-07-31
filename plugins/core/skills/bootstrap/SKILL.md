@@ -106,6 +106,13 @@ create-pr then uses its built-in Summary / Changes / Checklist fallback). Recomm
 the repo-ops and auto-dev skills write better PR bodies against a template than against the
 fallback.
 
+If `autoDev.enabled` is `true` **and** `review.bots` includes `coderabbitai[bot]` (the key is
+optional and its default includes it, so treat absent as included), also ask whether
+CodeRabbit should **skip the pipeline's own PRs** (step 9 writes the config). Recommend yes: auto-dev
+reviews its own PRs and the maintainer still reviews before merge, so a third review is noise and
+burns CodeRabbit's rate limit that human-authored PRs need. Say plainly that this only changes
+CodeRabbit's behavior — it doesn't reduce what auto-dev checks.
+
 Also determine the **release** model. If the repo ships versioned releases, detect the version-bump
 mechanism (`npm version` + a `postversion` push hook, `hatch version`, `bump2version`, a manual
 tag…) and the notes file, and write the `release` section. If it ships continuously (deploys from
@@ -230,16 +237,55 @@ Ask before creating; don't mutate the repo's label set unprompted. Don't create 
 labels "just in case" — an unused label is a standing hint that automation is running here when it
 isn't, and `doctor` will flag the label as missing the moment the feature *is* enabled.
 
-### 9. Report
+### 9. Silence external review on automated PRs (if agreed)
+
+Creating `autoDev.prLabel` in step 8 only puts a label on the pipeline's PRs — nothing acts on it
+until the review tooling is told to. This step closes that loop. Skip it entirely unless the user
+opted in during step 5.
+
+**Never overwrite an existing CodeRabbit config.** It is CodeRabbit's file, not maintainerd's, and a
+tuned one represents work you can't reconstruct. Check both spellings — `.coderabbit.yaml` and
+`.coderabbit.yml` — and branch:
+
+- **Neither exists** → write the minimal file, using the name from `autoDev.prLabel` (not the literal
+  below, if they customized it):
+
+  ```yaml
+  # Let the auto-dev pipeline review its own PRs; CodeRabbit reviews everything else.
+  reviews:
+    auto_review:
+      labels: ["!auto:pr"]
+  ```
+
+- **One exists** → read it and show the user the specific edit rather than making it blind:
+  - _No `reviews.auto_review.labels` key_ → propose adding it with `["!<prLabel>"]`, print the
+    resulting snippet, and apply only on a yes.
+  - _The key exists_ → **do not append silently.** CodeRabbit ANDs the matchers, so adding a negative
+    match to an existing list narrows which PRs get reviewed, and combined with an existing positive
+    match it can silence far more than intended. Print the current value and the proposed value side
+    by side, explain what the combination will and won't review, and let the user decide.
+  - _It already carries `!<prLabel>`_ → nothing to do; report it as already configured.
+
+If the user declines, that's a normal outcome — say so and move on. CodeRabbit can also be
+configured from its web dashboard instead of a repo file, so a repo with no `.coderabbit.yaml` is
+not evidence of anything broken; don't press the point.
+
+This step is CodeRabbit-specific because the negative-label matcher is. Other review bots in
+`review.bots` (e.g. `gemini-code-assist[bot]`) have their own mechanisms — don't guess at their
+config format; mention in the report that they were left alone.
+
+### 10. Report
 
 Tell the user, concisely:
 - The path of the config written and that it validated.
 - The detected values for `repo`, `defaultBranch`, `language`, and the command block (the
   high-blast-radius ones).
 - Which guideline files were created vs left alone, and that **`invariants.md` needs human review**.
-- Whether labels / PR template were created or skipped.
+- Whether labels / PR template were created or skipped, and whether a CodeRabbit ignore rule was
+  written (and that any other review bot was left alone).
 - The reminder to **commit `.claude/maintainerd.json` and `.claude/guidelines/`** so scheduled
-  cloud agents pick them up.
+  cloud agents pick them up — plus `.coderabbit.yaml` if step 9 wrote one: CodeRabbit reads it from
+  the branch, so an uncommitted rule silences nothing.
 
 ## What not to do
 
@@ -252,6 +298,9 @@ Tell the user, concisely:
   actually installed, or `daily-update` will try to run a missing skill.
 - **Don't create labels or a PR template without asking.** These mutate the repo's GitHub/file
   state; confirm first.
+- **Don't rewrite an existing `.coderabbit.yaml`.** Maintainerd doesn't own that file. Propose the
+  one-key edit and let the user apply it; a merge that silences review on PRs they expected to be
+  reviewed is worse than no rule at all.
 - **Don't enable `depsFlow` without an explicit yes.** It grants a skill permission to merge PRs in
   this repo — the one setting in the config with real, irreversible blast radius. `false` is the
   correct value whenever there's any doubt.
