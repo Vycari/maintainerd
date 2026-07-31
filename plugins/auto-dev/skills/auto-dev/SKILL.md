@@ -257,6 +257,17 @@ missing). A tick opens at most a few PRs, so that single call covers all of them
 open the PR **without** the label and record in the exit report that the PR is unlabeled and why.
 Never create the label yourself (invariant 5) — `/doctor` reports it, `/bootstrap` creates it.
 
+**Why proceed unlabeled rather than refuse to open the PR?** Because refusing strands the build. The
+commits are already pushed, and a bare pushed branch is invisible to the next tick — its discovery
+queries only look at PRs and issues. So a tick that stopped here would leave the work unreachable,
+and the following tick would reclaim the issue as an orphan and rebuild it from scratch, repeating
+for as long as the label is absent. The pipeline can't fix the cause itself (invariant 5 forbids
+creating labels), so the stop would persist until a human intervened, with each tick discarding a
+build. The unlabeled PR is the strictly better failure: the work survives, the exit report names the
+problem, `/doctor` FAILs on the missing label, and step 0's re-stamp labels the PR on the first tick
+after the label exists. The only cost is that external tooling may review that one PR — which is
+simply the behavior from before this label existed, not a regression.
+
 ### Step 4 — Triage pass (bounded)
 
 Walk eligible open issues oldest→newest. Act on at most **5** issues per tick (count only issues where you actually post/relabel; skipped issues are free). To stay cheap on idle ticks, only deep-read an issue's thread when it might have changed: a state-labelled issue whose `updatedAt` is no newer than the skill's own last marker comment on it has nothing new — skip it without re-reading (for a Parked issue, the baseline is the park-time label event, not a marker comment). For each issue that needs a look, read the full thread, then branch on its current state:
