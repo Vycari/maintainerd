@@ -199,8 +199,8 @@ Follow **Append-safety** for all of these — glob/Read first, `Edit` (insert) i
      project today?", not a list of what happened: lead with the day's shape ("11 PRs — mini-app
      nav, task destinations, parked-worker teardown"), not a PR-by-PR enumeration. A day-level PR
      count is fine as an opener; at most two or three PR/issue references (`#123`), and only if
-     they carry the headline. No decisions, gotchas, stats, or narrative — those all live in the
-     session note.
+     they carry the headline. No decisions, gotchas, narrative, or metrics beyond that opening
+     count — those all live in the session note.
    - **Re-runs rewrite, they don't accrete.** When a later run updates the line (an evening session
      extending a morning entry), *re-summarize the whole day into a fresh single line* — never
      append clauses, "later:"/"evening:" segments, or extra bullets to the existing line. The line
