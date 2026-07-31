@@ -20,8 +20,11 @@ they work in. So its core setting — the vault — lives in a **user-level** co
 
 This is a hard requirement: the user runs Claude in **both the terminal and the desktop app**,
 sometimes for the same project on the same day. The skill must **only ever add to** the daily note
-and the project hub note — never replace, reorder, or drop existing content. Losing a prior entry is
-the worst possible outcome.
+and the project hub note — never replace, reorder, or drop content it didn't write this run. The
+single sanctioned exception is the skill's **own daily-note line for this (project, day)**: a re-run
+rewrites exactly that one line in place (rule 4 below; format in step 3). Everything else in the
+file — other projects' lines, meetings, personal notes — is untouchable. Losing a prior entry is the
+worst possible outcome.
 
 Rules that make this safe:
 
@@ -38,9 +41,18 @@ Rules that make this safe:
    project folder for an existing `Dev Log <today's date>*.md`. If one exists, **append** new items
    into its sections via `Edit` rather than creating a second note. Only `Write` a new note when none
    exists for today.
-4. **De-dupe, don't double-up.** If the daily note already has a line for this project today, update
-   that line in place instead of adding a second. If the hub already links today's note, don't add
-   the link twice.
+4. **De-dupe, don't double-up.** Count the daily note's existing bullets for this project first.
+   Zero → insert the new line, then **re-read and re-count**: there's no file locking (rule 5), so
+   a concurrent run may have inserted between your read and your edit. If two bullets now exist,
+   both are same-day worklog output for this project — merge them into one line covering both (the
+   same rewrite a re-run would do); anything else unexpected, stop and tell the user.
+   Exactly one → rewrite that line in place (re-summarizing the whole
+   day — step 3's rules) instead of adding a second. Two or more (a prior race or manual edit
+   already broke the one-bullet contract) → stop and ask the user which to keep rather than
+   silently updating one and leaving the rest. Scope any rewrite to exactly its line: use the full
+   existing bullet as the `Edit` anchor, so if another run changed it since your read, the edit
+   *fails to match and you stop* — re-read and retry — rather than silently clobbering the newer
+   line. If the hub already links today's note, don't add the link twice.
 5. **Honest about the limit.** Targeted inserts + read-right-before-write make *sequential* runs
    (terminal now, app later) fully safe. Two *truly simultaneous* runs can still race, and Obsidian's
    own sync can create conflict copies if two devices edit at once. There's no file locking here; if
@@ -175,19 +187,42 @@ Follow **Append-safety** for all of these — glob/Read first, `Edit` (insert) i
 3. **Daily-note line** — compute the path from the daily-notes config + current date.
    - **Missing** → `Write` it from the configured `template` (fill date tokens for the current date),
      or a minimal note with the date heading and a `## Notes` section.
-   - **Exists** → `Read`, then `Edit` to insert `- **<Project>**: <one-line summary> — [[<note
-     basename>]]` into the notes section. If a line for this project + today is already there, update
-     it in place instead of adding a second.
+   - **Exists** → `Read`, then `Edit` to insert the project's single bullet (format below) into the
+     notes section. If exactly one line for this project + today is already there, update it in
+     place instead of adding a second; if more than one, stop and ask (Append-safety rule 4).
+
+   **The daily-note entry is exactly one bullet — hard rules.** The daily note is a skimmable index
+   of the day; the session note is where the detail lives, one click away through the wikilink.
+
+   - **One top-level bullet per project per day, and nothing under it.** No sub-bullets, no nested
+     lists, no continuation lines. If something feels too important to leave out of the daily note,
+     it belongs in the session note's Shipped or Decisions section — that's what the link is for.
+   - **Format:** `- **<Project>** — <headline> ([[<note basename>]])`
+   - **The headline is one short line** — roughly a dozen words, ~120 characters max before the
+     link; a sentence or a compact fragment both work. It's the answer to "what happened on this
+     project today?", not a list of what happened: lead with the day's shape ("11 PRs — mini-app
+     nav, task destinations, parked-worker teardown"), not a PR-by-PR enumeration. A day-level PR
+     count is fine as an opener; at most two or three PR/issue references (`#123`), and only if
+     they carry the headline. No decisions, gotchas, narrative, or metrics beyond that opening
+     count — those all live in the session note.
+   - **Re-runs rewrite, they don't accrete.** When a later run updates the line (an evening session
+     extending a morning entry), *re-summarize the whole day into a fresh single line* — never
+     append clauses, "later:"/"evening:" segments, or extra bullets to the existing line. The line
+     should read the same whether it was written once at 6pm or updated five times.
 
 ### 4. Report
 
 Tell the user exactly what was written, with vault-relative paths: the new/updated session note, the
-hub link, and the daily-note line (show that one-line entry verbatim so they can eyeball it). Don't
-paste the whole session note back.
+hub link, and the daily-note line (show that one-line entry verbatim so they can eyeball it — if it
+doesn't fit on one line here, it's too long for the daily note too). Don't paste the whole session
+note back.
 
 ## Conventions
 
 - **One session note per (project, day).** Re-running extends it (found by globbing `Dev Log <date>*`).
+- **One bullet per (project, day) in the daily note — a one-line headline plus the wikilink,
+  never sub-bullets.** All depth goes in the session note. Re-runs rewrite the headline; they never
+  extend it.
 - **Never clobber.** `Edit`-insert into existing notes; reserve `Write` for brand-new files. Read
   right before editing. Preserve front-matter, headings, and existing bullets.
 - **Match the vault's voice.** Mirror heading levels, bullet vs. checkbox usage, and wikilink style
