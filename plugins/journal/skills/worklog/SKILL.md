@@ -41,12 +41,14 @@ Rules that make this safe:
    project folder for an existing `Dev Log <today's date>*.md`. If one exists, **append** new items
    into its sections via `Edit` rather than creating a second note. Only `Write` a new note when none
    exists for today.
-4. **De-dupe, don't double-up.** If the daily note already has a line for this project today,
-   rewrite that one line in place (re-summarizing the whole day — step 3's rules) instead of adding
-   a second. Scope the rewrite to exactly that line: use the full existing bullet as the `Edit`
-   anchor, so if another run changed it since your read, the edit *fails to match and you stop* —
-   re-read and retry — rather than silently clobbering the newer line. If the hub already links
-   today's note, don't add the link twice.
+4. **De-dupe, don't double-up.** Count the daily note's existing bullets for this project first.
+   Zero → insert the new line. Exactly one → rewrite that line in place (re-summarizing the whole
+   day — step 3's rules) instead of adding a second. Two or more (a prior race or manual edit
+   already broke the one-bullet contract) → stop and ask the user which to keep rather than
+   silently updating one and leaving the rest. Scope any rewrite to exactly its line: use the full
+   existing bullet as the `Edit` anchor, so if another run changed it since your read, the edit
+   *fails to match and you stop* — re-read and retry — rather than silently clobbering the newer
+   line. If the hub already links today's note, don't add the link twice.
 5. **Honest about the limit.** Targeted inserts + read-right-before-write make *sequential* runs
    (terminal now, app later) fully safe. Two *truly simultaneous* runs can still race, and Obsidian's
    own sync can create conflict copies if two devices edit at once. There's no file locking here; if
@@ -182,8 +184,8 @@ Follow **Append-safety** for all of these — glob/Read first, `Edit` (insert) i
    - **Missing** → `Write` it from the configured `template` (fill date tokens for the current date),
      or a minimal note with the date heading and a `## Notes` section.
    - **Exists** → `Read`, then `Edit` to insert the project's single bullet (format below) into the
-     notes section. If a line for this project + today is already there, update it in place instead
-     of adding a second.
+     notes section. If exactly one line for this project + today is already there, update it in
+     place instead of adding a second; if more than one, stop and ask (Append-safety rule 4).
 
    **The daily-note entry is exactly one bullet — hard rules.** The daily note is a skimmable index
    of the day; the session note is where the detail lives, one click away through the wikilink.
