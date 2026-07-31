@@ -186,13 +186,15 @@ Follow **Append-safety** for all of these — glob/Read first, `Edit` (insert) i
      lists, no continuation lines. If something feels too important to leave out of the daily note,
      it belongs in the session note's Shipped or Decisions section — that's what the link is for.
    - **Format:** `- **<Project>** — <headline> ([[<note basename>]])`
-   - **The headline is one short sentence** — roughly a dozen words, ~120 characters max before the
-     link. It's the answer to "what happened on this project today?", not a list of what happened:
-     lead with the day's shape ("11 PRs — mini-app nav, task destinations, parked-worker teardown"),
-     not a PR-by-PR enumeration. At most two or three `#numbers`, and only if they carry the
-     headline; no decisions, gotchas, metrics, or narrative — those all live in the session note.
+   - **The headline is one short line** — roughly a dozen words, ~120 characters max before the
+     link; a sentence or a compact fragment both work. It's the answer to "what happened on this
+     project today?", not a list of what happened: lead with the day's shape ("11 PRs — mini-app
+     nav, task destinations, parked-worker teardown"), not a PR-by-PR enumeration. A day-level PR
+     count is fine as an opener; at most two or three PR/issue references (`#123`), and only if
+     they carry the headline. No decisions, gotchas, stats, or narrative — those all live in the
+     session note.
    - **Re-runs rewrite, they don't accrete.** When a later run updates the line (an evening session
-     extending a morning entry), *re-summarize the whole day into a fresh single sentence* — never
+     extending a morning entry), *re-summarize the whole day into a fresh single line* — never
      append clauses, "later:"/"evening:" segments, or extra bullets to the existing line. The line
      should read the same whether it was written once at 6pm or updated five times.
 
@@ -206,8 +208,8 @@ note back.
 ## Conventions
 
 - **One session note per (project, day).** Re-running extends it (found by globbing `Dev Log <date>*`).
-- **One bullet per (project, day) in the daily note — a single-sentence headline plus the wikilink,
-  never sub-bullets.** All depth goes in the session note. Re-runs rewrite the sentence; they never
+- **One bullet per (project, day) in the daily note — a one-line headline plus the wikilink,
+  never sub-bullets.** All depth goes in the session note. Re-runs rewrite the headline; they never
   extend it.
 - **Never clobber.** `Edit`-insert into existing notes; reserve `Write` for brand-new files. Read
   right before editing. Preserve front-matter, headings, and existing bullets.
