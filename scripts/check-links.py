@@ -27,17 +27,38 @@ TITLE = re.compile(r'^(\S+)\s+["\'(].*$')
 REMOTE = re.compile(r"^(?://|[A-Za-z][A-Za-z0-9+.\-]*:)")
 # Any linked file, not just markdown — the schema links its example .json configs as siblings.
 CHECKED = (".md", ".json", ".sh", ".py", ".yml", ".yaml")
+# CommonMark lets a destination escape ASCII punctuation: `foo\).md` is the file `foo).md`.
+UNESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+
+
+def split_unescaped(text, delimiters):
+    """Return `text` up to the first *unescaped* delimiter, escapes still intact."""
+    out = []
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "\\" and i + 1 < len(text):
+            out.append(char)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if char in delimiters:
+            break
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 def destinations(line):
     """Yield raw destinations from `](...)` spans.
 
-    Hand-scanned rather than regexed because the two forms a regex gets wrong —
-    `](<path with spaces.md>)` and `](foo(1).md)` — both fail by *truncating* the
-    destination, and a truncated target no longer ends in a checked extension, so it
-    is silently dropped instead of reported. A dropped link reads exactly like a
-    passing one, which is the failure this whole script exists to prevent.
+    Hand-scanned rather than regexed because the forms a regex gets wrong —
+    `](<path with spaces.md>)`, `](foo(1).md)`, `](foo\\).md)` — all fail by
+    *truncating* the destination, and a truncated target no longer ends in a checked
+    extension, so it is silently dropped instead of reported. A dropped link reads
+    exactly like a passing one, which is the failure this whole script exists to
+    prevent. Escapes are preserved here and decoded once delimiters are stripped.
     """
     i = 0
     while True:
@@ -46,16 +67,27 @@ def destinations(line):
             return
         j = start + 2
         if j < len(line) and line[j] == "<":  # angle-bracket form: ](<dest>)
-            end = line.find(">", j + 1)
-            if end < 0:
+            end, buf = j + 1, []
+            while end < len(line) and line[end] != ">":
+                if line[end] == "\\" and end + 1 < len(line):
+                    buf.append(line[end])
+                    end += 1
+                buf.append(line[end])
+                end += 1
+            if end >= len(line):  # unterminated — not a link span
                 i = j
                 continue
-            yield line[j + 1 : end]
+            yield "".join(buf)
             i = end + 1
             continue
         depth, buf = 1, []  # bare form: scan to the matching ')', allowing nested pairs
         while j < len(line):
             char = line[j]
+            if char == "\\" and j + 1 < len(line):  # an escaped ')' is part of the path
+                buf.append(char)
+                buf.append(line[j + 1])
+                j += 2
+                continue
             if char == "(":
                 depth += 1
             elif char == ")":
@@ -79,7 +111,9 @@ def links(path):
                 title = TITLE.match(target)
                 if title:
                     target = title.group(1)
-                target = target.split("#", 1)[0].split("?", 1)[0]
+                # Only an *unescaped* '#'/'?' is a fragment/query delimiter; `foo\#a.md`
+                # is a filename. Decode escapes afterwards, to the real path on disk.
+                target = UNESCAPE.sub(r"\1", split_unescaped(target, "#?"))
                 if not target or REMOTE.match(target):
                     continue
                 if target.endswith(CHECKED):
@@ -137,6 +171,10 @@ PARSER_CASES = [
     ("[a](<config-schema.md>)", "config-schema.md"),
     ("[a](<path with spaces.md>)", "path with spaces.md"),
     ("[a](foo(1).md)", "foo(1).md"),
+    (r"[a](foo\).md)", "foo).md"),
+    (r"[a](foo\#archive.md)", "foo#archive.md"),
+    (r"[a](foo\?draft.md)", "foo?draft.md"),
+    (r"[a](<foo\>bar.md>)", "foo>bar.md"),
     ("[a](../../references/model-tiers.md#tiers)", "../../references/model-tiers.md"),
     ("[a](https://example.com/x.md)", None),
     ("[a](//example.test/file.py)", None),
