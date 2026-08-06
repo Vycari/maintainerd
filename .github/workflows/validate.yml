@@ -1,0 +1,53 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Manifests are valid JSON, and match the marketplace
+        run: |
+          python3 - <<'EOF'
+          import json, sys, pathlib
+          mp = json.loads(pathlib.Path('.claude-plugin/marketplace.json').read_text())
+          fail = False
+          for entry in mp['plugins']:
+              src = entry['source'].lstrip('./')
+              manifest = pathlib.Path(src) / '.claude-plugin' / 'plugin.json'
+              if not manifest.exists():
+                  print(f"FAIL {entry['name']}: no manifest at {manifest}"); fail = True; continue
+              pj = json.loads(manifest.read_text())
+              if pj['name'] != entry['name']:
+                  print(f"FAIL {src}: manifest name {pj['name']!r} != marketplace {entry['name']!r}"); fail = True
+              if pj.get('version') != entry.get('version'):
+                  print(f"FAIL {entry['name']}: version {pj.get('version')!r} != marketplace {entry.get('version')!r}"); fail = True
+          sys.exit(1 if fail else 0)
+          EOF
+
+      - name: Every skill has frontmatter with name and description
+        run: |
+          python3 - <<'EOF'
+          import sys, pathlib, re
+          fail = False
+          for skill in pathlib.Path('plugins').glob('*/skills/*/SKILL.md'):
+              text = skill.read_text()
+              m = re.match(r'^---\n(.*?)\n---\n', text, re.S)
+              if not m:
+                  print(f"FAIL {skill}: no YAML frontmatter"); fail = True; continue
+              for field in ('name', 'description'):
+                  if not re.search(rf'^{field}:', m.group(1), re.M):
+                      print(f"FAIL {skill}: frontmatter missing {field}"); fail = True
+          sys.exit(1 if fail else 0)
+          EOF
+
+      - name: Vendored reference docs are in sync with the canonical
+        run: ./scripts/sync-references.sh --check
+
+      - name: Links resolve in both the source and installed layouts
+        run: python3 scripts/check-links.py
