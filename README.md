@@ -38,7 +38,7 @@ for config); the audits and repo-ops compose but don't require each other.
    ```bash
    claude plugin marketplace add allenhutchison/maintainerd
    # or, for local development:
-   claude plugin marketplace add /Users/allen/src/maintainerd
+   claude plugin marketplace add /path/to/your/checkout/maintainerd
    ```
 
 2. **Install the plugins you want**, starting with core:
@@ -111,12 +111,14 @@ plugin: a relative link that climbs out resolves in this source tree but not in 
 marketplace layout, which interposes a version segment and uses the plugin *name* rather than
 the source directory name —
 
-```
+```text
 source:     plugins/audits/skills/audit-tests/SKILL.md
 installed:  <cache>/maintainerd/audits/0.1.0/skills/audit-tests/SKILL.md
 ```
 
-— so `../../../core/reference/…` lands nowhere. Intra-plugin links are the one form that
+So a link like `../../../core/references/config-schema.md` resolves from the source path and
+lands nowhere from the installed one — it misses on both the extra version segment and the
+directory name (`maintainerd-core`, not `core`). Intra-plugin links are the one form that
 resolves identically in both layouts *and* in the clone-and-read path scheduled cloud routines
 use, so every skill links its own plugin's copy.
 

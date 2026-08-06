@@ -21,16 +21,28 @@ import sys
 import tempfile
 from glob import glob
 
+# Capture the whole destination, then strip decoration below. Matching the extension inline
+# would silently skip anything with an anchor, query, or title — `foo.md#section`,
+# `foo.md?raw=1`, `foo.md "Title"` — and a skipped link reads exactly like a passing one.
+LINK = re.compile(r"\]\(([^)]+)\)")
+TITLE = re.compile(r'^(\S+)\s+["\'(].*$')
 # Any linked file, not just markdown — the schema links its example .json configs as siblings.
-LINK = re.compile(r"\]\(([^)\s]+\.(?:md|json|sh|py|ya?ml))\)")
+CHECKED = (".md", ".json", ".sh", ".py", ".yml", ".yaml")
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 
 def links(path):
     with open(path, encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
-            for target in LINK.findall(line):
-                if not target.startswith(("http://", "https://", "#")):
+            for raw in LINK.findall(line):
+                target = raw.strip()
+                title = TITLE.match(target)
+                if title:
+                    target = title.group(1)
+                target = target.split("#", 1)[0].split("?", 1)[0]
+                if not target or target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                if target.endswith(CHECKED):
                     yield lineno, target
 
 

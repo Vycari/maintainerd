@@ -90,7 +90,7 @@
   },
   "researchRadar": {
     "themes": "derive",
-    "userAgent": "research-radar/1.0 (mailto:allen@hutchison.org)"
+    "userAgent": "research-radar/1.0 (mailto:you@example.com)"
   },
   "review": {
     "bots": ["coderabbitai[bot]", "gemini-code-assist[bot]"]
