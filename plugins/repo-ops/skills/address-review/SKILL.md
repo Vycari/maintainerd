@@ -25,7 +25,7 @@ Do **not** use it for:
 ## Load the repo config
 
 Before anything else, read `.claude/maintainerd.json` from the repo root (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)). If it does
+[`../../references/config-schema.md`](../../references/config-schema.md)). If it does
 not exist, **stop** and tell the user:
 
 > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.

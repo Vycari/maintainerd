@@ -1,0 +1,101 @@
+{
+  "repo": "allenhutchison/pepper",
+  "defaultBranch": "main",
+  "language": "python",
+  "commands": {
+    "format": "uv run ruff format --check",
+    "lint": "uv run ruff check",
+    "build": null,
+    "test": "uv run pytest",
+    "coverage": "uv run pytest --cov --cov-report=json",
+    "typecheck": null
+  },
+  "paths": {
+    "source": "src/pepper/",
+    "tests": "tests/",
+    "designDocs": ["planning/"],
+    "productDocs": ["README.md", "CLAUDE.md"],
+    "changelogDir": "planning/release-notes/",
+    "researchRadarDir": "planning/research-radar/",
+    "prTemplate": ".github/PULL_REQUEST_TEMPLATE.md",
+    "skillsDir": ".claude/skills/"
+  },
+  "guidelines": {
+    "coding": ".claude/guidelines/coding.md",
+    "testing": ".claude/guidelines/testing.md",
+    "invariants": ".claude/guidelines/invariants.md"
+  },
+  "labels": {
+    "architecture": "architecture",
+    "testQuality": "test-quality",
+    "security": "security",
+    "dependencies": "dependencies",
+    "automated": "automated"
+  },
+  "audits": {
+    "prCap": 3,
+    "issueCap": 5,
+    "testPrCap": 2,
+    "testIssueCap": 2,
+    "securityPrCap": 3,
+    "securityIssueCap": 5,
+    "depsPrCap": 3,
+    "depsIssueCap": 5,
+    "promoteThreshold": 3,
+    "promoteLookbackDays": 90
+  },
+  "models": {
+    "fast": "claude-haiku-4-5",
+    "capable": "claude-opus-4-8",
+    "default": "inherit"
+  },
+  "dailyUpdate": {
+    "subSkills": ["daily-changelog", "audit-design-docs"],
+    "branchPrefix": "daily-update-",
+    "commitSubject": "Daily update — {date}"
+  },
+  "autoDev": {
+    "enabled": false,
+    "branchPrefix": "auto/issue-",
+    "marker": "<!-- auto-dev -->",
+    "stateLabels": {
+      "needsInfo": "auto:needs-info",
+      "planned": "auto:planned",
+      "ready": "auto:ready",
+      "inProgress": "auto:in-progress",
+      "parked": "auto:parked",
+      "skip": "auto:skip"
+    },
+    "excludedLabels": ["epic", "question", "wontfix", "duplicate", "invalid"],
+    "openPrsAsDraft": true,
+    "prLabel": "auto:pr",
+    "fallbackReviewMinutes": 60,
+    "maxPrsInFlight": 1,
+    "orphanReclaimMinutes": 90
+  },
+  "depsFlow": {
+    "enabled": false,
+    "botLogins": ["dependabot[bot]"],
+    "marker": "<!-- deps-flow -->",
+    "autoMergeSemver": ["patch", "minor"],
+    "holdPackages": [],
+    "mergeMethod": "squash",
+    "requireApproval": false,
+    "maxMergesPerRun": 5,
+    "rebaseNudgeMinutes": 30,
+    "blockedLabel": "deps:blocked",
+    "drainPollMinutes": 5,
+    "drainMaxMinutes": 90
+  },
+  "researchRadar": {
+    "themes": "derive",
+    "userAgent": "research-radar/1.0 (mailto:allen@hutchison.org)"
+  },
+  "review": {
+    "bots": ["coderabbitai[bot]", "gemini-code-assist[bot]"]
+  },
+  "release": null,
+  "journal": {
+    "project": "Pepper"
+  }
+}

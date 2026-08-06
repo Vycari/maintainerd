@@ -18,7 +18,7 @@ let Dependabot rebase the rest → re-gate → merge again*, until nothing is le
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **STOP** and tell the user:
@@ -134,7 +134,7 @@ single-flight — the skill can't provide it alone, and doesn't pretend to.
 runs fine on the **`fast`** tier. The one judgment-heavy step is diagnosing a broken update — when
 subagent tooling is available, delegate *that step* to a **`capable`** subagent rather than up-tiering
 the whole routine; when it isn't, the diagnosis is only as good as the run's model, so say so in the
-issue's confidence line. See [`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+issue's confidence line. See [`../../references/model-tiers.md`](../../references/model-tiers.md).
 
 ## What "safe to merge" means
 

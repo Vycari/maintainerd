@@ -25,7 +25,7 @@ to regenerate X", "fill in `invariants.md`", "fix this key by hand".
 
 ## The check
 
-Read `.claude/maintainerd.json` and the schema (`../../reference/config-schema.md`) — the schema is
+Read `.claude/maintainerd.json` and the schema (`../../references/config-schema.md`) — the schema is
 the source of truth for what's valid. Then run every check below, collecting findings as
 **PASS / WARN / FAIL**:
 

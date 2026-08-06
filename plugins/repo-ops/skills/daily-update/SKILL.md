@@ -8,7 +8,7 @@ description: Run the repo's per-day housekeeping skills and bundle their output 
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **STOP** and tell the user:

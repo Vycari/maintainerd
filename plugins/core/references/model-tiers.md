@@ -56,8 +56,8 @@ Model ids change over time — check the current lineup with `/model` rather tha
 | `research-radar` | **capable** (or `mid`) | Deriving themes and curating relevance is judgment; the arXiv fetch/parse around it is cheap but can't be split from the same run. |
 | `daily-update` / `daily-changelog` | **mid**/**capable** | Changelog synthesis is moderate judgment — readable summaries, honest grouping. `fast` tends to produce thin, mechanical notes. |
 
-The **pattern-promotion** step (see [`../../audits/reference/pattern-promotion.md`](../../audits/reference/pattern-promotion.md))
-runs *inside* an audit, so it inherits that audit's tier — no separate choice.
+The **pattern-promotion** step (documented in `references/pattern-promotion.md` in the **audits**
+plugin) runs *inside* an audit, so it inherits that audit's tier — no separate choice.
 
 ## What not to do
 

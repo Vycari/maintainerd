@@ -8,7 +8,7 @@ description: Create a pull request for the current repository the right way — 
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **STOP** and tell the user:

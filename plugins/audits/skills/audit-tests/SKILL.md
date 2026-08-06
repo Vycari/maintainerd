@@ -15,7 +15,7 @@ Two properties make this skill safe to schedule several times a day:
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **STOP** and tell the user:
@@ -301,7 +301,7 @@ Before reporting, run the **pattern-promotion** check. If a finding this run is 
 human-gated issue proposing the pattern become a rule in `config.guidelines.testing` — or, if the
 rule already exists and keeps being violated, a **mechanical guard** (a lint rule / CI check) instead
 — rather than only fixing the instance again. Full mechanism, history queries, dedup marker, and template live in
-[`../../reference/pattern-promotion.md`](../../reference/pattern-promotion.md); this audit's
+[`../../references/pattern-promotion.md`](../../references/pattern-promotion.md); this audit's
 `<audit-name>` is `tests` and its branch prefix is `audit-tests-`. The proposal is **in addition to**
 the normal fix, does **not** count against the caps, and is capped at one per run. Never auto-edit the
 guideline — propose; the maintainer decides. **Silent-on-clean exception:** a run that files a
@@ -350,7 +350,7 @@ A healthy suite produces **0 findings on most runs** — that's the steady state
 
 Schedule this as its own slot (a few times a day is fine given the silent-on-clean + low-cap design), invoking it directly (`/audit-tests` or equivalent) — there is no autonomous-prompt variant. It is intentionally **separate** from both `daily-update` (which bundles its work into one PR; this skill opens discrete ones) and `audit-architecture` (which owns the source side). Running both audits is fine; they don't overlap and each dedups against its own label/branch prefix.
 
-**Model tier:** "is this mock decorative? is this assertion actually weak?" is judgment — schedule on **`capable`**, or on a **`mid`** rung if the repo defines one (this runs several times a day, so the cost trade is real). See [`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+**Model tier:** "is this mock decorative? is this assertion actually weak?" is judgment — schedule on **`capable`**, or on a **`mid`** rung if the repo defines one (this runs several times a day, so the cost trade is real). See [`../../references/model-tiers.md`](../../references/model-tiers.md).
 
 ## Related skills
 
@@ -359,4 +359,4 @@ Schedule this as its own slot (a few times a day is fine given the silent-on-cle
 - `code-review` — the on-demand reviewer for a specific diff; this skill is the scheduled, test-only sweep.
 - `audit-design-docs` / `audit-product-docs` — the doc-side audits; same FIX-FIRST, capped, dedup-aware shape, different surface.
 - `bootstrap` — generates the `.claude/maintainerd.json` and `config.guidelines.testing` this skill reads.
-- [`pattern-promotion.md`](../../reference/pattern-promotion.md) — the shared step-7 mechanism for proposing a recurring test-quality pattern become a rule in `config.guidelines.testing`.
+- [`pattern-promotion.md`](../../references/pattern-promotion.md) — the shared step-7 mechanism for proposing a recurring test-quality pattern become a rule in `config.guidelines.testing`.

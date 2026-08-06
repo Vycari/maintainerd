@@ -24,7 +24,7 @@ open work, one unit of work per finding. But security has two properties the oth
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **stop** and tell the user to run `/bootstrap`, then re-run. Don't guess.
@@ -157,7 +157,7 @@ issue proposing the pattern become a rule in `config.guidelines.invariants` / `c
 rather than only fixing the instance again. If the rule already exists and keeps being violated, the
 proposal should ask for a **mechanical guard** (a `semgrep`/`bandit` rule, a CI grep) instead of more
 prose. Full mechanism, history queries, dedup marker, and template live in
-[`../../reference/pattern-promotion.md`](../../reference/pattern-promotion.md); this audit's
+[`../../references/pattern-promotion.md`](../../references/pattern-promotion.md); this audit's
 `<audit-name>` is `security` and its branch prefix is `sec-`. The proposal is **in addition to** the
 normal fix, does **not** count against the caps, and is capped at one per run. Never auto-edit the
 guideline — propose; the maintainer decides. (This never applies to committed-secret findings — those
@@ -226,4 +226,4 @@ against its own label/branch prefix, so running them together is fine.
 
 **Model tier:** taint paths and "don't 'fix' what you don't understand" are the highest-stakes
 judgment in the audit suite — schedule on the **`capable`** tier and never down-tier security to save
-tokens. See [`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+tokens. See [`../../references/model-tiers.md`](../../references/model-tiers.md).

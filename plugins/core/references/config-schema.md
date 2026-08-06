@@ -96,15 +96,15 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
     // Pattern promotion (audit-architecture/-tests/-security): when the same specific
     // pattern has been fixed/filed this many times within the lookback window, the audit
-    // files ONE human-gated issue proposing it become a guideline rule. See
-    // plugins/audits/reference/pattern-promotion.md. Both optional; defaults shown.
+    // files ONE human-gated issue proposing it become a guideline rule. See the audits
+    // plugin's references/pattern-promotion.md. Both optional; defaults shown.
     "promoteThreshold":    3,  // recurrences (incl. this run) before a promotion is proposed
     "promoteLookbackDays": 90  // how far back to count prior actioned instances
   },
 
   // ── Model tiers (optional) — bind tier labels to model ids for scheduled routines ──
   // Absent, or a tier set to "inherit" → no override (use the routine/session model).
-  // See plugins/core/reference/model-tiers.md for which routine wants which tier.
+  // See this plugin's references/model-tiers.md for which routine wants which tier.
   "models": {
     "fast":    "claude-haiku-4-5",  // mechanical, high-volume, low-judgment (e.g. audit-deps)
     "capable": "claude-opus-4-8",   // judgment, code generation, security (e.g. auto-dev, audit-security)
@@ -242,8 +242,8 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   audits (architecture/tests/security) have fixed the same specific pattern `promoteThreshold` times
   within the window, they file one human-gated issue proposing it become a guideline rule; if a rule
   already exists and keeps being violated, they instead propose the corresponding **mechanical guard**
-  (a lint/CI check). See
-  [`../../audits/reference/pattern-promotion.md`](../../audits/reference/pattern-promotion.md).
+  (a lint/CI check). The mechanism is documented in `references/pattern-promotion.md` in the
+  **audits** plugin, where the audits that run it can link it directly.
 - `models.*` *(optional)* — tier→model bindings. `fast` / `capable` (optionally a `mid` rung) map a
   tier to a concrete model id; **`default` is not a tier — it's the fallback key** used when a skill
   names no tier. Any of them set to `"inherit"` means no override. Declarative reference config: it

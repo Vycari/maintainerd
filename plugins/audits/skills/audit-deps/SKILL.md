@@ -18,7 +18,7 @@ open work. It has one deliberate exception to "one finding per PR" — see
 ## Load the repo config
 
 Read `.claude/maintainerd.json` (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)); if missing,
+[`../../references/config-schema.md`](../../references/config-schema.md)); if missing,
 stop and tell the user to run `/bootstrap`.
 
 Keys this skill uses:
@@ -192,4 +192,4 @@ same dependency set) and the code audits; each dedups against its own label/bran
 
 **Model tier:** this is the most mechanical audit (run analyzers, parse, batch bumps) — schedule it
 on the **`fast`** tier, escalating only a specific replacement/license decision to `capable` if
-needed. See [`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+needed. See [`../../references/model-tiers.md`](../../references/model-tiers.md).

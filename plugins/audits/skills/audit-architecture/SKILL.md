@@ -11,7 +11,7 @@ The skill is **deliberately conservative**: it caps the number of PRs and issues
 
 ## Load the repo config
 
-Before doing anything else, load the repo config (see [`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+Before doing anything else, load the repo config (see [`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. **If it does not exist, STOP** and tell the user:
@@ -299,7 +299,7 @@ become a rule in `config.guidelines.invariants` (load-bearing/structural pattern
 `config.guidelines.coding` (conventions like logger-not-`print`, typing style) — or, if the rule
 already exists and keeps being violated, a **mechanical guard** (a lint rule / CI check) instead —
 rather than only fixing the instance again. The full mechanism, history queries, dedup marker, and issue template live
-in [`../../reference/pattern-promotion.md`](../../reference/pattern-promotion.md); this audit's
+in [`../../references/pattern-promotion.md`](../../references/pattern-promotion.md); this audit's
 `<audit-name>` is `architecture` and its branch prefix is `arch-`. This proposal is **in addition to**
 the normal fix, does **not** count against the PR/issue caps, and is capped at one per run. Never
 auto-edit the guideline file — propose; the maintainer decides.
@@ -381,4 +381,4 @@ This skill is **not** part of the `daily-update` meta-skill, because `daily-upda
 
 If the user is running short on `/schedule` slots and wants to combine with `daily-update`, the right consolidation is to have this skill run *first*, produce its PRs/issues, and then let `daily-update` run its own one-PR sweep on top — but they remain logically separate runs from the maintainer's point of view.
 
-**Model tier:** DRY/abstraction judgment, invariant drift, and PR-vs-issue routing are judgment-heavy — schedule this on the **`capable`** tier (a smaller model mis-routes and over-files). See [`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+**Model tier:** DRY/abstraction judgment, invariant drift, and PR-vs-issue routing are judgment-heavy — schedule this on the **`capable`** tier (a smaller model mis-routes and over-files). See [`../../references/model-tiers.md`](../../references/model-tiers.md).

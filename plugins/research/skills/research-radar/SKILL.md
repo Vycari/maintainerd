@@ -27,7 +27,7 @@ matters to *us*" — a subsystem it informs, a problem we're fighting, an open i
 ## Load the repo config
 
 Before anything else, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **STOP** and tell the user:
@@ -268,7 +268,7 @@ later, mint a `weekly-update` meta-skill on the `daily-update` pattern and move 
 
 **Model tier:** deriving themes and curating relevance is judgment — schedule on **`capable`** (or a
 **`mid`** rung if defined); the arXiv fetch/parse is cheap but can't be split from the same run. See
-[`../../../core/reference/model-tiers.md`](../../../core/reference/model-tiers.md).
+[`../../references/model-tiers.md`](../../references/model-tiers.md).
 
 ## Related skills
 

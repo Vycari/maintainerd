@@ -9,7 +9,7 @@ This skill writes the **config contract** that every other Maintainerd skill rea
 runs, the repo has:
 
 - `.claude/maintainerd.json` — structured config (schema in
-  [`../../reference/config-schema.md`](../../reference/config-schema.md)).
+  [`../../references/config-schema.md`](../../references/config-schema.md)).
 - `.claude/guidelines/coding.md`, `testing.md`, `invariants.md` — free-form rule files the audits
   and code-review read.
 
@@ -17,7 +17,7 @@ The goal is a config that's *correct on the first read* — detect everything yo
 the user only about what's genuinely ambiguous, and be honest in the final report about what still
 needs human judgment (especially `invariants.md`).
 
-Read the schema reference first: [`../../reference/config-schema.md`](../../reference/config-schema.md).
+Read the schema reference first: [`../../references/config-schema.md`](../../references/config-schema.md).
 Every key you write must match it.
 
 ## Workflow
@@ -122,7 +122,7 @@ in doubt, ask.
 Defaults to apply without asking (state them in the report):
 - `labels`: `architecture` / `test-quality` / `security` / `dependencies` / `automated`.
 - `audits`: caps `3 / 5 / 2 / 2 / 3 / 5 / 3 / 5`; pattern promotion `promoteThreshold` 3, `promoteLookbackDays` 90.
-- `models` *(optional)*: write the tier scaffold with every tier set to `"inherit"` (no behavior change until the maintainer binds `fast`/`capable` to real model ids — point them at [`../../reference/model-tiers.md`](../../reference/model-tiers.md)). Omitting the block entirely is equally valid.
+- `models` *(optional)*: write the tier scaffold with every tier set to `"inherit"` (no behavior change until the maintainer binds `fast`/`capable` to real model ids — point them at [`../../references/model-tiers.md`](../../references/model-tiers.md)). Omitting the block entirely is equally valid.
 - `autoDev` label names: the `auto:*` set from the schema.
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
 - `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.fallbackReviewMinutes`: `60`.

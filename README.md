@@ -57,7 +57,7 @@ for config); the audits and repo-ops compose but don't require each other.
    commands), confirms anything ambiguous with you, and writes:
 
    - `.claude/maintainerd.json` — the structured config (see
-     [`plugins/core/reference/config-schema.md`](plugins/core/reference/config-schema.md)).
+     [`plugins/core/references/config-schema.md`](plugins/core/references/config-schema.md)).
    - `.claude/guidelines/coding.md`, `testing.md`, `invariants.md` — starter guideline files
      seeded from your `CLAUDE.md`/`AGENTS.md`, with TODOs for the repo-specific invariants the
      audits should enforce.
@@ -80,7 +80,7 @@ for config); the audits and repo-ops compose but don't require each other.
 
 Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the skill tells you to run
 `/bootstrap`. The canonical schema and the shared "read your repo config" preamble live in
-[`plugins/core/reference/config-schema.md`](plugins/core/reference/config-schema.md).
+[`plugins/core/references/config-schema.md`](plugins/core/references/config-schema.md).
 
 - **User-scoped exception.** A few settings are the same across every repo you work in (the `journal`
   category's Obsidian vault). Those live in a **user-level** `~/.claude/maintainerd.json`, read once
@@ -92,15 +92,41 @@ Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the sk
 ```
 maintainerd/
   .claude-plugin/marketplace.json
+  scripts/sync-references.sh
   plugins/
-    core/      .claude-plugin/plugin.json  skills/{bootstrap,doctor}/  reference/config-schema.md
+    core/      .claude-plugin/plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
     repo-ops/  .claude-plugin/plugin.json  skills/{create-pr,address-review,code-review,release,daily-changelog,daily-update}/
-    audits/    .claude-plugin/plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  reference/pattern-promotion.md
+    audits/    .claude-plugin/plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  skills/{research-radar}/
     journal/   .claude-plugin/plugin.json  skills/{worklog}/
     auto-dev/  .claude-plugin/plugin.json  skills/{create-issue,auto-dev,review-queue}/
     deps-flow/ .claude-plugin/plugin.json  skills/{dependabot}/
 ```
+
+### Shared reference docs
+
+`config-schema.md` and `model-tiers.md` are authored once in `plugins/core/references/` and
+**vendored into every plugin that links them**. A skill can only reach files inside its own
+plugin: a relative link that climbs out resolves in this source tree but not in an installed
+marketplace layout, which interposes a version segment and uses the plugin *name* rather than
+the source directory name —
+
+```
+source:     plugins/audits/skills/audit-tests/SKILL.md
+installed:  <cache>/maintainerd/audits/0.1.0/skills/audit-tests/SKILL.md
+```
+
+— so `../../../core/reference/…` lands nowhere. Intra-plugin links are the one form that
+resolves identically in both layouts *and* in the clone-and-read path scheduled cloud routines
+use, so every skill links its own plugin's copy.
+
+Edit the canonical file in `plugins/core/references/`, then run:
+
+```bash
+./scripts/sync-references.sh
+```
+
+The copies carry a generated-file banner and CI fails if they drift.
 
 ## Roadmap
 

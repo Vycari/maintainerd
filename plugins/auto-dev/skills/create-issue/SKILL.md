@@ -18,7 +18,7 @@ useful on its own even where auto-dev isn't enabled: a well-scoped issue is wort
 ## Load the repo config
 
 Read `.claude/maintainerd.json` (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)); if missing,
+[`../../references/config-schema.md`](../../references/config-schema.md)); if missing,
 stop and tell the user to run `/bootstrap`.
 
 Keys this skill uses:
