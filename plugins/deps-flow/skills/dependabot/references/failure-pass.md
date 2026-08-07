@@ -79,9 +79,13 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
    `config.depsFlow.blockedLabel` exists — by **exact name**, via the label endpoint:
 
    ```bash
-   # Read the HTTP status, don't just test the exit code. URL-encode the name
-   # if it contains spaces or slashes (" " -> %20, "/" -> %2F).
-   gh api "repos/$REPO/labels/<config.depsFlow.blockedLabel>" --include --silent 2>&1 | head -1
+   # Read the HTTP status, don't just test the exit code. Percent-encode the WHOLE label as one
+   # path segment first — a raw '#' starts a fragment, '?' starts a query, and '%' has escape
+   # semantics, so any of them silently truncates the URL and returns 404 for a label that exists:
+   #   " " -> %20   "/" -> %2F   "#" -> %23   "?" -> %3F   "%" -> %25
+   LABEL_ENC=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+     "<config.depsFlow.blockedLabel>")
+   gh api "repos/$REPO/labels/$LABEL_ENC" --include --silent 2>&1 | head -1
    ```
 
    Three outcomes, and they are **not** two:
