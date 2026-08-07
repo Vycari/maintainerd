@@ -5,7 +5,7 @@ description: Execute one tick of the autonomous issue-to-PR pipeline — triage 
 
 # Auto-dev: one tick of the issue-to-PR pipeline
 
-This skill automates the path from open issue to reviewed PR while keeping the maintainer in control of two gates: **plan approval** (nothing is built without an approved plan) and **merge** (the skill never merges — ever). It is designed to run unattended on a regular cadence (spaced comfortably longer than one build tick — see **Overlap & isolation**); each invocation is **one tick of a state machine**, does the single highest-priority piece of work, and exits. "Waiting" (for a reply, an approval, a review, a merge) is simply what happens between ticks.
+This skill automates the path from open issue to reviewed PR while keeping the maintainer in control of two gates: **plan approval** (nothing is built without an approved plan) and **merge** (the skill never merges — ever). It is designed to run unattended on a regular cadence (spaced comfortably longer than one build tick — see [`references/scheduling.md`](references/scheduling.md)); each invocation is **one tick of a state machine**, does the single highest-priority piece of work, and exits. "Waiting" (for a reply, an approval, a review, a merge) is simply what happens between ticks.
 
 ## Load the repo config
 
@@ -71,9 +71,8 @@ The bot comment **marker** is `config.autoDev.marker` (default `<!-- auto-dev --
 - **Interactive** (`/auto-dev` in a Claude Code session): identical decision logic, but under normal permission prompts and possibly in the maintainer's working checkout. **Never reset, clean, or stash an interactive checkout.** A dirty working tree or a branch other than `config.defaultBranch` does NOT block the GitHub-only steps (1-reconcile, 4-triage) — it only blocks steps that touch the working tree (2's CI/feedback fixes, 3-build). If a working-tree step is what the tick needs and the tree is dirty, report that and stop rather than stashing or resetting anything.
 - **Dry run** (`/auto-dev dry-run`, or the user asks for a dry run): execute the full tick logic **read-only**. Gather all state, decide exactly what a live tick would do, and print it as the exit report with every action prefixed `would:` — but post no comments, change no labels, create no branches/commits/PRs, and push nothing. This is the recommended first test and is always safe to run.
 
-**Overlap & isolation.** With no lockfile, the scheduled task must not overlap its own runs — set the cadence comfortably longer than a typical tick (a tick that builds can take many minutes). The label state machine is the backstop: work is claimed by swapping to In-progress, and the build step is gated on the count of open automated PRs being below `config.autoDev.maxPrsInFlight`. Two truly concurrent ticks could still race — both picking the same oldest Ready issue, or a fresh tick mistaking a build that's mid-flight (labelled In-progress but not yet PR'd) for a crashed orphan and rebuilding it. Step 1's **orphan age-gate** closes the second race (only reclaim a PR-less In-progress issue once its label event is older than `config.autoDev.orphanReclaimMinutes`); for the first, still don't schedule tighter than a build tick can finish. Each scheduled run is its own disposable sandbox, so runs never share a working tree.
-
-**Model tier.** A tick drafts plans, writes code, and adjudicates review feedback — schedule it on the **`capable`** tier; don't down-tier to save tokens on its triage pass, because the *same* run also builds (a skill can't switch its own model mid-run). The read-only **`dry-run`** mode does no judgment or code-gen and is safe on the **`fast`** tier. See [`../../references/model-tiers.md`](../../references/model-tiers.md).
+Scheduling this as a recurring task — cadence, overlap/race behavior, and which model tier to run
+on — is covered in [`references/scheduling.md`](references/scheduling.md).
 
 ## Label state machine
 
@@ -135,24 +134,17 @@ gh pr list --repo <config.repo> --state closed --limit 10 --json number,headRefN
 
 If `gh` auth or repo resolution fails, print the failure in the exit report and stop — do not attempt repairs.
 
-**Re-stamp the PR label (self-heal).** The label the pipeline puts on its own PRs
-(`config.autoDev.prLabel`, default `auto:pr`) is what lets external tooling skip them, so a PR that
-missed it is a PR that gets reviewed by tooling that was configured to leave it alone. Applying the
-label can miss for ordinary reasons — the label didn't exist when the PR was opened, a transient
-`gh` failure, a PR opened by a delegated skill — and nothing else would ever fix it. So on **every**
-tick, using the `labels` already fetched above (no extra API call), add the label to any open
-automated PR that lacks it:
+**Re-stamp the PR label (self-heal).** On **every** tick, using the `labels` already fetched above
+(no extra API call), add `config.autoDev.prLabel` to any open automated PR that lacks it:
 
 ```bash
 gh pr edit <N> --repo <config.repo> --add-label "<config.autoDev.prLabel>"
 ```
 
-This is a cheap no-op on the normal path, where every open automated PR already carries the label.
-It is a **repair**, not the primary application — the primary application happens at PR-creation
-time (step 3, item 7), because a label added minutes later doesn't retract a review that external
-tooling already started. If the edit fails because the label doesn't exist, note it once in the exit
-report and continue — never create the label yourself (invariant 5); `/doctor` reports it and
-`/bootstrap` creates it.
+A cheap no-op on the normal path. This is a **repair**; the primary application happens at
+PR-creation time (step 3, item 7). If the edit fails because the label doesn't exist, note it once in
+the exit report and continue — never create the label yourself (invariant 5). Rationale in
+[`references/pr-labeling.md`](references/pr-labeling.md).
 
 ### Step 1 — Reconcile finished work
 
@@ -183,23 +175,14 @@ If one or more automated PRs are open, pick the **single most-urgent** one to ad
 5. **Scope creep requested in review?** Acknowledge in a reply, file a follow-up issue (it enters this same pipeline untriaged), link it, and keep the PR scoped.
 6. **Nothing new** (no new comments, CI green, all threads answered): this PR is quiescent, waiting on the maintainer's review or merge — *unless it qualifies for a fallback self-review*. Check the fallback conditions below; if they all hold, do the self-review this tick and stop. Otherwise it isn't this tick's work; note it in the exit report and, since advancing it produced nothing, **fall through to step 3 (build)** — which builds the next Ready issue if the in-flight count is below `config.autoDev.maxPrsInFlight`, or itself falls through to triage.
 
-**Fallback self-review** (when CodeRabbit can't keep up): CodeRabbit normally reviews within minutes of a PR going ready; when it hits its rate limits it stays silent or posts only a rate-limit/"in queue" notice, and the PR would otherwise sit with no review signal at all, blocking the maintainer's merge decision. The pipeline reviews its own PR to fill that gap. A PR qualifies when **all** of these hold:
-
-- it is ready (not draft) and CI is green;
-- it has **no review activity from any human or third-party bot** — no reviews, no inline review comments. A CodeRabbit rate-limit notice does _not_ count as review activity: it arrives as an **issue-style comment** (not a review) whose body contains the line `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->`, and it often quotes a short "next review available in N minutes" — `config.autoDev.fallbackReviewMinutes` (default 60) deliberately overshoots those short waits, giving CodeRabbit several chances first;
-- it has been ready for review longer than `config.autoDev.fallbackReviewMinutes` (from the PR's `createdAt`, or the latest `ready_for_review` timeline event if it started as a draft);
-- it has no prior fallback self-review — no marker comment containing the `## Fallback review` heading. **At most one fallback self-review per PR**; that comment is the cross-tick memory.
-
-Then review it yourself:
-
-1. **Fresh-eyes adversarial review.** The pipeline wrote this diff, so don't trust the memory of writing it — re-read the full diff from scratch (`gh pr diff`) against the approved plan on the issue. **If the repo's `code-review` skill is installed, apply its standards**; otherwise review for correctness, error handling, edge cases, test coverage and quality, the repo's documentation policy, and the rules in `config.guidelines`. Actively look for reasons the change is wrong, not confirmation that it's right.
-2. **Fix what's real.** Valid findings get fixed now, in this tick: check out the automated branch, focused commits (one logical fix per commit), full pre-flight (`config.commands.*` — skip any whose value is `null`), push.
-3. **Post one summary comment** in the fallback-review format below: what was examined, findings fixed (with commit SHAs), and observations left to the maintainer's judgement. "No findings" is a valid, useful outcome — say it plainly rather than inventing nitpicks.
-4. **Never submit a formal GitHub review** — no approval, no request-changes, not even a comment-type review. The summary is an ordinary PR comment. A self-review is a signal for the maintainer, not independent sign-off, and must never be dressed up to look like one.
-
-After the fallback review is posted, the PR counts as quiescent. If CodeRabbit later catches up and reviews the PR, its feedback flows through the normal item-3 handling — the fallback review never suppresses or substitutes for a real external review.
-
-**Re-triggering CodeRabbit.** Its rate-limit notice offers two re-triggers: pushing new commits, or a `@coderabbitai review` comment. The fallback review's own fix-push therefore doubles as a re-trigger — desirable, since a real external review may follow. But **never post the `@coderabbitai review` trigger yourself**: a bare command comment from the maintainer's account without the marker would be classified by every later tick as human input (invariant 3), while adding the marker may break CodeRabbit's command parsing. The fallback summary instead reminds the maintainer they can trigger it manually.
+**Fallback self-review** (when CodeRabbit can't keep up). A quiescent PR qualifies when **all** of
+these hold: it is ready (not draft) and CI is green; it has no review activity from any human or
+third-party bot (a CodeRabbit rate-limit notice does *not* count); it has been ready longer than
+`config.autoDev.fallbackReviewMinutes` (default 60); and it has no prior fallback review. **At most
+one fallback self-review per PR.** If a PR might qualify, **read
+[`references/fallback-review.md`](references/fallback-review.md) before reviewing** — it carries the
+exact condition semantics, the review procedure, the never-submit-a-formal-GitHub-review rule, the
+CodeRabbit re-trigger rules, and the comment format.
 
 ### Step 3 — Build (only if under the in-flight cap)
 
@@ -226,172 +209,42 @@ If the build cannot complete within this run's time/effort budget, push the WIP 
 
 #### Labeling automated PRs
 
-**Every** PR the pipeline opens carries `config.autoDev.prLabel` (default `auto:pr`) — the complete
-build in item 7, the yielded WIP draft above, and any PR opened by delegating to `create-pr`. There
-is no path that opens a PR without it. The label is what lets the maintainer configure external
-review tooling to stand down on automated PRs (CodeRabbit's `reviews.auto_review.labels` takes
-negative matches, e.g. `["!auto:pr"]`) and leave them to this pipeline's own review loop. Note that
-the label is *only* for external tooling: the pipeline still identifies its own PRs by
-`config.autoDev.branchPrefix` (step 0), so a missing label never confuses the state machine — it
-just leaks a PR past the maintainer's tooling config.
-
-**Apply it at creation, not afterwards.** External tooling reacts to the `opened` webhook within
-seconds, and a label added after the fact does not retract a review that already started. So pass
-it on the create call:
+Pass the label on the **create** call, never afterwards — external tooling reacts to the `opened`
+webhook within seconds, and a label added later does not retract a review that already started:
 
 ```bash
 gh pr create --repo <config.repo> --base <config.defaultBranch> \
   --label "<config.autoDev.prLabel>" [--draft] --title "…" --body "…"
 ```
 
-When delegating to `create-pr`, tell it to apply `config.autoDev.prLabel` on the `gh pr create`
-call — it accepts caller-supplied labels for exactly this reason. Only fall back to
-`gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` if a PR somehow got
-opened without it.
+When delegating to `create-pr`, tell it to apply the label on its own `gh pr create` call. Before the
+tick's first create, confirm the label exists with one
+`gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` — on some `gh` versions `--label`
+fails *after* pushing the branch, leaving no PR. If it's missing, open the PR **without** it and say
+so in the exit report; never create the label yourself (invariant 5).
 
-**If the label doesn't exist**, `gh pr create --label` fails — and on some `gh` versions it fails
-*after* pushing the branch, leaving no PR. Don't risk losing the build: confirm the label exists
-before the first create, with one `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'`
-(`--paginate`, not `gh label list`, whose 30-item default would report an existing label as
-missing). A tick opens at most a few PRs, so that single call covers all of them. If it's missing,
-open the PR **without** the label and record in the exit report that the PR is unlabeled and why.
-Never create the label yourself (invariant 5) — `/doctor` reports it, `/bootstrap` creates it.
-
-**Why proceed unlabeled rather than refuse to open the PR?** Because refusing strands the build. The
-commits are already pushed, and a bare pushed branch is invisible to the next tick — its discovery
-queries only look at PRs and issues. So a tick that stopped here would leave the work unreachable,
-and the following tick would reclaim the issue as an orphan and rebuild it from scratch, repeating
-for as long as the label is absent. The pipeline can't fix the cause itself (invariant 5 forbids
-creating labels), so the stop would persist until a human intervened, with each tick discarding a
-build. The unlabeled PR is the strictly better failure: the work survives, the exit report names the
-problem, `/doctor` FAILs on the missing label, and step 0's re-stamp labels the PR on the first tick
-after the label exists. The only cost is that external tooling may review that one PR — which is
-simply the behavior from before this label existed, not a regression.
+Rationale — what the label is for, why an unlabeled PR beats a refused one, why step 0 re-stamps — is
+in [`references/pr-labeling.md`](references/pr-labeling.md).
 
 ### Step 4 — Triage pass (bounded)
 
-Walk eligible open issues oldest→newest. Act on at most **5** issues per tick (count only issues where you actually post/relabel; skipped issues are free). To stay cheap on idle ticks, only deep-read an issue's thread when it might have changed: a state-labelled issue whose `updatedAt` is no newer than the skill's own last marker comment on it has nothing new — skip it without re-reading (for a Parked issue, the baseline is the park-time label event, not a marker comment). For each issue that needs a look, read the full thread, then branch on its current state:
+Walk eligible open issues oldest→newest. Act on at most **5** issues per tick (count only issues where you actually post/relabel; skipped issues are free). To stay cheap on idle ticks, only deep-read an issue's thread when it might have changed: a state-labelled issue whose `updatedAt` is no newer than the skill's own last marker comment on it has nothing new — skip it without re-reading (for a Parked issue, the baseline is the park-time label event, not a marker comment).
 
-- **No state label** — assess whether the issue contains enough to plan from (clear problem, scoped outcome, no unresolved design fork):
-  - _Plannable_ → draft an implementation plan (format below), post it as a comment, add the Planned label.
-  - _Not plannable, and the gap is missing facts the maintainer can supply_ → post one comment asking the specific missing questions (numbered, concrete — not "please clarify"), add the Needs-info label.
-  - _Not plannable because it needs a maintainer decision the skill can't make_ — a design fork that's theirs to resolve, a dependency on still-open work, or the issue body itself signals deferral ("not actionable yet", "revisit once X lands") → post a **park proposal** (format below): name the blocker, offer to park it, and say what would unblock it. Add the Needs-info label (the proposal is awaiting the maintainer's call). **The skill never parks on its own — it only proposes; the maintainer parks.**
-- **Needs-info** — is there a _human_ comment (no marker, not a third-party bot) newer than the skill's last marker comment?
-  - _No_ → skip silently. This is the "already asked, no reply" rule.
-  - _Yes, and it says to park_ ("park it", "hold", "not now", "park", or a 👍 on a park proposal) → swap label to Parked.
-  - _Yes, and it resolves the questions_ → draft and post the plan, swap label to Planned.
-  - _Yes, but it raises new ambiguity_ → ask the follow-up (stay Needs-info) — but if this would be the third unanswered round-trip, stop asking and either propose parking or leave a final note that the issue needs maintainer attention.
-- **Planned** — is there a _human_ comment (not a third-party bot) newer than the plan?
-  - _Approval_ (e.g. "approved", "LGTM", "go ahead", "yes do it", a 👍-only reply) → swap label to Ready. "Approved, but change X" counts as approval: update the plan comment-thread with the revision first, then mark ready.
-  - _Substantive feedback / objections_ → revise, post the updated plan (marker), stay Planned.
-  - _A request to park_ ("not now", "let's hold this") → swap label to Parked.
-  - _No reply_ → skip silently.
-  - The human adding the Ready label directly is always approval, reply or not.
-- **Parked** — the maintainer chose to hold this; it rests until they re-engage. The unblock baseline is **when the Parked label was applied**, _not_ the skill's last marker comment — so a rationale the maintainer records _at park time_ doesn't bounce the issue straight back out. Read the park time from the most recent Parked-label `labeled` event on the issue timeline:
-
-  ```bash
-  gh api "repos/<config.repo>/issues/<N>/timeline" --paginate \
-    | jq -r --arg l '<config.autoDev.stateLabels.parked>' \
-        '[.[] | select(.event=="labeled" and .label.name==$l)] | last | .created_at'
-  ```
-
-  Two unblock signals:
-  - _A human comment (no marker, not a third-party bot) newer than the park time_ (the maintainer came back with detail or direction) → unblocked: remove the Parked label and re-triage it this tick as if freshly labelled (plan if now plannable, otherwise ask / re-propose).
-  - _The human removed the label_ → it reappears with no state label and re-enters triage through the no-label branch; nothing special to do.
-  - _Otherwise_ (still parked, no human comment after the park) → skip silently. **Never re-propose parking, re-ask, or re-plan a parked issue.**
-
-- **Ready / In-progress** — leave for steps 1 and 3.
+For each issue that needs a look, read the full thread, then branch on its current state. **Read
+[`references/triage.md`](references/triage.md) before acting on any issue** — it holds the per-state
+decision table (no label / Needs-info / Planned / Parked), and a wrong branch mislabels the
+maintainer's queue. Ready and In-progress issues are left for steps 1 and 3.
 
 ### Step 5 — Nothing to do
 
 If no step had work: print "no work to be done" with the counts (open PRs awaiting human review/merge, issues awaiting replies, issues awaiting approval) and exit.
 
-## Plan comment format
+## Comment formats
 
-The literal `<!-- auto-dev -->` lines below stand in for `config.autoDev.marker` — emit the repo's
-configured marker as the first line of every comment.
-
-```markdown
-<!-- auto-dev -->
-
-## Proposed implementation plan
-
-**Approach:** <2–4 sentences: what will change and why this approach>
-
-**Changes:**
-
-- `path/to/file.ext` — <what>
-- <new files, tests, docs to update>
-
-**Testing:** <unit tests to add/extend; manual verification if UI>
-
-**Out of scope:** <explicitly excluded, if anything notable>
-
----
-
-Reply with an approval ("approved", "LGTM", "go ahead") to queue this for implementation, reply with changes to revise the plan, or add the Skip label to opt this issue out of automation.
-```
-
-Plans follow the repo's "Implementation Planning" convention (plans live in the issue). Keep them honest about size — if an issue is too large to land as one reviewable PR, the plan should say so and propose the first slice only.
-
-## Question comment format
-
-```markdown
-<!-- auto-dev -->
-
-Before this can be planned for implementation, a few things need clarification:
-
-1. <specific question>
-2. <specific question>
-
----
-
-Reply here and the next automation pass will pick it up, or add the Skip label to opt this issue out of automation.
-```
-
-## Park proposal comment format
-
-Use this when an issue can't move forward because it needs a maintainer decision the skill can't make — not missing facts, but a judgement call, a design fork, or a dependency on other work. It **proposes** parking and waits; it never parks on its own.
-
-```markdown
-<!-- auto-dev -->
-
-This isn't blocked on missing detail — it's waiting on a call that's yours to make:
-
-<1–3 sentences naming the blocker: the design fork, the open dependency, or why the issue reads as deferred>
-
-Want me to **park** it for now? Reply "park it" (or add the Parked label) and I'll leave it untouched until you remove the label or add more detail to the issue. If you'd rather move it forward, here's what would unblock it: <the specific decision or input needed>.
-```
-
-A parked issue is durable rest, not abandonment: the skill picks it back up the moment the maintainer removes the Parked label or adds a comment _after_ the park (a rationale left at park time is recorded but does not re-activate it — see the Parked triage branch).
-
-## Fallback review comment format
-
-Posted on a PR by step 2's fallback self-review. The `## Fallback review` heading is load-bearing — it is how later ticks detect that a fallback review already exists — so keep it verbatim. The first line is `config.autoDev.marker`.
-
-```markdown
-<!-- auto-dev -->
-
-## Fallback review
-
-No external review arrived within the review window (CodeRabbit appears rate-limited), so this is the pipeline's own fresh-eyes review of the diff against the approved plan. It is a **self-review** — treat it as a signal, not independent sign-off.
-
-**Examined:** <scope: files/areas reviewed, and what they were checked against>
-
-**Fixed in this review:**
-
-- <finding> — fixed in <sha>
-- _(or "nothing — no defects found")_
-
-**For your judgement:**
-
-- <observation or trade-off the maintainer should weigh before merging>
-- _(or "nothing flagged")_
-
----
-
-CodeRabbit can be re-run on this PR at any time with a `@coderabbitai review` comment.
-```
+The plan, question, and park-proposal templates the triage pass posts live in
+[`references/comment-formats.md`](references/comment-formats.md); the fallback review's PR comment
+format lives in [`references/fallback-review.md`](references/fallback-review.md). Read the relevant
+file before posting. Every comment's first line is `config.autoDev.marker`.
 
 ## Exit report
 
@@ -435,10 +288,23 @@ errors: <none | details>
 - Don't mark a PR ready on green pre-flight alone when the change has a runnable surface — behaviorally verify it (step 3, item 6) first, or honestly record why it couldn't run in the sandbox. Never claim "verified" when nothing was actually exercised.
 - Don't reach for any of the self-enforced hard prohibitions (invariant 5) — there is no external allowlist to catch you now, so the skill's own discipline is the only guardrail. If a tick seems to require one, stop and report it in the exit report instead.
 
+## Reference files
+
+Each is pointed at from the step that needs it; this is the index.
+
+- [`references/triage.md`](references/triage.md) — step 4's per-state decision table. **Read before acting on any issue in triage.**
+- [`references/fallback-review.md`](references/fallback-review.md) — step 2's fallback self-review: exact conditions, procedure, comment format. **Read before self-reviewing.**
+- [`references/comment-formats.md`](references/comment-formats.md) — plan, question, and park-proposal templates.
+- [`references/pr-labeling.md`](references/pr-labeling.md) — why the `auto:pr` label exists and how its failure modes are handled.
+- [`references/scheduling.md`](references/scheduling.md) — cadence, overlap/races, model tier. For whoever schedules the task, not for the tick.
+
 ## Related skills
 
-- **review-queue** — the maintainer's daily console for this pipeline: the **human half** of auto-dev. It gathers everything blocked on the maintainer (the open automated PR, plans awaiting approval, questions and park proposals, parked issues, untriaged issues) and feeds their decisions back into the same state machine **as the human** (never with the marker). Use it to approve plans, answer questions, and park/merge.
-- **create-pr** — the PR-creation skill step 3 delegates to when installed (template, CI gates, docs policy). It runs the command pre-flight but **not** behavioral verification — that stays auto-dev's own step-3 gate.
-- **verify** — the harness skill step 3 (item 6) invokes when installed to drive the built change end-to-end and observe behavior before the PR is marked ready, rather than trusting a green pre-flight. May be absent in a scheduled sandbox; when it is, record the change as manually-verify-needed rather than claiming it verified.
-- **code-review** — the review-standards skill step 2's fallback self-review applies when installed, to review the pipeline's own diff with fresh, adversarial eyes when no external review (CodeRabbit) arrives within `config.autoDev.fallbackReviewMinutes`. May be absent in a scheduled sandbox; when it is, fall back to the generic review checklist named in the fallback subsection.
+Each is used only when installed; all may be absent in a scheduled sandbox, and the steps that
+delegate to them say what to do instead.
+
+- **review-queue** — the human half of this pipeline: the maintainer's console for approving plans, answering questions, and parking/merging. Feeds decisions back into the same state machine **as the human** (never with the marker).
+- **create-pr** — step 3 delegates PR creation to it (template, CI gates, docs policy). It does **not** do behavioral verification; that stays step 3's own gate.
+- **verify** — step 3 item 6 uses it to drive the built change end-to-end before marking a PR ready.
+- **code-review** — supplies the review standards step 2's fallback self-review applies.
 - **bootstrap** — generates `.claude/maintainerd.json`, including the `autoDev` block this skill reads.
