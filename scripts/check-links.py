@@ -344,18 +344,20 @@ def self_test():
 
 
 def main():
-    parser_failures = self_test() + prose_self_test()
-    failures = list(parser_failures)
-    failures += check_tree(os.path.join(ROOT, "plugins"), "source tree")
+    # Kept separate so each failure kind prints its own remediation. Folding the prose fixtures
+    # into parser_failures sent developers to destinations()/links() for a prose-rule bug.
+    parser_failures = self_test()
+    prose_fixture_failures = prose_self_test()
 
+    link_failures = check_tree(os.path.join(ROOT, "plugins"), "source tree")
     with tempfile.TemporaryDirectory() as tmp:
         build_install_layout(tmp)
-        failures += check_tree(tmp, "installed layout")
+        link_failures += check_tree(tmp, "installed layout")
+    link_failures += check_boundaries()
 
-    failures += check_boundaries()
     prose_failures = check_prose_refs()
-    failures += prose_failures
 
+    failures = parser_failures + prose_fixture_failures + link_failures + prose_failures
     if failures:
         print("\nFAIL:", file=sys.stderr)
         print("\n".join(failures), file=sys.stderr)
@@ -365,13 +367,19 @@ def main():
                 "parsed (or deliberately skipped). Fix destinations()/links(), not the cases.",
                 file=sys.stderr,
             )
+        if prose_fixture_failures:
+            print(
+                "\nThe prose cross-reference rule regressed: the cases above are forms that must\n"
+                "be reported (or deliberately ignored). Fix XREF/headings()/stale_refs().",
+                file=sys.stderr,
+            )
         if prose_failures:
             print(
                 "\nA prose reference names a section that no longer exists. Either restore the\n"
                 "heading, or repoint the sentence at a link to wherever the content moved.",
                 file=sys.stderr,
             )
-        if len(failures) > len(parser_failures) + len(prose_failures):
+        if link_failures:
             print(
                 "\nA link must stay inside its own plugin. If a skill needs a doc from\n"
                 "maintainerd-core, vendor it via scripts/sync-references.sh and link the copy.",
