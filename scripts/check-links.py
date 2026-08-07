@@ -126,10 +126,16 @@ HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
 # inside a ``` block close it early, after which the real closing ``` re-opens one — anchors and
 # references on both sides of that point then land in the wrong bucket.
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*(\S*)")
-# A code span is a run of N backticks closed by a run of N backticks. Matching only single
-# backticks leaves ``see **X**`` half-stripped, which turns a literal example into a reported
-# reference — the exact false positive this stripping exists to prevent.
-CODE_SPAN = re.compile(r"(`+).*?\1")
+# A code span is a run of N backticks closed by a run of EXACTLY N. Two ways to get this wrong,
+# and they fail in opposite directions:
+#   - matching only single backticks leaves ``see **X**`` half-stripped, turning a literal
+#     example into a reported reference (false positive);
+#   - matching a run non-maximally lets the first backtick of a longer closing run close a
+#     shorter opening one, so `see **X**`` — not a code span at all, per CommonMark — gets
+#     stripped and the reference inside it silently disappears (false negative).
+# The lookarounds pin both delimiters to maximal runs, which is what makes the run lengths
+# comparable in the first place.
+CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
 
 
 def prose_lines(path):
@@ -321,6 +327,8 @@ PROSE_CASES = [
     ("# Doc\n\nWrite it as `see **Missing Thing**` in the body.\n", []),
     # ...including a multi-backtick span, which single-backtick stripping left half-stripped.
     ("# Doc\n\nWrite it as ``see **Missing Thing**`` in the body.\n", []),
+    # Mismatched delimiter runs are NOT a code span, so the reference inside stays reportable.
+    ("# Doc\n\ntext `see **Mismatched**`` more\n", ["Mismatched"]),
     # A different fence delimiter inside a fenced block must not close it early.
     ("# Doc\n\n```markdown\n~~~\n## Example Heading\n~~~\n```\n\nsee **Example Heading**\n",
      ["Example Heading"]),
