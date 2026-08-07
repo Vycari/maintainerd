@@ -22,7 +22,7 @@ internal activity log. Don't touch the user-facing version surface from this ski
 ## Load the repo config
 
 Before anything else, read `.claude/maintainerd.json` from the repo root (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md) for the full contract). If it
+[`../../references/config-schema.md`](../../references/config-schema.md) for the full contract). If it
 does not exist, **stop** and tell the user:
 
 > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.

@@ -2,8 +2,8 @@
 
 A shared mechanism for the guideline-checking audits (`audit-architecture`, `audit-tests`,
 `audit-security`). Each of those skills references this file the way every skill references
-[`config-schema.md`](../../core/reference/config-schema.md); the mechanism lives here once instead
-of being copy-pasted (and drifting) across three skills.
+[`config-schema.md`](config-schema.md); the mechanism lives here once instead of being
+copy-pasted (and drifting) across three skills.
 
 ## The problem this solves
 

@@ -65,7 +65,7 @@ worklog is user-scoped, so it reads two files — and, unlike repo-scoped skills
 hard-stop if the repo-level config is missing.
 
 1. **User-level `~/.claude/maintainerd.json`** — the required piece. Read `journal.vault` (the
-   Obsidian vault root). See [`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)
+   Obsidian vault root). See [`../../references/config-schema.md`](../../references/config-schema.md)
    ("User-level config"). If the file or `journal.vault` is absent, **ask the user for their vault
    path and offer to write it** to `~/.claude/maintainerd.json` so future runs are configured — don't
    hardcode a vault path. Optional keys: `journal.projectsGlob` (default `Projects/**`).

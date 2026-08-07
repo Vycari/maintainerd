@@ -22,7 +22,7 @@ from the human side; it never duplicates the machine's own work (it does not tri
 ## Load the repo config
 
 Before anything else, read `.claude/maintainerd.json` from the repo root (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md) for the full
+[`../../references/config-schema.md`](../../references/config-schema.md) for the full
 contract). If it does not exist, **stop** and tell the user:
 
 > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.

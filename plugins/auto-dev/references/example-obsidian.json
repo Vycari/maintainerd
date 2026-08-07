@@ -1,29 +1,30 @@
 {
-  "repo": "allenhutchison/pepper",
-  "defaultBranch": "main",
-  "language": "python",
+  "repo": "allenhutchison/obsidian-gemini",
+  "defaultBranch": "master",
+  "language": "typescript",
   "commands": {
-    "format": "uv run ruff format --check",
-    "lint": "uv run ruff check",
-    "build": null,
-    "test": "uv run pytest",
-    "coverage": "uv run pytest --cov --cov-report=json",
-    "typecheck": null
+    "format": "npm run format-check",
+    "lint": null,
+    "build": "npm run build",
+    "test": "npm test",
+    "coverage": "npm test -- --coverage",
+    "typecheck": "npm run typecheck:test"
   },
   "paths": {
-    "source": "src/pepper/",
-    "tests": "tests/",
-    "designDocs": ["planning/"],
-    "productDocs": ["README.md", "CLAUDE.md"],
-    "changelogDir": "planning/release-notes/",
+    "source": "src/",
+    "tests": "test/",
+    "designDocs": ["docs/contributing/"],
+    "productDocs": ["docs/guide/", "docs/reference/", "README.md", "AGENTS.md"],
+    "changelogDir": "planning/changelog/",
     "researchRadarDir": "planning/research-radar/",
     "prTemplate": ".github/PULL_REQUEST_TEMPLATE.md",
-    "skillsDir": ".claude/skills/"
+    "skillsDir": ".agents/skills/"
   },
   "guidelines": {
     "coding": ".claude/guidelines/coding.md",
     "testing": ".claude/guidelines/testing.md",
-    "invariants": ".claude/guidelines/invariants.md"
+    "invariants": ".claude/guidelines/invariants.md",
+    "release": ".claude/guidelines/release.md"
   },
   "labels": {
     "architecture": "architecture",
@@ -50,12 +51,12 @@
     "default": "inherit"
   },
   "dailyUpdate": {
-    "subSkills": ["daily-changelog", "audit-design-docs"],
+    "subSkills": ["daily-changelog", "audit-product-docs", "triage-issues"],
     "branchPrefix": "daily-update-",
-    "commitSubject": "Daily update — {date}"
+    "commitSubject": "chore(daily): {date} daily update"
   },
   "autoDev": {
-    "enabled": false,
+    "enabled": true,
     "branchPrefix": "auto/issue-",
     "marker": "<!-- auto-dev -->",
     "stateLabels": {
@@ -70,15 +71,15 @@
     "openPrsAsDraft": true,
     "prLabel": "auto:pr",
     "fallbackReviewMinutes": 60,
-    "maxPrsInFlight": 1,
+    "maxPrsInFlight": 6,
     "orphanReclaimMinutes": 90
   },
   "depsFlow": {
-    "enabled": false,
+    "enabled": true,
     "botLogins": ["dependabot[bot]"],
     "marker": "<!-- deps-flow -->",
     "autoMergeSemver": ["patch", "minor"],
-    "holdPackages": [],
+    "holdPackages": ["obsidian"],
     "mergeMethod": "squash",
     "requireApproval": false,
     "maxMergesPerRun": 5,
@@ -89,13 +90,20 @@
   },
   "researchRadar": {
     "themes": "derive",
-    "userAgent": "research-radar/1.0 (mailto:allen@hutchison.org)"
+    "userAgent": "research-radar/1.0 (mailto:you@example.com)"
   },
   "review": {
     "bots": ["coderabbitai[bot]", "gemini-code-assist[bot]"]
   },
-  "release": null,
+  "release": {
+    "versionCommand": "npm version {level}",
+    "versionPushesTag": true,
+    "notesFile": "src/release-notes.json",
+    "readmeSection": "What's New",
+    "githubRelease": true
+  },
   "journal": {
-    "project": "Pepper"
+    "project": "Gemini Scribe",
+    "hubNote": "Projects/Gemini Scribe/Gemini Scribe - MOC.md"
   }
 }

@@ -15,7 +15,7 @@ description: >-
 ## Load the repo config
 
 Before reviewing anything, load the repo config (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)):
+[`../../references/config-schema.md`](../../references/config-schema.md)):
 
 1. Read `.claude/maintainerd.json` from the repo root.
 2. If it does not exist, **stop** and tell the user:
@@ -341,7 +341,7 @@ if (!file) {
 - Use `Promise.allSettled()` when partial failures are acceptable.
 - Always handle rejections.
 
-See [reference/typescript-patterns.md](reference/typescript-patterns.md) for a fuller catalog of
+See [reference/typescript-patterns.md](references/typescript-patterns.md) for a fuller catalog of
 TypeScript/JavaScript patterns and anti-patterns.
 
 ### When `config.language` is `python`
@@ -420,5 +420,5 @@ single diff:
 
 ## Further reading
 
-- [Review Checklist](reference/review-checklist.md) - Quick-reference checklist for code reviews
-- [TypeScript Patterns](reference/typescript-patterns.md) - Patterns and anti-patterns for TypeScript/JavaScript codebases (applies when `config.language` is `typescript`)
+- [Review Checklist](references/review-checklist.md) - Quick-reference checklist for code reviews
+- [TypeScript Patterns](references/typescript-patterns.md) - Patterns and anti-patterns for TypeScript/JavaScript codebases (applies when `config.language` is `typescript`)

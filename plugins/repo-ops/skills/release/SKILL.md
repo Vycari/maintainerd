@@ -24,7 +24,7 @@ say so and confirm with the user before doing anything.
 ## Load the repo config
 
 Read `.claude/maintainerd.json` (see
-[`../../../core/reference/config-schema.md`](../../../core/reference/config-schema.md)); if missing,
+[`../../references/config-schema.md`](../../references/config-schema.md)); if missing,
 stop and tell the user to run `/bootstrap`.
 
 Keys this skill uses:
