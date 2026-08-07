@@ -1,0 +1,8 @@
+# Python bytecode from running scripts/*.py (a .pyc was tracked from 8fe5695 until it
+# was noticed; this keeps compiled artifacts out of a repo that people clone as a
+# plugin marketplace).
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
