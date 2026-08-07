@@ -115,12 +115,22 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
 
    ```bash
    # Candidates only — a prefilter, not the decision. Quote the package so search doesn't split it.
+   # --limit overrides the 30-item default; --paginate isn't available on `gh issue list`.
    gh issue list --repo "$REPO" --state open --label "<config.labels.dependencies>" \
-     --search "\"<package name>\" in:title" --json number,title
+     --search "\"<package name>\" in:title" --limit 200 --json number,title
 
    # A candidate counts as a match ONLY if its body carries the marker
    gh issue view <N> --repo "$REPO" --json body --jq '.body' | grep -qF '<config.depsFlow.marker>'
    ```
+
+   **Both calls must fail closed.** `gh issue list` returns 30 items by default — the same trap as
+   `gh label list` in step 5 — so an older marker issue drops off the end and the run files a
+   duplicate. Pass `--limit` well above the expected count and, if the result comes back *at* the
+   limit, treat discovery as truncated rather than complete. If either call errors (rate limit,
+   `5xx`, network), you have **not** established that no prior issue exists: stop this PR's failure
+   pass and report "couldn't verify prior issues" — never read a failed lookup as "none found".
+   Same discipline as the label check and invariant 8; the cost here is a duplicate issue rather
+   than a stuck queue, but the rule is identical.
 
    **Then confirm the package matches exactly.** GitHub search tokenizes on hyphens and dots, so a
    query for `react` returns issues titled for `react-dom`, and `@scope/pkg` matches its siblings.
