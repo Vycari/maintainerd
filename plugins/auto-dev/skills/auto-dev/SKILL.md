@@ -175,7 +175,9 @@ If one or more automated PRs are open, pick the **single most-urgent** one to ad
 5. **Scope creep requested in review?** Acknowledge in a reply, file a follow-up issue (it enters this same pipeline untriaged), link it, and keep the PR scoped.
 6. **Nothing new** (no new comments, CI green, all threads answered): this PR is quiescent, waiting on the maintainer's review or merge — *unless it qualifies for a fallback self-review*. Check the fallback conditions below; if they all hold, do the self-review this tick and stop. Otherwise it isn't this tick's work; note it in the exit report and, since advancing it produced nothing, **fall through to step 3 (build)** — which builds the next Ready issue if the in-flight count is below `config.autoDev.maxPrsInFlight`, or itself falls through to triage.
 
-**Fallback self-review** (when CodeRabbit can't keep up). A quiescent PR qualifies when **all** of
+**Fallback self-review** (when CodeRabbit can't keep up). **Reachable only from item 6** — the PR
+must already be quiescent (no new comments, CI green, every thread answered); a PR with unaddressed
+feedback runs the normal review loop instead, however long it has sat. A quiescent PR qualifies when **all** of
 these hold: it is ready (not draft) and CI is green; it has no review activity from any human or
 third-party bot (a CodeRabbit rate-limit notice does *not* count); it has been ready longer than
 `config.autoDev.fallbackReviewMinutes` (default 60); and it has no prior fallback review. **At most

@@ -13,7 +13,12 @@ gap.
 
 ## Qualifying conditions
 
-A PR qualifies when **all** of these hold:
+**Precondition — the PR must already be quiescent.** The fallback is only ever reached from step 2
+item 6: no new comments since the skill's last reply, CI green, and every thread answered. A PR with
+unaddressed feedback is *not* a candidate no matter how long it has sat — run the normal review loop
+instead. Re-check this before reviewing; it is the gate, not a formality.
+
+Then a PR qualifies when **all** of these hold:
 
 - it is ready (not draft) and CI is green;
 - it has **no review activity from any human or third-party bot** — no reviews, no inline review
