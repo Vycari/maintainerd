@@ -121,27 +121,39 @@ XREF = re.compile(
     r"|\*\*([^*]{3,60})\*\*[\s,]+(?:section\b|below\b|above\b)"  # **X** below / above / section
 )
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
-FENCE = re.compile(r"^\s*(?:```|~~~)")
-CODE_SPAN = re.compile(r"`[^`]*`")
+# A fence opens with a run of >=3 backticks or tildes and closes only with a run of the SAME
+# character, at least as long, carrying no info string. Toggling on either delimiter lets a `~~~`
+# inside a ``` block close it early, after which the real closing ``` re-opens one — anchors and
+# references on both sides of that point then land in the wrong bucket.
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*(\S*)")
+# A code span is a run of N backticks closed by a run of N backticks. Matching only single
+# backticks leaves ``see **X**`` half-stripped, which turns a literal example into a reported
+# reference — the exact false positive this stripping exists to prevent.
+CODE_SPAN = re.compile(r"(`+).*?\1")
 
 
 def prose_lines(path):
     """Yield (lineno, line) for prose only: fenced blocks skipped, code spans blanked.
 
-    Both directions matter. A `​``markdown` fence showing a comment template contains real
+    Both directions matter. A fenced block showing a comment template contains real
     `## Headings` that are examples, not anchors — harvesting them makes the checker *more*
     permissive and can hide a genuinely stale reference (measured: `## Fallback review` inside
-    fallback-review.md's template was being registered as an anchor). And an inline span like
-    `see **Missing Thing**` written as a literal example is documentation, not a reference,
-    so scanning it would invent a failure.
+    fallback-review.md's template was being registered as an anchor). And an inline span
+    written as a literal example is documentation, not a reference, so scanning it would
+    invent a failure.
     """
-    in_fence = False
+    fence = None  # (delimiter char, opening run length) while open
     with open(path, encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
-            if FENCE.match(line):
-                in_fence = not in_fence
+            m = FENCE.match(line)
+            if m:
+                run, info = m.group(1), m.group(2)
+                if fence is None:
+                    fence = (run[0], len(run))
+                elif run[0] == fence[0] and len(run) >= fence[1] and not info:
+                    fence = None
                 continue
-            if in_fence:
+            if fence:
                 continue
             yield lineno, CODE_SPAN.sub(" ", line)
 # These docs mark subsections with a bold lead-in as often as with a heading —
@@ -307,6 +319,13 @@ PROSE_CASES = [
     ("# Doc\n\n```markdown\n## Fallback review\n```\n\nsee **Fallback review**\n", ["Fallback review"]),
     # A reference written as a literal inline example is documentation, not a reference.
     ("# Doc\n\nWrite it as `see **Missing Thing**` in the body.\n", []),
+    # ...including a multi-backtick span, which single-backtick stripping left half-stripped.
+    ("# Doc\n\nWrite it as ``see **Missing Thing**`` in the body.\n", []),
+    # A different fence delimiter inside a fenced block must not close it early.
+    ("# Doc\n\n```markdown\n~~~\n## Example Heading\n~~~\n```\n\nsee **Example Heading**\n",
+     ["Example Heading"]),
+    # A longer closing run still closes; text after the block is prose again.
+    ("# Doc\n\n```\n## Inside\n````\n\nsee **Inside**\n", ["Inside"]),
     # ...and a real reference on the same line as an unrelated code span still counts.
     ("# Doc\n\nRun `make test`, then see **Also Missing**\n", ["Also Missing"]),
 ]
