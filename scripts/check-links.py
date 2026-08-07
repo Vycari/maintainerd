@@ -121,6 +121,29 @@ XREF = re.compile(
     r"|\*\*([^*]{3,60})\*\*[\s,]+(?:section\b|below\b|above\b)"  # **X** below / above / section
 )
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+FENCE = re.compile(r"^\s*(?:```|~~~)")
+CODE_SPAN = re.compile(r"`[^`]*`")
+
+
+def prose_lines(path):
+    """Yield (lineno, line) for prose only: fenced blocks skipped, code spans blanked.
+
+    Both directions matter. A `​``markdown` fence showing a comment template contains real
+    `## Headings` that are examples, not anchors — harvesting them makes the checker *more*
+    permissive and can hide a genuinely stale reference (measured: `## Fallback review` inside
+    fallback-review.md's template was being registered as an anchor). And an inline span like
+    `see **Missing Thing**` written as a literal example is documentation, not a reference,
+    so scanning it would invent a failure.
+    """
+    in_fence = False
+    with open(path, encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            if FENCE.match(line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            yield lineno, CODE_SPAN.sub(" ", line)
 # These docs mark subsections with a bold lead-in as often as with a heading —
 # `**Fallback self-review** (when CodeRabbit can't keep up)` is a section in every sense that
 # matters to a reader. Treating those as anchors too is what keeps the check honest rather than
@@ -128,17 +151,37 @@ HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
 LEAD_IN = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)?\*\*([^*]{3,60})\*\*")
 
 
+def normalize(text):
+    """Normalize an anchor or reference name for comparison."""
+    return re.sub(r"[*`]", "", text).strip().lower()
+
+
 def headings(path):
     """Anchor texts in a file: real headings plus bold subsection lead-ins."""
     out = set()
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            for pat, group in ((HEADING, 1), (LEAD_IN, 1)):
-                m = pat.match(line)
-                if m:
-                    # Strip inline markup so `## Step 4 — Triage` matches loose references.
-                    out.add(re.sub(r"[*`]", "", m.group(group)).strip().lower())
+    for _, line in prose_lines(path):
+        for pat in (HEADING, LEAD_IN):
+            m = pat.match(line)
+            if m:
+                out.add(normalize(m.group(1)))
     return out
+
+
+def stale_refs(path):
+    """Yield (lineno, name) for prose references in `path` naming no anchor in `path`.
+
+    The single implementation behind both the repo scan and the self-test — a self-test that
+    reimplements the rule tests a copy, and the copy is what stays correct.
+    """
+    reachable = headings(path)
+    for lineno, line in prose_lines(path):
+        for m in XREF.finditer(line):
+            name = (m.group(1) or m.group(2)).strip()
+            # Exact match after normalization. Substring matching was the first attempt and it
+            # swallows the failure it exists to report: `see **Isolation**` resolved happily
+            # against `## Overlap & isolation`, an anchor nobody can navigate to.
+            if normalize(name) not in reachable:
+                yield lineno, name
 
 
 def check_prose_refs():
@@ -158,16 +201,8 @@ def check_prose_refs():
     """
     stale = []
     for md in sorted(glob(os.path.join(ROOT, "plugins", "**", "*.md"), recursive=True)):
-        reachable = headings(md)
-        with open(md, encoding="utf-8") as fh:
-            for lineno, line in enumerate(fh, 1):
-                for m in XREF.finditer(line):
-                    name = (m.group(1) or m.group(2)).strip()
-                    key = re.sub(r"[*`]", "", name).strip().lower()
-                    if not any(key in h or h in key for h in reachable):
-                        stale.append(
-                            f"  {os.path.relpath(md, ROOT)}:{lineno} -> **{name}** (no such heading)"
-                        )
+        for lineno, name in stale_refs(md):
+            stale.append(f"  {os.path.relpath(md, ROOT)}:{lineno} -> **{name}** (no such heading)")
     print(f"prose cross-references: {len(stale)} stale")
     return stale
 
@@ -266,6 +301,14 @@ PROSE_CASES = [
     ("# Doc\n\nsee `config.commands.lint`\n", []),                             # backticked config key
     ("# Doc\n\nSee **Missing Thing** below.\n", ["Missing Thing"]),            # trailing locator
     ("# Doc\n\n[link](other.md) and see **Nope**\n", ["Nope"]),                # a link elsewhere must not excuse it
+    # A partial name is not a match: `Isolation` is not the anchor `Overlap & isolation`.
+    ("## Overlap & isolation\n\nsee **Isolation**\n", ["Isolation"]),
+    # A heading inside a fenced template is an example, not an anchor.
+    ("# Doc\n\n```markdown\n## Fallback review\n```\n\nsee **Fallback review**\n", ["Fallback review"]),
+    # A reference written as a literal inline example is documentation, not a reference.
+    ("# Doc\n\nWrite it as `see **Missing Thing**` in the body.\n", []),
+    # ...and a real reference on the same line as an unrelated code span still counts.
+    ("# Doc\n\nRun `make test`, then see **Also Missing**\n", ["Also Missing"]),
 ]
 
 
@@ -277,15 +320,7 @@ def prose_self_test():
             probe = os.path.join(tmp, f"case{i}.md")
             with open(probe, "w", encoding="utf-8") as fh:
                 fh.write(body)
-            anchors = headings(probe)
-            got = []
-            with open(probe, encoding="utf-8") as fh:
-                for line in fh:
-                    for m in XREF.finditer(line):
-                        name = (m.group(1) or m.group(2)).strip()
-                        key = re.sub(r"[*`]", "", name).strip().lower()
-                        if not any(key in h or h in key for h in anchors):
-                            got.append(name)
+            got = [name for _, name in stale_refs(probe)]
             if got != expected:
                 failures.append(f"  prose case {i}: expected {expected}, got {got}")
     print(f"prose self-test: {len(PROSE_CASES) - len(failures)}/{len(PROSE_CASES)} cases pass")
