@@ -114,15 +114,22 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
 6. **Dedup, then file one issue.** Find candidate issues, then confirm each is really one of yours:
 
    ```bash
-   # Candidates: same package, this repo's dependency label
+   # Candidates only — a prefilter, not the decision. Quote the package so search doesn't split it.
    gh issue list --repo "$REPO" --state open --label "<config.labels.dependencies>" \
-     --search "<package name> in:title" --json number,title
+     --search "\"<package name>\" in:title" --json number,title
 
    # A candidate counts as a match ONLY if its body carries the marker
    gh issue view <N> --repo "$REPO" --json body --jq '.body' | grep -qF '<config.depsFlow.marker>'
    ```
 
-   **The label and title alone are not enough.** A human's issue about the same package would
+   **Then confirm the package matches exactly.** GitHub search tokenizes on hyphens and dots, so a
+   query for `react` returns issues titled for `react-dom`, and `@scope/pkg` matches its siblings.
+   Combined with a marker check that only proves "this skill filed it", a near-miss reads as a hit:
+   the run concludes it already filed for this package and **files nothing at all**, so a genuinely
+   broken update is silently skipped every run thereafter. Compare the package name parsed from the
+   candidate issue against the current one as exact strings — equal or not a match.
+
+   **The label and title alone are not enough either.** A human's issue about the same package would
    otherwise suppress the broken-update issue entirely, or receive a bot comment on a thread it has
    nothing to do with. Require `config.depsFlow.marker` in the body before treating a candidate as
    this skill's own prior work.
