@@ -24,8 +24,14 @@ Each scheduled run is its own disposable sandbox, so runs never share a working 
 
 A tick drafts plans, writes code, and adjudicates review feedback — schedule it on the **`capable`**
 tier; don't down-tier to save tokens on its triage pass, because the *same* run also builds (a skill
-can't switch its own model mid-run). The read-only **`dry-run`** mode does no judgment or code-gen
-and is safe on the **`fast`** tier.
+can't switch its own model mid-run).
+
+**`dry-run`** is cheaper but not judgment-free. It executes the full tick logic read-only, so it
+still decides whether an issue is plannable, whether a comment is an approval, and which PR a live
+tick would advance — it just writes nothing. What it skips is plan *drafting*, code generation, and
+every side effect. Down-tier it to **`fast`** only to answer "which step would fire?"; if the point
+is to check that the triage decisions themselves are right, run it on the same tier as a live tick,
+since those decisions are what a lower tier gets wrong.
 
 See [`model-tiers.md`](../../../references/model-tiers.md) for the full tier guidance across the
 maintainerd suite.
