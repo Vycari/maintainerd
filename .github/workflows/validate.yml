@@ -56,5 +56,5 @@ jobs:
       - name: Vendored reference docs are in sync with the canonical
         run: ./scripts/sync-references.sh --check
 
-      - name: Links resolve in both the source and installed layouts
+      - name: Links resolve in both layouts; prose section references still exist
         run: python3 scripts/check-links.py

@@ -103,6 +103,75 @@ def destinations(line):
         i = j + 1
 
 
+# A prose cross-reference to a section by name: `see **X**`, `**X** below/above`, `**X** section`.
+#
+# Two forms, chosen by measurement rather than intuition. `see **X**` is a reliable signal — it
+# produced zero false positives across this repo. `in the **X**` is not, and was dropped: every one
+# of its 10 hits was ordinary emphasis ("in the **audits** plugin", "in the **stale** bucket").
+# The second form catches a trailing locator without needing "see".
+#
+# The first form must stay locator-optional. The bug this check exists for read
+# `see **Overlap & isolation**)` — no locator — so a rule requiring one misses precisely the
+# regression it was written to catch.
+#
+# Backticked spans are excluded: here they are config keys like `config.commands.lint`, never
+# section names.
+XREF = re.compile(
+    r"see\s+(?:the\s+)?\*\*([^*]{3,60})\*\*"          # see **X** / see the **X**
+    r"|\*\*([^*]{3,60})\*\*[\s,]+(?:section\b|below\b|above\b)"  # **X** below / above / section
+)
+HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+# These docs mark subsections with a bold lead-in as often as with a heading —
+# `**Fallback self-review** (when CodeRabbit can't keep up)` is a section in every sense that
+# matters to a reader. Treating those as anchors too is what keeps the check honest rather than
+# merely strict: a reference to one is not stale, and only genuinely vanished text gets reported.
+LEAD_IN = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)?\*\*([^*]{3,60})\*\*")
+
+
+def headings(path):
+    """Anchor texts in a file: real headings plus bold subsection lead-ins."""
+    out = set()
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            for pat, group in ((HEADING, 1), (LEAD_IN, 1)):
+                m = pat.match(line)
+                if m:
+                    # Strip inline markup so `## Step 4 — Triage` matches loose references.
+                    out.add(re.sub(r"[*`]", "", m.group(group)).strip().lower())
+    return out
+
+
+def check_prose_refs():
+    """Report `see **Section**` references whose target heading doesn't exist.
+
+    Links are validated elsewhere; this catches the other half. When a section is moved into
+    a reference file, prose that named it goes stale silently — the words still read fine and
+    no link is broken, so nothing flags it. That is exactly how the auto-dev split left
+    `see **Overlap & isolation**` pointing at a section that no longer existed.
+
+    Resolution is **same-file only**, deliberately. Counting headings from every file this one
+    links to was the first attempt and it silently defeated the check: SKILL.md links to
+    scheduling.md from its reference index, so `see **Overlap & isolation**` anywhere in the file
+    looked resolvable — the exact bug, reported clean. A bare section name only means something
+    within one document. If the content moved, the sentence should name a link instead, and once
+    it does it is no longer a bare prose reference and no longer matches.
+    """
+    stale = []
+    for md in sorted(glob(os.path.join(ROOT, "plugins", "**", "*.md"), recursive=True)):
+        reachable = headings(md)
+        with open(md, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                for m in XREF.finditer(line):
+                    name = (m.group(1) or m.group(2)).strip()
+                    key = re.sub(r"[*`]", "", name).strip().lower()
+                    if not any(key in h or h in key for h in reachable):
+                        stale.append(
+                            f"  {os.path.relpath(md, ROOT)}:{lineno} -> **{name}** (no such heading)"
+                        )
+    print(f"prose cross-references: {len(stale)} stale")
+    return stale
+
+
 def links(path):
     with open(path, encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, 1):
@@ -186,6 +255,43 @@ PARSER_CASES = [
 ]
 
 
+# (markdown body, expected stale reference names). Each case is a form that a previous
+# iteration of check_prose_refs() got wrong.
+PROSE_CASES = [
+    ("## Overlap & isolation\n\nsee **Overlap & isolation**)\n", []),          # heading present
+    ("# Doc\n\nsee **Overlap & isolation**)\n", ["Overlap & isolation"]),      # the #11 bug: no locator
+    ("# Doc\n\n**Fallback self-review** (why)\n\nsee **Fallback self-review** below\n", []),  # bold lead-in
+    ("# Doc\n\nin the **audits** plugin\n", []),                               # emphasis, not a reference
+    ("# Doc\n\nit is in the **stale** bucket\n", []),                          # emphasis, not a reference
+    ("# Doc\n\nsee `config.commands.lint`\n", []),                             # backticked config key
+    ("# Doc\n\nSee **Missing Thing** below.\n", ["Missing Thing"]),            # trailing locator
+    ("# Doc\n\n[link](other.md) and see **Nope**\n", ["Nope"]),                # a link elsewhere must not excuse it
+]
+
+
+def prose_self_test():
+    """Regression-check the prose cross-reference rule, including its false-positive cases."""
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for i, (body, expected) in enumerate(PROSE_CASES):
+            probe = os.path.join(tmp, f"case{i}.md")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            anchors = headings(probe)
+            got = []
+            with open(probe, encoding="utf-8") as fh:
+                for line in fh:
+                    for m in XREF.finditer(line):
+                        name = (m.group(1) or m.group(2)).strip()
+                        key = re.sub(r"[*`]", "", name).strip().lower()
+                        if not any(key in h or h in key for h in anchors):
+                            got.append(name)
+            if got != expected:
+                failures.append(f"  prose case {i}: expected {expected}, got {got}")
+    print(f"prose self-test: {len(PROSE_CASES) - len(failures)}/{len(PROSE_CASES)} cases pass")
+    return failures
+
+
 def self_test():
     """Regression-check the destination parser against the forms that have broken it."""
     failures = []
@@ -203,7 +309,7 @@ def self_test():
 
 
 def main():
-    parser_failures = self_test()
+    parser_failures = self_test() + prose_self_test()
     failures = list(parser_failures)
     failures += check_tree(os.path.join(ROOT, "plugins"), "source tree")
 
@@ -212,6 +318,8 @@ def main():
         failures += check_tree(tmp, "installed layout")
 
     failures += check_boundaries()
+    prose_failures = check_prose_refs()
+    failures += prose_failures
 
     if failures:
         print("\nFAIL:", file=sys.stderr)
@@ -222,7 +330,13 @@ def main():
                 "parsed (or deliberately skipped). Fix destinations()/links(), not the cases.",
                 file=sys.stderr,
             )
-        if len(failures) > len(parser_failures):
+        if prose_failures:
+            print(
+                "\nA prose reference names a section that no longer exists. Either restore the\n"
+                "heading, or repoint the sentence at a link to wherever the content moved.",
+                file=sys.stderr,
+            )
+        if len(failures) > len(parser_failures) + len(prose_failures):
             print(
                 "\nA link must stay inside its own plugin. If a skill needs a doc from\n"
                 "maintainerd-core, vendor it via scripts/sync-references.sh and link the copy.",
