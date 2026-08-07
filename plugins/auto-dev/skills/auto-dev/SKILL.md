@@ -211,8 +211,9 @@ If the build cannot complete within this run's time/effort budget, push the WIP 
 
 #### Labeling automated PRs
 
-Pass the label on the **create** call, never afterwards — external tooling reacts to the `opened`
-webhook within seconds, and a label added later does not retract a review that already started:
+Pass the label on the **create** call — external tooling reacts to the `opened` webhook within
+seconds, and a label added later does not retract a review that already started, so creation time is
+the only application that fully works:
 
 ```bash
 gh pr create --repo <config.repo> --base <config.defaultBranch> \
@@ -223,7 +224,10 @@ When delegating to `create-pr`, tell it to apply the label on its own `gh pr cre
 tick's first create, confirm the label exists with one
 `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` — on some `gh` versions `--label`
 fails *after* pushing the branch, leaving no PR. If it's missing, open the PR **without** it and say
-so in the exit report; never create the label yourself (invariant 5).
+so in the exit report; never create the label yourself (invariant 5). Applying it after the fact is
+the documented **repair** path, not a forbidden one: use
+`gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` if a PR somehow got
+opened unlabeled — that is exactly what step 0's re-stamp does on the next tick.
 
 Rationale — what the label is for, why an unlabeled PR beats a refused one, why step 0 re-stamps — is
 in [`references/pr-labeling.md`](references/pr-labeling.md).

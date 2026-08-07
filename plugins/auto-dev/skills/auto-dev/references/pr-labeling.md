@@ -7,8 +7,10 @@ reasoning behind them, needed only when something about the label goes wrong.
 
 ## What the label is for
 
-**Every** PR the pipeline opens carries it — the complete build in step 3 item 7, a yielded WIP
-draft, and any PR opened by delegating to `create-pr`. There is no path that opens a PR without it.
+Every PR the pipeline opens is *meant* to carry it — the complete build in step 3 item 7, a yielded
+WIP draft, and any PR opened by delegating to `create-pr`. No path opens a PR unlabeled by choice.
+The one documented exception is a missing label (below): the PR opens without it, the exit report
+says so, and step 0 re-stamps it on the first tick after the label exists.
 
 The label is what lets the maintainer configure external review tooling to stand down on automated
 PRs (CodeRabbit's `reviews.auto_review.labels` takes negative matches, e.g. `["!auto:pr"]`) and
