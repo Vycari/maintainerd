@@ -1,0 +1,123 @@
+name: version-bump
+
+# Patch-bump every plugin whose files changed in a push to main, then tag it.
+#
+# A plugin's version is the only signal Claude Code has that an installed copy is stale —
+# the install cache is keyed by version — so a merge that ships a skill change without a
+# bump never reaches anyone who already installed the plugin. Doing this on merge rather
+# than in each PR means bot-authored PRs (dependabot, auto-dev) get it for free.
+#
+# Unlike validate.yml this needs a write token, so it must never run on a fork's PR ref:
+# `push` to main only, and everything it executes comes from main post-merge.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# Serialize: two merges landing together would otherwise race to push bump commits.
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    # The bump commit itself touches plugins/*/.claude-plugin/plugin.json, which is a
+    # change under plugins/** and would bump again forever. A GITHUB_TOKEN push does not
+    # trigger workflows, so this is belt-and-braces — it keeps the loop closed if the
+    # token is ever swapped for a PAT.
+    if: ${{ !contains(github.event.head_commit.message, '[skip bump]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the bump script diffs against the pre-push sha and reads each
+          # manifest as it stood there.
+          fetch-depth: 0
+
+      - name: Resolve the pre-push commit
+        id: base
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # `before` is all-zeros on a branch's first push and stale after a force-push.
+          # First parent of HEAD is the previous tip of main in both cases.
+          if [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "ref=$BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+            echo "note: ${BEFORE:-<empty>} is not reachable, falling back to HEAD~1"
+          fi
+
+      - name: Bump the plugins this push touched
+        id: bump
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          # The script refuses to bump a plugin whose manifest and marketplace entry
+          # already disagree, and reparses both files after editing, so validate.yml's
+          # agreement invariant holds by construction on the commit this pushes.
+          #
+          # Tags go to a file rather than an output: an empty run and a one-blank-line
+          # run are the same string once a heredoc output is trimmed, and those two mean
+          # opposite things here.
+          python3 scripts/bump-version.py --changed-since "$BASE" > "$RUNNER_TEMP/tags.txt"
+          if [ -s "$RUNNER_TEMP/tags.txt" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit, push, and tag
+        if: ${{ steps.bump.outputs.bumped == 'true' }}
+        run: |
+          set -euo pipefail
+          # One tag per line, read into an array — splitting an unquoted "$TAGS" on IFS
+          # would be at the mercy of the shell's newline handling. Read rather than
+          # mapfile so this block runs the same under any bash back to 3.2.
+          TAGS=()
+          while IFS= read -r line; do TAGS+=("$line"); done < "$RUNNER_TEMP/tags.txt"
+
+          # Fail loudly on a re-run: the checkout predates the bump, so the script would
+          # recompute versions that main already carries. A clashing tag is the cheapest
+          # place to catch that, before a duplicate bump commit exists.
+          git fetch --tags --quiet
+          for tag in "${TAGS[@]}"; do
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "error: tag $tag already exists — main already has this bump" >&2
+              exit 1
+            fi
+          done
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # maintainerd-core--v0.1.1 -> "maintainerd-core 0.1.1", joined with commas.
+          SUMMARY=$(printf '%s\n' "${TAGS[@]}" | sed 's/--v/ /' | paste -sd, - | sed 's/,/, /g')
+          # Stage the manifests by name — the script touches nothing else, and `-A` would
+          # sweep in anything a future step happens to leave in the tree.
+          git add .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json
+
+          # No staged change means every version here was bumped by hand in the PR. That
+          # still wants a tag, so fall through to tagging rather than treating it as a
+          # no-op — but there is nothing to commit or push.
+          if git diff --cached --quiet; then
+            echo "versions already bumped in the merge — tagging only"
+          else
+            git commit -m "chore(version): bump ${SUMMARY} [skip bump]"
+
+            # Push the branch before creating tags: a rebase moves the commit, and a tag
+            # made beforehand would be left pointing at an object no longer on main.
+            pushed=
+            for attempt in 1 2 3; do
+              if git push origin HEAD:main; then pushed=1; break; fi
+              echo "push rejected (attempt $attempt) — rebasing onto main"
+              git pull --rebase origin main
+            done
+            [ -n "$pushed" ] || { echo "error: could not push the bump to main" >&2; exit 1; }
+          fi
+
+          for tag in "${TAGS[@]}"; do
+            git tag -a "$tag" -m "${tag%%--v*} ${tag##*--v}"
+          done
+          git push origin "${TAGS[@]}"

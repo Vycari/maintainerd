@@ -93,6 +93,7 @@ Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the sk
 maintainerd/
   .claude-plugin/marketplace.json
   scripts/sync-references.sh
+  scripts/bump-version.py
   plugins/
     core/      .claude-plugin/plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
     repo-ops/  .claude-plugin/plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
@@ -129,6 +130,58 @@ Edit the canonical file in `plugins/core/references/`, then run:
 ```
 
 The copies carry a generated-file banner and CI fails if they drift.
+
+## Versioning
+
+**A plugin's version is the only signal Claude Code has that an installed copy is stale.** The
+install cache is keyed by it —
+
+```text
+<cache>/maintainerd/audits/0.2.0/skills/audit-tests/SKILL.md
+```
+
+— so a merge that rewrites a skill but leaves the version alone reaches nobody who already
+installed the plugin. They keep running the old content indefinitely.
+
+So versions are not a release ceremony here; they are the delivery mechanism, and they are
+automatic. [`.github/workflows/version-bump.yml`](.github/workflows/version-bump.yml) runs on
+every push to `main`, patch-bumps each plugin whose files the push touched, commits that back to
+`main`, and pushes a `<plugin>--v<version>` tag (the convention `claude plugin tag` uses). Plugins
+the push didn't touch don't move, so installs of those stay put.
+
+Two things to know when working in this repo:
+
+- **The version lives in two files that must agree** — `plugins/<dir>/.claude-plugin/plugin.json`
+  and the plugin's entry in `.claude-plugin/marketplace.json`. `validate.yml` fails the build if
+  they drift. Use the script rather than editing either by hand:
+
+  ```bash
+  ./scripts/bump-version.py --level minor repo-ops
+  ```
+
+- **A hand-written bump wins.** For a change that deserves a minor or major, bump it in the PR;
+  on merge the workflow sees the version already moved in that range, leaves it alone, and just
+  tags it. The automatic patch is the default, not an override.
+
+### Pulling updates into a local install
+
+Claude Code refreshes the marketplace clone on its own schedule, which can leave a checkout well
+behind `main`. To force it:
+
+```bash
+claude plugin marketplace update maintainerd
+```
+
+Then update the plugins themselves — this is what re-reads the version and re-downloads. These
+are usually installed per-repo, and `update` defaults to `--scope user`, so pass the scope it was
+installed with (`claude plugin list` reports it):
+
+```bash
+claude plugin update maintainerd-core --scope project
+```
+
+A restart is required for either to take effect. If a skill looks like it's running an old
+version, compare the version in `claude plugin list` against `marketplace.json`.
 
 ## Roadmap
 
