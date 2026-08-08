@@ -33,7 +33,7 @@ suite's scope coherent.
 | Plugin | Skills |
 | --- | --- |
 | `maintainerd-core` | `bootstrap` |
-| `repo-ops` | `create-pr`, `address-review`, `code-review`, `release`, `daily-changelog`, `daily-update` |
+| `repo-ops` | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` |
 | `audits` | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` |
 | `research` | `research-radar` |
 | `auto-dev` | `auto-dev`, `review-queue`, `create-issue` |

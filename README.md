@@ -15,7 +15,7 @@ skill generates that contract for any repo.
 | Plugin | Skills | Install when |
 | --- | --- | --- |
 | **maintainerd-core** | `bootstrap`, `doctor` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it. |
-| **repo-ops** | `create-pr`, `address-review`, `code-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
+| **repo-ops** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
 | **audits** | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` | You want scheduled tech-debt / test / security / dependency / doc sweeps. |
 | **research** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
 | **journal** | `worklog` | You want a day's shipped work captured into your Obsidian vault (user-scoped — spans all your repos). |
@@ -95,7 +95,7 @@ maintainerd/
   scripts/sync-references.sh
   plugins/
     core/      .claude-plugin/plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
-    repo-ops/  .claude-plugin/plugin.json  skills/{create-pr,address-review,code-review,release,daily-changelog,daily-update}/
+    repo-ops/  .claude-plugin/plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
     audits/    .claude-plugin/plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  skills/{research-radar}/
     journal/   .claude-plugin/plugin.json  skills/{worklog}/
