@@ -64,13 +64,19 @@ def git(*args):
     ).stdout
 
 
+def parsed(version):
+    """(major, minor, patch) for a plain X.Y.Z string, else None. Orders correctly."""
+    match = SEMVER.match(version) if isinstance(version, str) else None
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
 def bump(version, level):
-    match = SEMVER.match(version)
-    if not match:
+    numbers = parsed(version)
+    if numbers is None:
         # Prerelease/build metadata would need a policy this repo has not picked. Refuse
         # rather than guess: a wrong bump is published to every installed copy.
         fail(f"version {version!r} is not a plain X.Y.Z semver — bump it by hand")
-    major, minor, patch = (int(part) for part in match.groups())
+    major, minor, patch = numbers
     if level == "major":
         return f"{major + 1}.0.0"
     if level == "minor":
@@ -284,6 +290,23 @@ def main():
                 log(f"skip {record['name']}: new since {args.changed_since}, keeping {current}")
                 continue
             if previous != current:
+                # A hand-written version is not checked by anything upstream of here, and
+                # this is the point where it becomes a published tag. A missing one would
+                # tag `--vNone`; a lower one would hand every install a downgrade that
+                # the version-keyed cache reads as a fresh release.
+                before, after = parsed(previous), parsed(current)
+                if after is None:
+                    fail(f"{record['name']}: version {current!r} is not a plain X.Y.Z semver")
+                if before is None:
+                    fail(
+                        f"{record['name']}: version at {args.changed_since} was {previous!r}, "
+                        "not a plain X.Y.Z semver — cannot tell whether this is an increase"
+                    )
+                if after <= before:
+                    fail(
+                        f"{record['name']}: version went {previous} -> {current}; "
+                        "a published version must increase"
+                    )
                 log(f"skip {record['name']}: already bumped {previous} -> {current}")
                 tags.append(f"{record['name']}--v{current}")
                 continue

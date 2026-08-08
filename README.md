@@ -161,7 +161,14 @@ Two things to know when working in this repo:
 
 - **A hand-written bump wins.** For a change that deserves a minor or major, bump it in the PR;
   on merge the workflow sees the version already moved in that range, leaves it alone, and just
-  tags it. The automatic patch is the default, not an override.
+  tags it. The automatic patch is the default, not an override. A hand-written version has to be
+  plain `X.Y.Z` and has to increase — the script refuses anything else rather than publish a
+  `--vNone` tag or a downgrade that the version-keyed cache would read as a fresh release.
+
+- **`[skip bump]` opts out.** A merge or squash commit message containing that marker skips the
+  workflow entirely, for a change under `plugins/**` that shouldn't reach anyone — a typo in a
+  comment, say. It's also what the workflow stamps on its own commits so they don't re-trigger
+  it. Use it sparingly: a skipped bump means the change ships to nobody until the next one.
 
 ### Pulling updates into a local install
 

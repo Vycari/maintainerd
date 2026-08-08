@@ -24,10 +24,14 @@ concurrency:
 
 jobs:
   bump:
-    # The bump commit itself touches plugins/*/.claude-plugin/plugin.json, which is a
-    # change under plugins/** and would bump again forever. A GITHUB_TOKEN push does not
-    # trigger workflows, so this is belt-and-braces — it keeps the loop closed if the
-    # token is ever swapped for a PAT.
+    # Closes the loop: the bump commit itself touches plugins/*/.claude-plugin/plugin.json
+    # and would otherwise bump forever. A GITHUB_TOKEN push does not trigger workflows, so
+    # that alone would do it — this keeps it closed if the token is ever swapped for a PAT.
+    #
+    # It doubles as the manual escape hatch (documented in the README's Versioning
+    # section): put [skip bump] in a merge or squash commit message to land a change under
+    # plugins/** without publishing a new version. Deliberately matched loosely so a human
+    # can reach for it, which does mean any message carrying that marker skips.
     if: ${{ !contains(github.event.head_commit.message, '[skip bump]') }}
     runs-on: ubuntu-latest
     steps:
@@ -44,7 +48,12 @@ jobs:
         run: |
           # `before` is all-zeros on a branch's first push and stale after a force-push.
           # First parent of HEAD is the previous tip of main in both cases.
-          if [ -n "$BEFORE" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+          #
+          # Ancestry, not existence: a force-push leaves the old commit reachable through
+          # some other ref, so it still resolves. Diffing HEAD against a commit on an
+          # abandoned history reports files this push never touched, and would bump and
+          # tag plugins that did not change.
+          if [ -n "$BEFORE" ] && git merge-base --is-ancestor "$BEFORE" HEAD 2>/dev/null; then
             echo "ref=$BEFORE" >> "$GITHUB_OUTPUT"
           else
             echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
