@@ -82,10 +82,10 @@ Run the block matching `config.language`. If neither, run the language-agnostic 
 whatever lockfile exists, secret scan, a read for hardcoded config) and **say so in the report**.
 
 **Python** (`config.language == "python"`):
-- Deps: `pip-audit` (or `uv pip audit`) if present; else read `uv.lock`/`poetry.lock`/`requirements*.txt` and check the top direct deps against the OSV API.
+- Deps: `pip-audit` if present; else `uv audit` **if this `uv` has it** (`uv audit --help`; older versions don't — and there is no `uv pip audit` subcommand at all, so don't reach for one); else read `uv.lock`/`poetry.lock`/`requirements*.txt` and check the top direct deps against the OSV API. Record which of the three ran.
 
 **TypeScript / JavaScript** (`config.language == "typescript"`):
-- Deps: `npm audit --json` if `npm` is present; else `osv-scanner`; else read `package-lock.json` and check the top direct deps against the OSV API. **If none of the three is available, report dependencies as "not scanned"** — `npm` ships with Node but a scheduled sandbox may have neither, and a missing auditor must never read as a clean dependency tree.
+- Deps: `npm audit --json` if `npm` is present. **A non-zero exit does not mean it failed** — `npm audit` exits non-zero precisely *because* it found vulnerabilities, so parse the JSON and use it whenever it's usable; only fall through when the output isn't parseable. Then `osv-scanner`; then read `package-lock.json` and check the top direct deps against the OSV API. **If no step yields a usable result, report dependencies as "not scanned"** — `npm` ships with Node but a scheduled sandbox may have neither, and a missing auditor must never read as a clean dependency tree.
 
 ## What it does NOT do
 
@@ -93,9 +93,10 @@ whatever lockfile exists, secret scan, a read for hardcoded config) and **say so
   and the rest belong to Claude Code's built-in `/security-review`, which catches them in the diff
   before they land. Deliberately not duplicated here: a nightly re-scan of shipped code is a worse
   place to catch them, and two scanners filing on the same finding is noise. Nothing here scans for
-  them, so the report must never claim they were covered. If you happen to notice one while reading
-  for something else, mention it as an aside in the report — never a PR, never an issue, and never a
-  coverage claim.
+  them: don't detect them, don't file them, don't report them — not even as an aside. Half-reporting
+  a category nothing swept is the coverage dishonesty this skill exists to avoid, pointed the other
+  way. **Repo-specific rules from `config.guidelines` are a different thing and are still checked** —
+  see the guidelines note above; the report lists them separately.
 - **It doesn't run penetration tests or hit live endpoints.** Static + dependency analysis only.
 - **It doesn't fix secrets by deletion.** Removing a key from HEAD leaves it in git history and does
   nothing to revoke it; the fix is rotation, which is a human action.
@@ -198,7 +199,8 @@ Security audit — <YYYY-MM-DD>   (repo: <config.repo>, language: <config.langua
 Coverage:
   - Dependencies:  scanned via <tool/OSV-API>  |  Secrets: scanned via <tool/grep+history>
   - Hardcoded config: read                     |  NOT SCANNED: <category> (<tool> unavailable)
-  - Code patterns: delegated to /security-review (not scanned here)
+  - Repo guideline rules: checked (<n> rules from config.guidelines) | or: guidelines missing/TODO
+  - Generic code patterns: not scanned here — delegated to /security-review
 
 Findings: <total>   (Critical <n> · High <n> · Medium <n> · Low <n>)
   PRs opened:  #NNN sec-deps-bump-urllib3 — CVE-2024-XXXX urllib3 2.0.4→2.0.7 (High)
