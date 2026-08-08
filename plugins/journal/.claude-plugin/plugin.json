@@ -1,6 +1,6 @@
 {
   "name": "journal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "User-scoped narration and record-keeping that spans repos. worklog captures a day's shipped work — from merged PRs enriched by the live session — into the user's Obsidian vault as a session-summary note, a project-hub link, and a daily-note line. Unlike the repo-scoped plugins, its vault setting lives in a user-level ~/.claude/maintainerd.json, with an optional per-repo project pointer. A home for future journal skills (weekly-review, decision-log).",
   "author": {
     "name": "Allen Hutchison",

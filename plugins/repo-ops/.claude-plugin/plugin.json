@@ -1,6 +1,6 @@
 {
   "name": "repo-ops",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Baseline maintainer dev flow as config-driven skills: create-pr (opens PRs only after running the repo's format/lint/build/test pre-flight), address-review (drive the iterative response loop on bot + human PR feedback to approval \u2014 fix, push, reply to every inline thread and a PR-level summary), release (cut a versioned release: gather changes since the last tag, update notes, run the gate, bump, tag, publish), daily-changelog (one markdown file per day from merged PRs), and daily-update (runs the repo's per-day housekeeping skills and bundles their output into one PR). Reads .claude/maintainerd.json.",
   "author": {
     "name": "Allen Hutchison",
