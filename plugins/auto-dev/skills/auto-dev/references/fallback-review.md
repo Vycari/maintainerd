@@ -36,10 +36,17 @@ Then a PR qualifies when **all** of these hold:
 
 1. **Fresh-eyes adversarial review.** The pipeline wrote this diff, so don't trust the memory of
    writing it — re-read the full diff from scratch (`gh pr diff`) against the approved plan on the
-   issue. **If the repo's `code-review` skill is installed, apply its standards**; otherwise review
-   for correctness, error handling, edge cases, test coverage and quality, the repo's documentation
-   policy, and the rules in `config.guidelines`. Actively look for reasons the change is wrong, not
-   confirmation that it's right.
+   issue.
+
+   **Use Claude Code's built-in `/code-review` for the review itself** when it's available — it is
+   a better general reviewer than anything this plugin would restate, and keeping one reviewer means
+   one place to improve. It supplies the *method*; `config.guidelines` supplies the *repo-specific
+   standards* it can't know (this repo's error-handling conventions, logging, typing expectations,
+   banned patterns, test rules). Feed it both.
+
+   If it isn't available, review directly for correctness, error handling, edge cases, test coverage
+   and quality, the repo's documentation policy, and the rules in `config.guidelines`. Either way,
+   actively look for reasons the change is wrong, not confirmation that it's right.
 2. **Fix what's real.** Valid findings get fixed now, in this tick: check out the automated branch,
    focused commits (one logical fix per commit), full pre-flight (`config.commands.*` — skip any
    whose value is `null`), push.

@@ -11,7 +11,8 @@ runs, the repo has:
 - `.claude/maintainerd.json` — structured config (schema in
   [`../../references/config-schema.md`](../../references/config-schema.md)).
 - `.claude/guidelines/coding.md`, `testing.md`, `invariants.md` — free-form rule files the audits
-  and code-review read.
+  read, and that any reviewer (including Claude Code's built-in `/code-review`) should be given as
+  this repo's standards.
 
 The goal is a config that's *correct on the first read* — detect everything you safely can, ask
 the user only about what's genuinely ambiguous, and be honest in the final report about what still

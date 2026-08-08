@@ -312,5 +312,6 @@ delegate to them say what to do instead.
 - **review-queue** — the human half of this pipeline: the maintainer's console for approving plans, answering questions, and parking/merging. Feeds decisions back into the same state machine **as the human** (never with the marker).
 - **create-pr** — step 3 delegates PR creation to it (template, CI gates, docs policy). It does **not** do behavioral verification; that stays step 3's own gate.
 - **verify** — step 3 item 6 uses it to drive the built change end-to-end before marking a PR ready.
-- **code-review** — supplies the review standards step 2's fallback self-review applies.
+- **`/code-review`** (Claude Code built-in, not a maintainerd skill) — step 2's fallback self-review
+  delegates to it for review method, paired with `config.guidelines` for this repo's standards.
 - **bootstrap** — generates `.claude/maintainerd.json`, including the `autoDev` block this skill reads.

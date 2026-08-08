@@ -314,8 +314,8 @@ Long-form, judgment-heavy rules don't belong in JSON. They live in markdown file
 
 | File | Read by | Holds |
 | --- | --- | --- |
-| `coding.md` | `code-review`, `audit-architecture` | The coding standards a senior reviewer enforces here — error-handling conventions, logging (`logger` vs `print`/`console`), typing expectations, naming, banned patterns. |
-| `testing.md` | `audit-tests`, `code-review` | Test conventions — the DB/fixture pattern, what may and may not be mocked, isolation rules, assertion expectations, naming. |
+| `coding.md` | `audit-architecture`, `auto-dev`'s self-review, any reviewer you point at it | The coding standards a senior reviewer enforces here — error-handling conventions, logging (`logger` vs `print`/`console`), typing expectations, naming, banned patterns. |
+| `testing.md` | `audit-tests`, `auto-dev`'s self-review, any reviewer you point at it | Test conventions — the DB/fixture pattern, what may and may not be mocked, isolation rules, assertion expectations, naming. |
 | `invariants.md` | `audit-architecture` | The **load-bearing, repo-specific invariants** that CI doesn't catch. This is the file that replaces the hardcoded repo-specific prose the old per-repo audits carried (e.g. pepper's `app.state` lifespan wiring + `SecretStr` rule; an Obsidian plugin's "use `plugin.logger`, never `console`" + "don't touch the generated-help file"). The audit reads each rule here and checks the diff against it. |
 | `release.md` *(optional)* | `release` | Repo-specific release gates and caveats: a runtime/smoke test the unit suite can't cover, dependency caveats, release-name formatting a registry enforces, notes-rendering quirks, artifact specifics (e.g. an Obsidian plugin's live-transport smoke gate + the "release title must contain full X.Y.Z" rule). |
 
