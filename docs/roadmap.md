@@ -61,7 +61,7 @@ suite's scope coherent.
 
 | Skill | Status | Source | What it does |
 | --- | --- | --- | --- |
-| ~~`audit-security`~~ | ✅ **Shipped** | new (complements `/security-review`) | Whole-tree + dependency sweep: vulnerable deps (CVEs), committed secrets, dangerous patterns (injection, unsafe deserialization, shelling out with user input). Severity-ranked; honest about scanner coverage (missing tool → "not scanned", never "clean"); safe secret handling (redact + alert, never auto-delete). Distinct from `/security-review`'s branch-diff scope. |
+| ~~`audit-security`~~ | ✅ **Shipped** | new (complements `/security-review`) | Whole-tree + dependency sweep: vulnerable deps (CVEs), committed secrets (tree + git history), permissive defaults. Code patterns are Claude Code's built-in `/security-review`, not this. Severity-ranked; honest about scanner coverage (missing tool → "not scanned", never "clean"); safe secret handling (redact + alert, never auto-delete). Distinct from `/security-review`'s branch-diff scope. |
 | ~~`audit-deps`~~ | ✅ **Shipped** | new | Dependency health (the non-security side): outdated (patch/minor batched into one PR, major → issue), deprecated/EOL, unused + phantom deps, lockfile drift, license issues. Honest about analyzer coverage; dedups against `audit-security` (CVEs) and any Dependabot/Renovate. |
 | `audit-todos` | ✨ Net-new | — | Sweep `TODO`/`FIXME`/`HACK`/`XXX`, age them against blame, and file issues for stale ones. Lightweight, language-agnostic, satisfying. |
 | `audit-config` | ✨ Net-new | — | Meta-maintenance of the plumbing: validate CI workflows, `.env.example` ↔ real settings sync, schedule definitions, and the repo's own `maintainerd.json`/guidelines health. |

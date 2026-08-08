@@ -10,8 +10,8 @@ their own model; this doc tells the maintainer which **tier** each routine wants
 `config.models` (below) is where the repo binds a tier to a concrete model id.
 
 This is the proactive-loop cost lever: *route routine, mechanical work to a smaller/faster model, and
-spend the most capable model only on judgment.* A nightly dependency bump and a security taint-path
-analysis are both "audits," but they don't need the same brain.
+spend the most capable model only on judgment.* A nightly dependency bump and adjudicating whether a
+disclosed CVE is actually reachable are both "audits," but they don't need the same brain.
 
 ## The mechanism (and its one honest limit)
 
@@ -55,7 +55,7 @@ Model ids change over time — check the current lineup with `/model` rather tha
 | `audit-deps` | **fast** | Runs analyzers and parses their output; the judgment (major bump vs. patch, license policy) is narrow. Escalate a specific replacement decision to a `capable` subagent if needed. |
 | `audit-architecture` | **capable** | DRY/abstraction smells, invariant drift, and PR-vs-issue routing are judgment-heavy — exactly what a smaller model gets wrong. |
 | `audit-tests` | **capable** (or `mid`) | "Is this mock decorative? is this assertion actually weak?" is judgment. It runs several times a day, so a `mid` rung is a reasonable cost trade if the repo has one. |
-| `audit-security` | **capable** | Taint paths and "don't "fix" what you don't understand" are the highest-stakes judgment in the suite. Don't down-tier security. |
+| `audit-security` | **capable** | Advisory triage and "don't `fix` what you don't understand" are the highest-stakes judgment in the suite — is this CVE reachable here, is this string a live credential. Don't down-tier security. |
 | `auto-dev` | **capable** | Writes code, drafts plans, adjudicates review feedback. Its `dry-run` mode (read-only report) is safe on **fast**. |
 | `dependabot` | **fast** | Gating and merging is mechanical — read check conclusions, compare version strings, call `gh pr merge`. Its one judgment-heavy step (diagnosing a broken update) is the exception the subagent lever exists for: delegate *that* to a `capable` subagent rather than up-tiering the whole routine. |
 | `research-radar` | **capable** (or `mid`) | Deriving themes and curating relevance is judgment; the arXiv fetch/parse around it is cheap but can't be split from the same run. |
