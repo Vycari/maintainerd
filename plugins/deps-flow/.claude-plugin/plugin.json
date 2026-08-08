@@ -1,6 +1,6 @@
 {
   "name": "deps-flow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Autonomous Dependabot queue management — the one maintainerd plugin that merges. The dependabot skill gates every bot-authored dependency PR on all checks green, no requested changes, and a configured semver policy (patch/minor by default, majors held for the human), merges one PR per non-overlapping file group per pass, waits for Dependabot to rebase the rest (nudging with @dependabot rebase only when a rebase is genuinely stuck), and repeats until the queue drains. It never fixes a broken update: it diagnoses the CI failure, files one issue with the evidence, labels the PR blocked, and moves on. Install only in repos where a bot is allowed to merge; every knob lives in .claude/maintainerd.json's depsFlow block.",
   "author": {
     "name": "Allen Hutchison",

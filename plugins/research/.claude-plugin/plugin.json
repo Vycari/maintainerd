@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Proactive research skills that surface relevant outside knowledge and open a PR or digest. research-radar periodically scans arXiv for papers relevant to the work in this repo and writes a dated digest. A home for future research tooling (deep research, GitHub/code search, prior-art scans). Themes and output paths come from .claude/maintainerd.json.",
   "author": {
     "name": "Allen Hutchison",
