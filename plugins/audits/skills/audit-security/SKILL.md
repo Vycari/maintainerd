@@ -69,9 +69,12 @@ dependency you never touched, a secret committed months ago, a permissive defaul
 | **Committed secrets / credentials** | **Critical** | Run a secret scanner if present (`gitleaks detect`, `trufflehog`); otherwise grep heuristics over the tree **and git history** for high-entropy strings and known token shapes (`AKIA…`, `ghp_…`, `sk-…`, `-----BEGIN … PRIVATE KEY-----`, `xox[baprs]-…`, JWT triples, `password|secret|api_key\s*[:=]\s*["'][^"']+`). | **Issue (redacted) + alert the user directly.** Never a "fix" PR — see [Handling secrets safely](#handling-secrets-safely). |
 | **Hardcoded config / permissive defaults** | Medium | Read for in-source credentials that should be env/secret-managed, `DEBUG=True` in shippable config, CORS `*` with credentials, overly broad file modes, auth disabled in non-test code. Cross-check against `config.guidelines`. | **Issue** — usually a judgment/ownership call. |
 
-You're not limited to this table — if a security-minded reviewer would flag something else (an
-auth check that can be bypassed, a missing rate limit on a sensitive endpoint, a logged secret),
-capture it. Keep the routing rule: mechanical + behavior-preserving → PR; judgment or redesign → issue.
+You're not limited to this table **within these three categories** — a logged secret, a credential
+in CI config, an auth toggle left off in shippable settings all belong here even if the wording above
+didn't anticipate them. What this clause is *not* is a re-entry for generic code patterns: if the
+finding is a dangerous construct in source (injection, unsafe deserialization, weak crypto), it is
+`/security-review`'s, not this sweep's. Keep the routing rule: mechanical + behavior-preserving → PR;
+judgment or redesign → issue.
 
 ### Language-specific detection
 
@@ -82,15 +85,17 @@ whatever lockfile exists, secret scan, a read for hardcoded config) and **say so
 - Deps: `pip-audit` (or `uv pip audit`) if present; else read `uv.lock`/`poetry.lock`/`requirements*.txt` and check the top direct deps against the OSV API.
 
 **TypeScript / JavaScript** (`config.language == "typescript"`):
-- Deps: `npm audit --json` (available without extra install); prefer `osv-scanner`/`npm audit` and read `package-lock.json`.
+- Deps: `npm audit --json` if `npm` is present; else `osv-scanner`; else read `package-lock.json` and check the top direct deps against the OSV API. **If none of the three is available, report dependencies as "not scanned"** — `npm` ships with Node but a scheduled sandbox may have neither, and a missing auditor must never read as a clean dependency tree.
 
 ## What it does NOT do
 
 - **It doesn't review code patterns.** Injection, unsafe deserialization, weak crypto, disabled TLS
   and the rest belong to Claude Code's built-in `/security-review`, which catches them in the diff
   before they land. Deliberately not duplicated here: a nightly re-scan of shipped code is a worse
-  place to catch them, and two scanners filing on the same finding is noise. If a sweep happens to
-  notice one, report it — don't open a PR for it.
+  place to catch them, and two scanners filing on the same finding is noise. Nothing here scans for
+  them, so the report must never claim they were covered. If you happen to notice one while reading
+  for something else, mention it as an aside in the report — never a PR, never an issue, and never a
+  coverage claim.
 - **It doesn't run penetration tests or hit live endpoints.** Static + dependency analysis only.
 - **It doesn't fix secrets by deletion.** Removing a key from HEAD leaves it in git history and does
   nothing to revoke it; the fix is rotation, which is a human action.
@@ -116,7 +121,8 @@ Dirty tree (outside `config.paths.skillsDir`) → stop and report; a human is mi
 Probe once, up front, and **carry the result into the report**:
 
 ```bash
-for t in gitleaks trufflehog osv-scanner pip-audit; do command -v "$t" >/dev/null 2>&1 && echo "have: $t" || echo "missing: $t"; done
+# Probe the dependency auditor for THIS repo's language too — npm for typescript, pip-audit for python.
+for t in gitleaks trufflehog osv-scanner pip-audit npm; do command -v "$t" >/dev/null 2>&1 && echo "have: $t" || echo "missing: $t"; done
 ```
 
 For every category whose preferred scanner is missing, you'll either fall back to the grep/OSV-API
@@ -146,8 +152,16 @@ worth a second look.
 Process findings **highest-severity first**. For each:
 
 - **PR** (counts against `config.audits.securityPrCap`) when the fix is mechanical, behavior-preserving,
-  < ~150 lines, ≤ 5 files: a non-breaking dependency bump (pin + lockfile), removing a committed
-  default that should be env-supplied, tightening an overly broad file mode.
+  < ~150 lines, ≤ 5 files: a non-breaking dependency bump (pin + lockfile), tightening an overly
+  broad file mode, flipping a shippable `DEBUG=True`.
+
+  **Removing a committed default is not automatically one of these.** Two ways it bites: if the value
+  is actually a credential, deleting it from HEAD leaves it in history and revokes nothing — that's a
+  secret, route it through [Handling secrets safely](#handling-secrets-safely) instead. And if the
+  code has no required-env validation and no deployment config supplying the value, removing it
+  turns a working start-up into a crash. Open a PR only when the value is demonstrably non-secret
+  **and** you can point to the validation or deployment config that covers it; otherwise file an
+  issue and say which of the two you couldn't establish.
   - Branch `sec-<category>-<descriptor>` off `config.defaultBranch`.
   - **Delegate to `create-pr` if installed**; else run `config.commands.{format,lint,build,test}`
     (skip `null`) as pre-flight before pushing. No `--no-verify`. Never auto-merge.
@@ -164,7 +178,7 @@ in the report** (clearly marked "over cap — file next run / fix now"); only Me
 Before reporting, run the **pattern-promotion** check. If a finding this run is an instance of a
 *specific, encodable* security pattern this audit has already fixed or filed
 `config.audits.promoteThreshold` times (default 3) within `config.audits.promoteLookbackDays` (default
-90) — e.g. *"new HTTP clients keep being constructed with `verify=False`"* — file **one** human-gated
+90) — e.g. *"credentials keep landing in committed config instead of the secret manager"* — file **one** human-gated
 issue proposing the pattern become a rule in `config.guidelines.invariants` / `config.guidelines.coding`,
 rather than only fixing the instance again. If the rule already exists and keeps being violated, the
 proposal should ask for a **mechanical guard** (a dependency-audit CI step, a secret-scanning
@@ -183,7 +197,8 @@ Security audit — <YYYY-MM-DD>   (repo: <config.repo>, language: <config.langua
 
 Coverage:
   - Dependencies:  scanned via <tool/OSV-API>  |  Secrets: scanned via <tool/grep+history>
-  - Patterns:      scanned via <tool/grep>      |  NOT SCANNED: <category> (<tool> unavailable)
+  - Hardcoded config: read                     |  NOT SCANNED: <category> (<tool> unavailable)
+  - Code patterns: delegated to /security-review (not scanned here)
 
 Findings: <total>   (Critical <n> · High <n> · Medium <n> · Low <n>)
   PRs opened:  #NNN sec-deps-bump-urllib3 — CVE-2024-XXXX urllib3 2.0.4→2.0.7 (High)
@@ -238,5 +253,5 @@ directly. Pairs with `audit-architecture` (structure), `audit-tests` (test quali
 against its own label/branch prefix, so running them together is fine.
 
 **Model tier:** advisory triage — is this CVE reachable here, is this string a live credential — and
-"don't 'fix' what you don't understand" are the highest-stakes judgment in the audit suite — schedule on the **`capable`** tier and never down-tier security to save
+"don't `fix` what you don't understand" are the highest-stakes judgment in the audit suite — schedule on the **`capable`** tier and never down-tier security to save
 tokens. See [`../../references/model-tiers.md`](../../references/model-tiers.md).
