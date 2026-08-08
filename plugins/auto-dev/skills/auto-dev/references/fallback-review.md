@@ -36,10 +36,32 @@ Then a PR qualifies when **all** of these hold:
 
 1. **Fresh-eyes adversarial review.** The pipeline wrote this diff, so don't trust the memory of
    writing it — re-read the full diff from scratch (`gh pr diff`) against the approved plan on the
-   issue. **If the repo's `code-review` skill is installed, apply its standards**; otherwise review
-   for correctness, error handling, edge cases, test coverage and quality, the repo's documentation
-   policy, and the rules in `config.guidelines`. Actively look for reasons the change is wrong, not
-   confirmation that it's right.
+   issue.
+
+   **Use Claude Code's built-in `/code-review` for the review itself** when it's available — it is
+   a better general reviewer than anything this plugin would restate, and keeping one reviewer means
+   one place to improve. It supplies the *method*; `config.guidelines` supplies the *repo-specific
+   standards* it cannot know. Hand it both, concretely:
+
+   1. **Read the guideline files first**, in full, before invoking anything:
+      `config.guidelines.coding`, `config.guidelines.testing`, and `config.guidelines.invariants`.
+   2. **Carry their rules into the review** — state them in the request you make of the reviewer, so
+      it checks the diff against *this repo's* conventions rather than generic good practice. A
+      built-in reviewer has no way to discover these files on its own; if they don't reach it, they
+      are not applied.
+   3. **Then check the diff against those rules yourself** and fold anything the reviewer missed
+      into the same findings list. The guideline rules are the half you own — never assume they
+      were covered because a review ran.
+
+   **If a guideline file is missing or still full of `TODO` markers**, don't block and don't invent
+   rules: note it in the fallback summary's "For your judgement" section (naming which file) and
+   proceed with the language-generic review only. Rule coverage is only as good as those files —
+   the same convention the audits follow.
+
+   If `/code-review` isn't available at all, review directly for correctness, error handling, edge
+   cases, test coverage and quality, the repo's documentation policy, and the rules in
+   `config.guidelines` — steps 1 and 3 above still apply. Either way, actively look for reasons the
+   change is wrong, not confirmation that it's right.
 2. **Fix what's real.** Valid findings get fixed now, in this tick: check out the automated branch,
    focused commits (one logical fix per commit), full pre-flight (`config.commands.*` — skip any
    whose value is `null`), push.

@@ -356,7 +356,7 @@ Schedule this as its own slot (a few times a day is fine given the silent-on-cle
 
 - `audit-architecture` — owns the **source** side (oversized modules, source DRY/typing/dead code, source invariants, and modules with **zero** tests). Anything about source, not tests, goes there.
 - `create-pr` — used (if installed) for the PR pre-flight + open in step 5; enforces the repo's gates and PR template.
-- `code-review` — the on-demand reviewer for a specific diff; this skill is the scheduled, test-only sweep.
+- `/code-review` (Claude Code built-in) — the on-demand reviewer for a specific diff; this skill is the scheduled, test-only sweep.
 - `audit-design-docs` / `audit-product-docs` — the doc-side audits; same FIX-FIRST, capped, dedup-aware shape, different surface.
 - `bootstrap` — generates the `.claude/maintainerd.json` and `config.guidelines.testing` this skill reads.
 - [`pattern-promotion.md`](../../references/pattern-promotion.md) — the shared step-7 mechanism for proposing a recurring test-quality pattern become a rule in `config.guidelines.testing`.
