@@ -179,16 +179,24 @@ behind `main`. To force it:
 claude plugin marketplace update maintainerd
 ```
 
-Then update the plugins themselves — this is what re-reads the version and re-downloads. These
-are usually installed per-repo, and `update` defaults to `--scope user`, so pass the scope it was
-installed with (`claude plugin list` reports it):
+Then update the plugins themselves — this is what re-reads the version and re-downloads:
 
 ```bash
-claude plugin update maintainerd-core --scope project
+claude plugin update maintainerd-core@maintainerd --scope project
 ```
 
+Both halves of that command matter, and each fails in its own way:
+
+- **Use the full `<plugin>@<marketplace>` id.** A bare `claude plugin update maintainerd-core`
+  fails with `Plugin "maintainerd-core" not found`, even though `claude plugin list` shows it
+  installed.
+- **Pass the scope it was installed with.** `update` defaults to `--scope user`; these are usually
+  installed per-repo, and the user-scoped lookup won't find a project-scoped install. `claude
+  plugin list` reports the scope of each.
+
 A restart is required for either to take effect. If a skill looks like it's running an old
-version, compare the version in `claude plugin list` against `marketplace.json`.
+version, compare the version in `claude plugin list` against `marketplace.json` — and check the
+version segment of the cache path, since that is what the skill is actually being read from.
 
 ## Roadmap
 
