@@ -47,8 +47,11 @@ jobs:
               m = re.match(r'^---\n(.*?)\n---\n', text, re.S)
               if not m:
                   print(f"FAIL {skill}: no YAML frontmatter"); fail = True; continue
+              fm = m.group(1)
+              if fm != fm.strip() or '\n\n' in fm:
+                  print(f"FAIL {skill}: blank line inside frontmatter"); fail = True
               for field in ('name', 'description'):
-                  if not re.search(rf'^{field}:', m.group(1), re.M):
+                  if not re.search(rf'^{field}:', fm, re.M):
                       print(f"FAIL {skill}: frontmatter missing {field}"); fail = True
           sys.exit(1 if fail else 0)
           EOF
