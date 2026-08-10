@@ -257,9 +257,11 @@ file before posting. Every comment's first line is `config.autoDev.marker`.
 
 Every tick ends by printing a structured report — the scheduled task surfaces it, an interactive
 run shows it inline. Format and a worked example:
-[`references/exit-report.md`](references/exit-report.md). A tick executes exactly **one** step, so
-`step executed:` names that one — including `5-idle` when there was nothing to do. A tick that did
-nothing still prints a report.
+[`references/exit-report.md`](references/exit-report.md). `step executed:` names the **terminal**
+outcome — the one step that did the tick's work — including `5-idle` when nothing had work. It is
+not a checklist: steps 2–4 fall through when they have nothing to do, and the step-0 PR-label
+restamp runs before the numbered flow regardless. Record restamps and failures under `actions:` /
+`errors:`, not by adding step lines. A tick that did nothing still prints a report.
 
 ## What not to do
 
