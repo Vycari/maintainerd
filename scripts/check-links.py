@@ -388,16 +388,20 @@ def main():
     parser_failures = self_test()
     prose_fixture_failures = prose_self_test()
 
+    # Plugin links and repo-doc links are different kinds of failure and must not share a
+    # bucket: a root README is never installed and is *supposed* to point into plugins/, so the
+    # plugin-boundary remediation is actively wrong advice for it.
     link_failures = check_tree(os.path.join(ROOT, "plugins"), "source tree")
-    link_failures += check_tree(ROOT, "repo docs", files=repo_docs())
     with tempfile.TemporaryDirectory() as tmp:
         build_install_layout(tmp)
         link_failures += check_tree(tmp, "installed layout")
     link_failures += check_boundaries()
 
+    repo_doc_failures = check_tree(ROOT, "repo docs", files=repo_docs())
     prose_failures = check_prose_refs()
 
-    failures = parser_failures + prose_fixture_failures + link_failures + prose_failures
+    failures = (parser_failures + prose_fixture_failures + link_failures
+                + repo_doc_failures + prose_failures)
     if failures:
         print("\nFAIL:", file=sys.stderr)
         print("\n".join(failures), file=sys.stderr)
@@ -425,9 +429,16 @@ def main():
                 "maintainerd-core, vendor it via scripts/sync-references.sh and link the copy.",
                 file=sys.stderr,
             )
+        if repo_doc_failures:
+            print(
+                "\nA link in the root README or docs/ points at a file that isn't there. These may\n"
+                "point into plugins/ — that's expected and not a boundary problem; just fix the path.",
+                file=sys.stderr,
+            )
         return 1
 
-    print("\nAll links resolve in both layouts and stay within their plugin.")
+    print("\nPlugin links resolve in both layouts and stay within their plugin;\n"
+          "repo docs resolve too.")
     return 0
 
 
