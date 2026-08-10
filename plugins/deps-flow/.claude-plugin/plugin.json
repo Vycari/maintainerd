@@ -6,6 +6,7 @@
     "name": "Allen Hutchison",
     "url": "https://github.com/allenhutchison"
   },
+  "repository": "https://github.com/allenhutchison/maintainerd",
   "license": "MIT",
   "keywords": ["dependabot", "dependencies", "merge", "automation", "pull-request", "maintainer"]
 }
