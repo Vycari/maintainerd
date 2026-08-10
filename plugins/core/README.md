@@ -31,7 +31,7 @@ tier they want in [`references/model-tiers.md`](references/model-tiers.md).
 
 ## Install
 
-```
+```text
 /plugin marketplace add allenhutchison/maintainerd
 /plugin install maintainerd-core@maintainerd
 ```

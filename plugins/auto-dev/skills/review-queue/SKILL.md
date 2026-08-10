@@ -116,7 +116,7 @@ comment time) so stale items stand out.
 One line per item, grouped and prioritized so the most pipeline-unblocking work is first. Lead each
 line with the number and a 3–8 word gist of what's blocked on you:
 
-```
+```text
 Pipeline review — <date>
 
 🔴 PRs awaiting your review/merge (each merge frees a build slot)

@@ -43,13 +43,13 @@ for config); the audits and repo-ops compose but don't require each other.
 
 2. **Install the plugins you want**, starting with core:
 
-   ```
+   ```text
    /plugin   # then install maintainerd-core, repo-ops, audits, research, auto-dev as desired
    ```
 
 3. **Generate the config** by running the bootstrap skill in the target repo:
 
-   ```
+   ```text
    /bootstrap
    ```
 
@@ -89,7 +89,7 @@ Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the sk
 
 ## Repository layout
 
-```
+```text
 maintainerd/
   .claude-plugin/marketplace.json
   scripts/sync-references.sh
