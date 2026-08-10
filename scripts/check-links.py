@@ -242,11 +242,11 @@ def links(path):
                     yield lineno, target
 
 
-def check_tree(base, label):
-    """Report links that fail to resolve anywhere under `base`."""
+def check_tree(base, label, files=None):
+    """Report links that fail to resolve. Scans `base` recursively unless `files` is given."""
     broken = []
     count = 0
-    for md in glob(os.path.join(base, "**", "*.md"), recursive=True):
+    for md in files if files is not None else glob(os.path.join(base, "**", "*.md"), recursive=True):
         for lineno, target in links(md):
             count += 1
             resolved = os.path.normpath(os.path.join(os.path.dirname(md), target))
@@ -254,6 +254,18 @@ def check_tree(base, label):
                 broken.append(f"  {os.path.relpath(md, base)}:{lineno} -> {target}")
     print(f"{label}: checked {count} links, {len(broken)} broken")
     return broken
+
+
+def repo_docs():
+    """Markdown outside plugins/ — the root README and docs/.
+
+    These were unchecked until the plugin READMEs gave the root README something to link to.
+    They get resolution checking only: the plugin-boundary rule is meaningless here, since a
+    repo-root file is never installed and is *expected* to point into plugins/.
+    """
+    found = [os.path.join(ROOT, "README.md")]
+    found += sorted(glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True))
+    return [f for f in found if os.path.exists(f)]
 
 
 def check_boundaries():
@@ -376,15 +388,20 @@ def main():
     parser_failures = self_test()
     prose_fixture_failures = prose_self_test()
 
+    # Plugin links and repo-doc links are different kinds of failure and must not share a
+    # bucket: a root README is never installed and is *supposed* to point into plugins/, so the
+    # plugin-boundary remediation is actively wrong advice for it.
     link_failures = check_tree(os.path.join(ROOT, "plugins"), "source tree")
     with tempfile.TemporaryDirectory() as tmp:
         build_install_layout(tmp)
         link_failures += check_tree(tmp, "installed layout")
     link_failures += check_boundaries()
 
+    repo_doc_failures = check_tree(ROOT, "repo docs", files=repo_docs())
     prose_failures = check_prose_refs()
 
-    failures = parser_failures + prose_fixture_failures + link_failures + prose_failures
+    failures = (parser_failures + prose_fixture_failures + link_failures
+                + repo_doc_failures + prose_failures)
     if failures:
         print("\nFAIL:", file=sys.stderr)
         print("\n".join(failures), file=sys.stderr)
@@ -412,9 +429,16 @@ def main():
                 "maintainerd-core, vendor it via scripts/sync-references.sh and link the copy.",
                 file=sys.stderr,
             )
+        if repo_doc_failures:
+            print(
+                "\nA link in the root README or docs/ points at a file that isn't there. These may\n"
+                "point into plugins/ — that's expected and not a boundary problem; just fix the path.",
+                file=sys.stderr,
+            )
         return 1
 
-    print("\nAll links resolve in both layouts and stay within their plugin.")
+    print("\nPlugin links resolve in both layouts and stay within their plugin;\n"
+          "repo docs resolve too.")
     return 0
 
 

@@ -6,6 +6,8 @@
     "name": "Allen Hutchison",
     "url": "https://github.com/allenhutchison"
   },
+  "homepage": "https://github.com/allenhutchison/maintainerd/tree/main/plugins/auto-dev#readme",
+  "repository": "https://github.com/allenhutchison/maintainerd",
   "license": "MIT",
   "keywords": ["automation", "issues", "issue-intake", "pull-request", "pipeline", "maintainer"]
 }

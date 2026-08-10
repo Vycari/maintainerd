@@ -85,7 +85,7 @@ gh issue list --repo <config.repo> --state closed --label <config.labels.archite
 Read titles/bodies to keep only the ones that are the **same specific pattern** from Step A, not just
 the same category label. If
 
-```
+```text
 (prior actioned instances of this pattern within lookback) + (this run's instance)  ≥  promoteThreshold
 ```
 
@@ -112,7 +112,7 @@ the guideline; describe the smallest change that would close the gap.
 A promotion proposal carries a stable marker as the first line of its body so future runs recognize
 it:
 
-```
+```html
 <!-- audit-promotion:<audit-name>:<pattern-slug> -->
 ```
 

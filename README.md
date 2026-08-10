@@ -14,13 +14,13 @@ skill generates that contract for any repo.
 
 | Plugin | Skills | Install when |
 | --- | --- | --- |
-| **maintainerd-core** | `bootstrap`, `doctor` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it. |
-| **repo-ops** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
-| **audits** | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` | You want scheduled tech-debt / test / security / dependency / doc sweeps. |
-| **research** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
-| **journal** | `worklog` | You want a day's shipped work captured into your Obsidian vault (user-scoped — spans all your repos). |
-| **auto-dev** | `create-issue`, `auto-dev`, `review-queue` | You want the autonomous issue→PR pipeline (from issue intake through build to review). |
-| **deps-flow** | `dependabot` | You want the Dependabot queue drained unattended — and you're willing to let a skill **merge**. |
+| **[maintainerd-core](plugins/core/README.md)** | `bootstrap`, `doctor` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it. |
+| **[repo-ops](plugins/repo-ops/README.md)** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
+| **[audits](plugins/audits/README.md)** | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` | You want scheduled tech-debt / test / security / dependency / doc sweeps. |
+| **[research](plugins/research/README.md)** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
+| **[journal](plugins/journal/README.md)** | `worklog` | You want a day's shipped work captured into your Obsidian vault (user-scoped — spans all your repos). |
+| **[auto-dev](plugins/auto-dev/README.md)** | `create-issue`, `auto-dev`, `review-queue` | You want the autonomous issue→PR pipeline (from issue intake through build to review). |
+| **[deps-flow](plugins/deps-flow/README.md)** | `dependabot` | You want the Dependabot queue drained unattended — and you're willing to let a skill **merge**. |
 
 A repo installs only the plugins it wants. `auto-dev` works standalone (with `maintainerd-core`
 for config); the audits and repo-ops compose but don't require each other.
@@ -43,13 +43,13 @@ for config); the audits and repo-ops compose but don't require each other.
 
 2. **Install the plugins you want**, starting with core:
 
-   ```
+   ```text
    /plugin   # then install maintainerd-core, repo-ops, audits, research, auto-dev as desired
    ```
 
 3. **Generate the config** by running the bootstrap skill in the target repo:
 
-   ```
+   ```text
    /bootstrap
    ```
 
@@ -89,7 +89,7 @@ Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the sk
 
 ## Repository layout
 
-```
+```text
 maintainerd/
   .claude-plugin/marketplace.json
   scripts/sync-references.sh
