@@ -147,3 +147,25 @@ Next up:
 - `weekly-review` / `decision-log` (✨) — speculative `journal` siblings once `worklog` has proven out.
 - `triage-issues` (♻️) — the other issue-intake candidate, still on the list.
 - **Migration** — onboard a real repo (pepper or obsidian-gemini) to prove the whole suite end-to-end.
+
+## Settled decisions (don't re-litigate)
+
+Things that came up, got decided with a reason, and shouldn't be reopened without new information.
+
+- **`code-review` and `typescript-patterns.md` / `review-checklist.md` stay deleted** (dropped in
+  #14). Claude Code ships `/code-review`, so the skill was redundant *and* the name collided. The
+  two reference docs went with it, and the recurring suggestion is to restore them as seed material
+  for `bootstrap`'s `coding.md` scaffold. **Don't.** `coding.md` is what `audit-architecture` and
+  any reviewer read as *"the rules this repo wrote down"*; seeding it with ~400 lines of generic
+  TypeScript craft would make the audits enforce generic practice — the exact boundary #15 drew
+  when it handed dangerous-code-patterns to `/security-review` and kept only repo-specific
+  invariants. Generic practice belongs to the built-in reviewer; `guidelines/*.md` is for what a
+  general reviewer *cannot* know. Both files remain in git history if that judgement ever changes.
+- **No documentation site.** `homepage`/`repository` point at the repo and the per-plugin READMEs
+  (#19). 1 of 13 official plugins sets those fields at all, the repo already ships its docs as
+  markdown, and a generated site would add a sync surface with no checker — the failure mode #10
+  and #12 exist to prevent.
+- **`auto-dev` may exceed the 5,000-word skill guideline.** It sits at ~5,200 and the remainder is
+  the tick state machine plus the safety invariants and hard prohibitions. Those must be in front
+  of the model on an unattended run that writes code; moving them to satisfy a word count would
+  optimise the metric against its purpose.
