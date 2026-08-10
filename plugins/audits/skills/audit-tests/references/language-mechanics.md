@@ -6,7 +6,7 @@ find it in this language.
 
 The smells above are language-agnostic. The exact detection commands and the framework names depend on `config.language`. Apply the equivalent for whichever language the config declares; read `config.guidelines.testing` for the conventions that are specific to this repo's runner.
 
-### When `config.language` is `python`
+## When `config.language` is `python`
 
 Framework: pytest + `unittest.mock`. Treat `config.paths.tests` as the grep root.
 
@@ -19,7 +19,7 @@ Framework: pytest + `unittest.mock`. Treat `config.paths.tests` as the grep root
 - **Slow tests:** `<config.commands.test> --durations=25 -q`.
 - **Coverage:** `config.commands.coverage` typically emits `coverage.json` (branch coverage on); read it for covered-lines-but-uncovered-branches.
 
-### When `config.language` is `typescript`
+## When `config.language` is `typescript`
 
 Framework: the repo's test runner (Jest or Vitest — check `config.commands.test`). Apply the equivalent of each python check.
 
