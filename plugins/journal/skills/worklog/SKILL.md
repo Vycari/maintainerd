@@ -1,7 +1,6 @@
 ---
 name: worklog
 description: Capture what was accomplished on a given day — drawn from the day's merged PRs (the complete picture, since work also happens in cloud sessions and other terminals) enriched by the live session (the why behind the slice it has context on) — and persist it to the user's Obsidian vault in three places: a session-summary note, a link from the project hub note, and a one-line entry in the daily note. User-scoped: reads the vault path from the user-level `~/.claude/maintainerd.json` (`journal.vault`) and an optional per-repo project pointer from the repo's `.claude/maintainerd.json`. Use when the user wants to "log this session", "write up a dev log / worklog", "journal what we did", "record this work in my vault", "log what shipped today", or similar — optionally with a project name, vault path, or date. Do NOT use for general note-taking unrelated to the work, for project docs/specs, or when the user just wants an in-chat summary without writing to the vault.
-
 ---
 
 # Obsidian work-log
