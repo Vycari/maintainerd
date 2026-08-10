@@ -242,11 +242,11 @@ def links(path):
                     yield lineno, target
 
 
-def check_tree(base, label):
-    """Report links that fail to resolve anywhere under `base`."""
+def check_tree(base, label, files=None):
+    """Report links that fail to resolve. Scans `base` recursively unless `files` is given."""
     broken = []
     count = 0
-    for md in glob(os.path.join(base, "**", "*.md"), recursive=True):
+    for md in files if files is not None else glob(os.path.join(base, "**", "*.md"), recursive=True):
         for lineno, target in links(md):
             count += 1
             resolved = os.path.normpath(os.path.join(os.path.dirname(md), target))
@@ -254,6 +254,18 @@ def check_tree(base, label):
                 broken.append(f"  {os.path.relpath(md, base)}:{lineno} -> {target}")
     print(f"{label}: checked {count} links, {len(broken)} broken")
     return broken
+
+
+def repo_docs():
+    """Markdown outside plugins/ — the root README and docs/.
+
+    These were unchecked until the plugin READMEs gave the root README something to link to.
+    They get resolution checking only: the plugin-boundary rule is meaningless here, since a
+    repo-root file is never installed and is *expected* to point into plugins/.
+    """
+    found = [os.path.join(ROOT, "README.md")]
+    found += sorted(glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True))
+    return [f for f in found if os.path.exists(f)]
 
 
 def check_boundaries():
@@ -377,6 +389,7 @@ def main():
     prose_fixture_failures = prose_self_test()
 
     link_failures = check_tree(os.path.join(ROOT, "plugins"), "source tree")
+    link_failures += check_tree(ROOT, "repo docs", files=repo_docs())
     with tempfile.TemporaryDirectory() as tmp:
         build_install_layout(tmp)
         link_failures += check_tree(tmp, "installed layout")
