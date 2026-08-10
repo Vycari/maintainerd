@@ -78,34 +78,10 @@ Run each detection step for the block that matches `config.language`, plus **Rep
 
 Suggested order, fast-to-slow:
 
-**Python:**
-
-1. **Oversized files** — `find config.paths.source -name '*.py' -exec wc -l {} \; | sort -rn`. Note anything over the threshold. (Avoid `wc -l config.paths.source/**/*.py`; that depends on bash globstar and silently expands to literal text on macOS's default bash 3.2. `-exec ... \;` per file rather than `+` keeps `wc`'s cumulative "total" row out of the ranked output.)
-2. **`Any` / `cast(Any)` / `# type: ignore` density** — the `grep -rn`s. Tally per-file counts. Ignore the `from typing import Any` import line.
-3. **`print()` in library code** — one `grep`. Each hit is a finding (or all hits in one file roll into one PR).
-4. **Bare / swallowed excepts** — one `grep`, then read the surrounding 5 lines on each hit. The shape that matters is "logged-and-swallowed" — a true silent failure.
-5. **Naive `datetime`** — `grep` for `.now()`, `.utcnow()`, and the no-arg `.astimezone()`. Cross-check against the timezone rule in `config.guidelines.invariants`.
-6. **Sync DB calls missing `await`** — `grep` and visually inspect; the linter doesn't catch these without a dedicated plugin.
-7. **Dead exports** — `uv run vulture config.paths.source config.paths.tests --min-confidence 80`. Vulture should be a dev dep; if the command errors with "command not found," that's a setup bug worth flagging in the report, not a reason to fall back to grep. Triage every hit before routing — vulture over-reports on FastAPI route handlers (decorator-registered, never referenced by name), pydantic field attributes, SQLAlchemy column descriptors, and `app.state` lifespan wiring. For each candidate, grep `config.paths.source` and `config.paths.tests` for the symbol; only route it as a finding if the grep also comes up empty (or finds only the definition site). Lowering `--min-confidence` below 80 is rarely productive — the noise floor swamps the signal.
-8. **Missing tests** — list `config.paths.source/<subsystem>/` directories, grep `config.paths.tests` for any import of each subsystem. Zero hits → finding. Note that tests aren't always a 1:1 file mirror — many tests cross several modules in one file.
-9. **DRY violations** — read the larger files (top 10 by line count) and look for repeated blocks. Judgment-heavy step; don't force findings if nothing obvious surfaces.
-10. **Weak abstractions** — same reading pass; note service classes over 15 public methods, routers with mixed responsibilities.
-11. **Improper typing / circular imports / other** — opportunistic.
-
-**TypeScript:**
-
-1. **Oversized files** — single `wc -l` over `config.paths.source/**/*.ts`. Sort descending. Note anything over the threshold.
-2. **`any` / `as any` / `@ts-ignore` density** — three `grep -rn` invocations. Tally per-file counts.
-3. **Console misuse** — one `grep` against `config.paths.source`. Each hit is a finding (or all hits in one file roll into one PR).
-4. **Dead exports & unused deps** — run `npm run knip` if configured. It resolves entry points (main, test files, scripts) and follows re-exports and type-only references through the TypeScript program, reporting unused files, unused exports, unused types, and unused dependencies as separate categories. Each category is its own routing decision: a single dead export is usually a PR; a cluster of unused types or files is usually an umbrella issue. Configuration lives in `knip.json` (entry points, ignore patterns, `ignoreExportsUsedInFile` for legitimate public type surface used through inference). If knip flags something that's intentional public surface, add it to the allowlist rather than carrying noise round-to-round.
-5. **Missing test files** — list `config.paths.source/**/*.ts`, list `config.paths.tests/**/*.test.ts`, diff the mirrored paths. Ignore type-only files, declarations, barrels.
-6. **DRY violations** — read the larger files (top 10 by line count) and look for repeated blocks. This is the judgment-heavy step; don't force findings if nothing obvious surfaces.
-7. **Weak abstractions** — same reading pass; note interfaces over 15 members, classes with mixed responsibilities.
-8. **Circular / improper typing / other** — opportunistic.
-
-**Always (any language):**
-
-- **Repo-invariant drift** — cross-reference recent additions against the rules in `config.guidelines.invariants`. This is the highest-value category because CI doesn't catch any of it.
+The per-language order — fast greps first, reading passes last — is in
+[`references/language-detection.md`](references/language-detection.md) under **Order to run the
+sweep**, alongside the detection commands themselves. Keeping order and commands together is what
+stops the two drifting apart.
 
 ### 3. De-duplicate against existing work
 
@@ -321,7 +297,7 @@ A healthy codebase produces 0–3 findings per nightly run. A run that surfaces 
 
 Tune the per-run caps (`config.audits.prCap` / `config.audits.issueCap`) downward if reviewers report fatigue. Tune upward only if the human caller explicitly asks for a deeper one-time sweep ("really go after the tech debt this weekend").
 
-**Threshold tuning.** The size thresholds in the category tables (500 / 600 / 800 / 700 / 1000 lines, 15 public methods/members, etc.) are first-cut defaults — ratchet them tighter once the obvious offenders have been split. For example, once a chronically-large file drops below its bar, lower the threshold so the next overgrowth gets caught early. Don't loosen thresholds to make a noisy category quiet; that defeats the audit. Edit the thresholds in the language block of this skill (or a repo-local override) so future runs pick them up.
+**Threshold tuning.** The size thresholds in the category tables (500 / 600 / 800 / 700 / 1000 lines, 15 public methods/members, etc.) are first-cut defaults — ratchet them tighter once the obvious offenders have been split. For example, once a chronically-large file drops below its bar, lower the threshold so the next overgrowth gets caught early. Don't loosen thresholds to make a noisy category quiet; that defeats the audit. Edit the thresholds in [`references/language-detection.md`](references/language-detection.md) (or a repo-local override) so future runs pick them up — that file is now the single home for anything language-specific.
 
 ## What not to do
 
