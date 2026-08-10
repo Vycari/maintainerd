@@ -257,8 +257,9 @@ file before posting. Every comment's first line is `config.autoDev.marker`.
 
 Every tick ends by printing a structured report — the scheduled task surfaces it, an interactive
 run shows it inline. Format and a worked example:
-[`references/exit-report.md`](references/exit-report.md). Report **every** step outcome including
-`5-idle`; a tick that did nothing still says so.
+[`references/exit-report.md`](references/exit-report.md). A tick executes exactly **one** step, so
+`step executed:` names that one — including `5-idle` when there was nothing to do. A tick that did
+nothing still prints a report.
 
 ## What not to do
 
@@ -288,6 +289,7 @@ Each is pointed at from the step that needs it; this is the index.
 - [`references/comment-formats.md`](references/comment-formats.md) — plan, question, and park-proposal templates.
 - [`references/pr-labeling.md`](references/pr-labeling.md) — why the `auto:pr` label exists and how its failure modes are handled.
 - [`references/scheduling.md`](references/scheduling.md) — cadence, overlap/races, model tier. For whoever schedules the task, not for the tick.
+- [`references/exit-report.md`](references/exit-report.md) — the structured report every tick prints. Read when writing the report, not while deciding what to do.
 
 ## Related skills
 

@@ -163,7 +163,7 @@ Things that came up, got decided with a reason, and shouldn't be reopened withou
   general reviewer *cannot* know. Both files remain in git history if that judgement ever changes.
 - **No documentation site.** `homepage`/`repository` point at the repo and the per-plugin READMEs
   (#19). 1 of 13 official plugins sets those fields at all, the repo already ships its docs as
-  markdown, and a generated site would add a sync surface with no checker — the failure mode #10
+  Markdown, and a generated site would add a sync surface with no checker — the failure mode #10
   and #12 exist to prevent.
 - **`auto-dev` may exceed the 5,000-word skill guideline.** It sits at ~5,200 and the remainder is
   the tick state machine plus the safety invariants and hard prohibitions. Those must be in front
