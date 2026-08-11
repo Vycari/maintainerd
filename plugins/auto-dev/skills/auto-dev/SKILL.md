@@ -255,26 +255,13 @@ file before posting. Every comment's first line is `config.autoDev.marker`.
 
 ## Exit report
 
-Every tick ends by printing a structured report — it is the run's summary output (the scheduled task surfaces it; an interactive run shows it inline):
-
-```text
-auto-dev tick — <ISO timestamp>
-step executed: <0-failed | 1-reconcile | 2-pr-advance | 3-build | 4-triage | 5-idle>
-open auto PRs (<count>/<config.autoDev.maxPrsInFlight>): #<n> (<status>), … | none
-actions:
-- #123: asked 2 clarifying questions → needs-info
-- #145: plan approved by reply → ready
-- #151: proposed parking (design fork is the maintainer's call) → needs-info
-- #152: maintainer replied "park it" → parked
-- PR #210: fixed 2 CodeRabbit findings, replied to 4 threads, pushed <sha>
-- PR #212: no external review after 60m — self-reviewed, fixed 1 finding (<sha>), posted fallback review
-- #160: built approved plan → PR #211 (labeled auto:pr); verified via /verify (drove the new CLI flag, observed expected output) → marked ready
-- #163: built approved plan → PR #212 (draft); behavioral verification not run in sandbox (needs a live DB) — flagged for manual check
-blocked on human:
-- PR #210 awaiting review/merge
-- #145 ready to build once #210 merges
-errors: <none | details>
-```
+Every tick ends by printing a structured report — the scheduled task surfaces it, an interactive
+run shows it inline. Format and a worked example:
+[`references/exit-report.md`](references/exit-report.md). `step executed:` names the **terminal**
+outcome — the one step that did the tick's work — including `5-idle` when nothing had work. It is
+not a checklist: steps 2–4 fall through when they have nothing to do, and the step-0 PR-label
+restamp runs before the numbered flow regardless. Record restamps and failures under `actions:` /
+`errors:`, not by adding step lines. A tick that did nothing still prints a report.
 
 ## What not to do
 
@@ -304,6 +291,7 @@ Each is pointed at from the step that needs it; this is the index.
 - [`references/comment-formats.md`](references/comment-formats.md) — plan, question, and park-proposal templates.
 - [`references/pr-labeling.md`](references/pr-labeling.md) — why the `auto:pr` label exists and how its failure modes are handled.
 - [`references/scheduling.md`](references/scheduling.md) — cadence, overlap/races, model tier. For whoever schedules the task, not for the tick.
+- [`references/exit-report.md`](references/exit-report.md) — the structured report every tick prints. Read when writing the report, not while deciding what to do.
 
 ## Related skills
 
