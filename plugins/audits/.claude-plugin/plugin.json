@@ -1,6 +1,6 @@
 {
   "name": "audits",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Scheduled findings that open PRs/issues, deliberately capped and conservative: audit-architecture (tech-debt sweep), audit-tests (test-suite health), audit-security (vulnerable deps, committed secrets incl. git history, permissive defaults — code patterns are left to Claude Code's built-in /security-review), audit-deps (dependency health: outdated, deprecated, unused, lockfile drift, licenses), audit-design-docs (validate design docs against code), and audit-product-docs (validate user-facing docs against code). Detection rules and invariants come from the repo's .claude/maintainerd.json and guidelines files.",
   "author": {
     "name": "Allen Hutchison",

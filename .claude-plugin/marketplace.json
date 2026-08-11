@@ -21,7 +21,7 @@
       "name": "audits",
       "source": "./plugins/audits",
       "description": "Scheduled findings that open PRs/issues, deliberately capped and conservative: audit-architecture, audit-tests, audit-security, audit-deps, audit-design-docs, audit-product-docs. Language and rules come from the repo config + guidelines files.",
-      "version": "0.2.3"
+      "version": "0.2.4"
     },
     {
       "name": "research",
@@ -33,7 +33,7 @@
       "name": "journal",
       "source": "./plugins/journal",
       "description": "User-scoped narration that spans repos: worklog captures a day's shipped work (merged PRs enriched by the live session) into the user's Obsidian vault. Vault path lives in a user-level ~/.claude/maintainerd.json; a per-repo pointer maps each repo to its vault project.",
-      "version": "0.2.3"
+      "version": "0.2.4"
     },
     {
       "name": "deps-flow",
@@ -45,7 +45,7 @@
       "name": "auto-dev",
       "source": "./plugins/auto-dev",
       "description": "Autonomous issue-to-PR pipeline driven by an auto:* GitHub label state machine: create-issue (turn a rough request into a buildable issue), auto-dev (triage -> plan -> build -> address-review; never merges), and review-queue (the maintainer's console). Configurable label names, markers, and branch prefixes.",
-      "version": "0.2.3"
+      "version": "0.2.4"
     }
   ]
 }
