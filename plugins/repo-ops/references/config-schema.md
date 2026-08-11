@@ -44,7 +44,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 ```jsonc
 {
   // ── Identity ────────────────────────────────────────────────────────────
-  "repo": "owner/name",            // GitHub slug, e.g. "allenhutchison/pepper". Used in every `gh ... --repo`.
+  "repo": "owner/name",            // GitHub slug, e.g. "Vycari/pepper". Used in every `gh ... --repo`.
   "defaultBranch": "main",         // Branch PRs target and audits check out. "main" | "master" | ...
   "language": "python",            // "python" | "typescript". Selects audit/test detection rules.
 
@@ -201,7 +201,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
 | Key | Meaning | Example |
 | --- | --- | --- |
-| `repo` | GitHub `owner/name`; passed to every `gh --repo`. | `allenhutchison/pepper` |
+| `repo` | GitHub `owner/name`; passed to every `gh --repo`. | `Vycari/pepper` |
 | `defaultBranch` | Branch PRs target; audits `git checkout` it before sweeping. | `main`, `master` |
 | `language` | Selects the language-specific detection rules in `audit-architecture` and `audit-tests`. | `python`, `typescript` |
 
