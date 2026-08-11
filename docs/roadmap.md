@@ -146,7 +146,28 @@ Next up:
 
 - `weekly-review` / `decision-log` (✨) — speculative `journal` siblings once `worklog` has proven out.
 - `triage-issues` (♻️) — the other issue-intake candidate, still on the list.
-- **Migration** — onboard a real repo (pepper or obsidian-gemini) to prove the whole suite end-to-end.
+
+## Migration — done ✅
+
+Both candidate repos are onboarded and running the suite, between them covering both languages it
+ships rules for:
+
+| Repo | Language | Plugins enabled |
+| --- | --- | --- |
+| `Vycari/pepper` | python | `maintainerd-core`, `repo-ops`, `audits`, `research`, `auto-dev` |
+| `allenhutchison/obsidian-gemini` | typescript | `maintainerd-core`, `repo-ops`, `audits`, `auto-dev`, `journal` |
+
+Each has the full config contract — `.claude/maintainerd.json` plus all three
+`.claude/guidelines/*.md` — with `autoDev.enabled: true`. Pepper's GitHub labels (all six `auto:*`
+states, `auto:pr`, `architecture`, `test-quality`, `security`, `dependencies`, `automated`) exist and
+are in use, so this is a live deployment rather than a configured one.
+
+Neither enables `deps-flow`. That's the documented default: an absent `depsFlow` block means *off*,
+never *defaults*, because it's the only merge-capable plugin.
+
+**What this changes about reading the rest of this file:** the audits and `auto-dev` have been
+running against real repos throughout, so findings from them are observed behaviour, not
+speculation.
 
 ## Settled decisions (don't re-litigate)
 
