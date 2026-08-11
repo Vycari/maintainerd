@@ -36,7 +36,7 @@ for config); the audits and repo-ops compose but don't require each other.
 1. **Add the marketplace** (once per machine):
 
    ```bash
-   claude plugin marketplace add allenhutchison/maintainerd
+   claude plugin marketplace add Vycari/maintainerd
    # or, for local development:
    claude plugin marketplace add /path/to/your/checkout/maintainerd
    ```

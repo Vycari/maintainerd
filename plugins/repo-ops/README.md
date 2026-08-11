@@ -34,8 +34,8 @@ tier they want in [`references/model-tiers.md`](references/model-tiers.md).
 ## Install
 
 ```text
-/plugin marketplace add allenhutchison/maintainerd
+/plugin marketplace add Vycari/maintainerd
 /plugin install repo-ops@maintainerd
 ```
 
-Source and issues: https://github.com/allenhutchison/maintainerd
+Source and issues: https://github.com/Vycari/maintainerd

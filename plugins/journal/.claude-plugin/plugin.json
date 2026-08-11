@@ -6,8 +6,8 @@
     "name": "Allen Hutchison",
     "url": "https://github.com/allenhutchison"
   },
-  "homepage": "https://github.com/allenhutchison/maintainerd/tree/main/plugins/journal#readme",
-  "repository": "https://github.com/allenhutchison/maintainerd",
+  "homepage": "https://github.com/Vycari/maintainerd/tree/main/plugins/journal#readme",
+  "repository": "https://github.com/Vycari/maintainerd",
   "license": "MIT",
   "keywords": ["journal", "worklog", "obsidian", "notes", "maintainer"]
 }
