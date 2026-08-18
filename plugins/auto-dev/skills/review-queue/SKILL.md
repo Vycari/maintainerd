@@ -132,9 +132,16 @@ gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
   | select(length > 0) | "#\($i.number)  \(.[-1].createdAt[0:10])"'
 ```
 
-**This regex is a net, not the contract.** The contract is `references/triage.md`'s Planned branch,
-which counts any human approval however phrased. So treat a hit as a prompt to read the thread, and
-know the three ways the net misses — on a small planned bucket, just read them all instead:
+**This regex is a net, not the contract, and it is not where the guarantee lives.** Nothing here
+_ensures_ a stranded approval is found — the scan is a best-effort sweep for issues stranded before
+the two mechanisms that actually prevent it existed: the read-back in step 3 (a decision never
+silently fails to apply) and `references/triage.md`'s whole-thread rule (a tick never loses an
+approval under later comments). Those are the guarantee; this is backfill for the existing backlog,
+so a miss here costs a delay, not correctness.
+
+Read it accordingly: treat a hit as a prompt to read the thread, and know the three ways it misses.
+**Whenever the planned bucket is small enough to read end to end, do that instead** — it is the only
+exhaustive option, and it is what actually clears the backlog:
 
 - **A reaction-only approval is not a comment at all.** A 👍 on the plan comment is a documented
   approval and no body scan can see it; the query pulls `reactions` alongside so you can check.

@@ -235,10 +235,10 @@ in [`references/pr-labeling.md`](references/pr-labeling.md).
 
 ### Step 4 — Triage pass (bounded)
 
-Walk eligible open issues oldest→newest. Act on at most **5** issues per tick (count only issues where you actually post/relabel; skipped issues are free). To stay cheap on idle ticks, only deep-read an issue's thread when it might have changed: a state-labelled issue whose `updatedAt` is no newer than the skill's own last marker comment on it has nothing new — skip it without re-reading (for a Parked issue, the baseline is the park-time label event, not a marker comment). **One exception: a Planned issue held on a conditional approval is always re-read**, because its unblock condition lives on a _different_ issue — nothing about this one changes when the blocker clears, so `updatedAt` would keep it skipped forever. Held issues are not discoverable from the skip inputs (labels and `updatedAt`) either, so find them with one search per tick on the hold sentinel `auto-dev-hold:` that `references/triage.md` requires every hold comment to carry, and add the hits to this step's walk:
+Walk eligible open issues oldest→newest. Act on at most **5** issues per tick (count only issues where you actually post/relabel; skipped issues are free). To stay cheap on idle ticks, only deep-read an issue's thread when it might have changed: a state-labelled issue whose `updatedAt` is no newer than the skill's own last marker comment on it has nothing new — skip it without re-reading (for a Parked issue, the baseline is the park-time label event, not a marker comment). **One exception: a Planned issue held on a conditional approval is always re-read**, because its unblock condition lives on a _different_ issue — nothing about this one changes when the blocker clears, so `updatedAt` would keep it skipped forever. Held issues are not discoverable from the skip inputs (labels and `updatedAt`) either, so find them with one search per tick on the hold sentinel `auto-dev-hold:` that `references/triage.md` requires every hold comment to carry, and add the hits to this step's walk. **`--match` must include `comments`** — a hold is recorded as a comment, and `--match body` alone searches only the issue body, so it silently returns nothing and the hold stays stranded:
 
 ```bash
-gh search issues --repo "<config.repo>" --state open --match body \
+gh search issues --repo "<config.repo>" --state open --match body,comments \
   --label "<config.autoDev.stateLabels.planned>" 'auto-dev-hold:' --json number
 ```
 
