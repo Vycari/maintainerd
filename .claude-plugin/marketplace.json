@@ -45,7 +45,7 @@
       "name": "auto-dev",
       "source": "./plugins/auto-dev",
       "description": "Autonomous issue-to-PR pipeline driven by an auto:* GitHub label state machine: create-issue (turn a rough request into a buildable issue), auto-dev (triage -> plan -> build -> address-review; never merges), and review-queue (the maintainer's console). Configurable label names, markers, and branch prefixes.",
-      "version": "0.2.5"
+      "version": "0.2.6"
     }
   ]
 }
