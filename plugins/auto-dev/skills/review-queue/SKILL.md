@@ -111,6 +111,58 @@ the gather cheap).
 To keep the list signal-dense, note how long each item has waited (from `updatedAt` / the relevant
 comment time) so stale items stand out.
 
+**Also check the planned bucket for dropped transitions.** An issue you already approved should not
+still be sitting at planned — but it will be if a previous session posted the approval and never
+applied the label (see step 3), or if a tick read only the newest comment and missed an approval
+buried under later ones. These are the worst items in the queue precisely because they look
+finished: the approval is on the record, so nothing about the issue reads as blocked, and no tick
+will ever build it. Scan the planned issues' comments for a human approval, and bucket any hit
+separately — it needs one label flip, not another decision:
+
+```bash
+gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
+  i123: issue(number: 123) { number title
+    reactions(content: THUMBS_UP) { totalCount }
+    comments(last: 100) { nodes { author { login } createdAt body
+      reactions(content: THUMBS_UP) { totalCount } } } }
+} }' | jq -r --arg marker "<config.autoDev.marker>" '.data.repository | to_entries[] | .value as $i
+  | [$i.comments.nodes[]
+     | select((.body | startswith($marker)) | not)
+     | select(.body | test("(?i)\\b(approved?|lgtm|ship it|go ahead|yes,? do it|sounds good|let'"'"'s do it)\\b"))]
+  | select(length > 0) | "#\($i.number)  \(.[-1].createdAt[0:10])"'
+```
+
+**This regex is a net, not the contract, and it is not where the guarantee lives.** Nothing here
+_ensures_ a stranded approval is found — the scan is a best-effort sweep for issues stranded before
+the two mechanisms that actually prevent it existed: the read-back in step 3 (a decision never
+silently fails to apply) and `references/triage.md`'s whole-thread rule (a tick never loses an
+approval under later comments). Those are the guarantee; this is backfill for the existing backlog,
+so a miss here costs a delay, not correctness.
+
+Read it accordingly: treat a hit as a prompt to read the thread, and know the three ways it misses.
+**Whenever the planned bucket is small enough to read end to end, do that instead** — it is the only
+exhaustive option, and it is what actually clears the backlog:
+
+- **A reaction-only approval is not a comment at all.** A 👍 on the plan comment is a documented
+  approval and no body scan can see it; the query pulls `reactions` alongside so you can check.
+- **Unusual phrasings** ("that works", "fine by me", "build it") sail through. The pattern is
+  deliberately loose and unanchored, which trades false positives — cheap, you read the thread
+  anyway — against false negatives, which are the failure being fixed.
+- **`comments(last: 100)` is a bound.** A thread longer than that hides its early approval; page
+  the full thread for any issue whose history runs long.
+
+Two hits are **not** dropped transitions, and confirming which is which is the point of surfacing
+them rather than flipping them blind — read each thread before acting:
+
+- an approval the maintainer later **withdrew or reshaped** ("changing my mind on the split") — it
+  is correctly at planned, awaiting a re-plan;
+- a **conditional** approval ("build this after #N lands") whose condition is still unmet — also
+  correctly held, and the pipeline re-checks it each tick.
+
+Everything else is a dropped transition. Present it with the approval's date and wording so the
+maintainer can confirm it still stands, and, where the approval named a dependency, resolve that
+dependency's current state before presenting so the item arrives with its answer attached.
+
 ### 2 — Present the worklist
 
 One line per item, grouped and prioritized so the most pipeline-unblocking work is first. Lead each
@@ -159,6 +211,36 @@ When you give your answer/feedback in chat, the skill posts a faithful rendering
 the issue/PR comment — it doesn't editorialize, summarize away your intent, or add pipeline
 boilerplate.
 
+**Verify every state transition after writing it.** A decision reaches the pipeline as a _label_;
+the comment is only the rationale. So a run that posts "Approved — go ahead" and then fails to
+apply the label — interrupted session, a `gh` error swallowed mid-loop, a batch that stopped
+halfway — leaves an issue that reads as approved to every human and is invisible to every tick. It
+rests at Planned forever, and nothing downstream ever notices.
+
+So after each transition, read the labels back and confirm the new state stuck and the old one is
+gone:
+
+```bash
+# $STATES = the values of config.autoDev.stateLabels, newline-separated.
+# Match the configured names — never a hard-coded "auto:" prefix, which a repo may not use.
+gh issue edit <N> --repo "$REPO" --add-label "<new-state>" --remove-label "<old-state>"
+gh issue view <N> --repo "$REPO" --json number,labels \
+  | jq -r --rawfile s <(printf '%s\n' "$STATES") '
+      ($s | split("\n") | map(select(length > 0))) as $states
+      | "#\(.number): \([.labels[].name | select(. as $n | $states | index($n))] | join(", "))"'
+```
+
+The **lifecycle** states — needs-info, planned, ready, in-progress, parked — are mutually
+exclusive: a transition between them swaps, it never accumulates, so an issue showing two of them
+is a half-applied transition and you should finish it. The skip label is the one exception and is
+**not** a lifecycle state: it's an orthogonal opt-out that deliberately rides on top of whatever
+state the issue already has, which is what lets "I'll do this one" hand the issue back later by
+removing skip alone. So skip alongside planned or needs-info is correct and must be left as-is —
+never "finish" it by stripping the underlying state.
+
+If a read-back doesn't match what you intended, say so and retry rather than reporting the decision
+as done.
+
 ### 4 — Re-gather and re-present
 
 Pull fresh state and show the now-shorter list. Loop.
@@ -173,12 +255,13 @@ you later.
 
 **A plan (planned — `config.autoDev.stateLabels.planned`):**
 
-- **Approve** ("approved", "lgtm", "go", "ship it") → add the ready label
-  (`config.autoDev.stateLabels.ready`). The oldest ready issue builds on the next tick whose open-PR
+- **Approve** ("approved", "lgtm", "go", "ship it") → swap the planned label for the ready label
+  (`config.autoDev.stateLabels.ready`); the states are exclusive, so remove planned in the same
+  edit. The oldest ready issue builds on the next tick whose open-PR
   count is below the in-flight cap (`config.autoDev.maxPrsInFlight`; with the default of `1`, that
   means the next tick with no automated PR open).
-- **Approve with a tweak** ("approved, but use X") → post your tweak as a plain comment, then add the
-  ready label (the build adapts to the latest comment). If the change is large enough to reshape the
+- **Approve with a tweak** ("approved, but use X") → post your tweak as a plain comment, then swap to
+  the ready label (the build adapts to the latest comment). If the change is large enough to reshape the
   plan, instead post the change and leave the planned label so the next tick re-plans — ask which you
   want if it's unclear.
 - **Request changes** → post your feedback as a comment; leave the planned label (next tick revises
@@ -256,7 +339,7 @@ you later.
 >
 > **Skill:**
 >
-> - #663 → adds the ready label (queued to build).
+> - #663 → swaps planned for the ready label, reads the labels back to confirm (queued to build).
 > - #641 → posts your comment ("Let's go with client-side rasterization now, capped at 2048px on the
 >   longest edge…") as you, no marker; leaves the needs-info label so the next tick re-reads it and
 >   plans. (Or, if you'd rather, swaps to no-label to force a fresh triage — it asks if unsure.)
