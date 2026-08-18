@@ -121,14 +121,28 @@ separately — it needs one label flip, not another decision:
 
 ```bash
 gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
-  i123: issue(number: 123) { number title comments(last: 30) {
-    nodes { author { login } createdAt body } } }
+  i123: issue(number: 123) { number title
+    reactions(content: THUMBS_UP) { totalCount }
+    comments(last: 100) { nodes { author { login } createdAt body
+      reactions(content: THUMBS_UP) { totalCount } } } }
 } }' | jq -r '.data.repository | to_entries[] | .value as $i
   | [$i.comments.nodes[]
      | select((.body | startswith("<!-- auto-dev -->")) | not)
-     | select(.body | test("(?i)^\\s*(approved|lgtm|ship it|go ahead)"))]
+     | select(.body | test("(?i)\\b(approved?|lgtm|ship it|go ahead|yes,? do it|sounds good|let'"'"'s do it)\\b"))]
   | select(length > 0) | "#\($i.number)  \(.[-1].createdAt[0:10])"'
 ```
+
+**This regex is a net, not the contract.** The contract is `references/triage.md`'s Planned branch,
+which counts any human approval however phrased. So treat a hit as a prompt to read the thread, and
+know the three ways the net misses — on a small planned bucket, just read them all instead:
+
+- **A reaction-only approval is not a comment at all.** A 👍 on the plan comment is a documented
+  approval and no body scan can see it; the query pulls `reactions` alongside so you can check.
+- **Unusual phrasings** ("that works", "fine by me", "build it") sail through. The pattern is
+  deliberately loose and unanchored, which trades false positives — cheap, you read the thread
+  anyway — against false negatives, which are the failure being fixed.
+- **`comments(last: 100)` is a bound.** A thread longer than that hides its early approval; page
+  the full thread for any issue whose history runs long.
 
 Two hits are **not** dropped transitions, and confirming which is which is the point of surfacing
 them rather than flipping them blind — read each thread before acting:
@@ -205,9 +219,16 @@ gh issue view <N> --repo "$REPO" --json number,labels \
   | jq -r '"#\(.number): \([.labels[].name | select(startswith("auto:"))] | join(", "))"'
 ```
 
-The states are **mutually exclusive** — a transition swaps, it never accumulates. An issue showing
-two `auto:*` states is a half-applied transition; finish it. If a read-back doesn't match what you
-intended, say so and retry rather than reporting the decision as done.
+The **lifecycle** states — needs-info, planned, ready, in-progress, parked — are mutually
+exclusive: a transition between them swaps, it never accumulates, so an issue showing two of them
+is a half-applied transition and you should finish it. The skip label is the one exception and is
+**not** a lifecycle state: it's an orthogonal opt-out that deliberately rides on top of whatever
+state the issue already has, which is what lets "I'll do this one" hand the issue back later by
+removing skip alone. So skip alongside planned or needs-info is correct and must be left as-is —
+never "finish" it by stripping the underlying state.
+
+If a read-back doesn't match what you intended, say so and retry rather than reporting the decision
+as done.
 
 ### 4 — Re-gather and re-present
 

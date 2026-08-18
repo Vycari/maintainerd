@@ -66,15 +66,21 @@ indistinguishable from an issue still awaiting a reply.
 
 1. **Evaluate the condition now.** If it is already satisfied (the named issue is closed or its PR
    merged, the named blocker is gone), the approval is live — swap to Ready this tick.
-2. **If it is not yet satisfied**, stay Planned and post one comment (marker) naming the approval,
-   the precise unmet condition, and how a later tick will test it — e.g. "held at Planned: approved
+2. **If it is not yet satisfied**, stay Planned and post one comment (marker) that carries the
+   literal sentinel `auto-dev-hold:` and then names the approval, the precise unmet condition as
+   issue or PR numbers, and how a later tick will test it — e.g. "`auto-dev-hold:` approved
    2026-08-05, sequenced behind #1303 and #1310; goes Ready when both are closed." Without that
    comment the hold is invisible, and both the next tick and the maintainer read the issue as
    un-approved.
-3. **Re-check it on later ticks.** A held issue is exempt from the Step 4 skip-if-unchanged rule:
-   its condition lives on _another_ issue, so nothing about this one changes when the blocker
-   clears and `updatedAt` alone will never surface it. Re-read the hold comment, test the condition,
-   and swap to Ready the tick it comes true.
+3. **Re-check it on later ticks.** A held issue is exempt from the Step 4 skip-if-unchanged rule —
+   but being exempt is not the same as being found. Its condition lives on _another_ issue, so
+   nothing about this one changes when the blocker clears: neither `updatedAt` nor its labels ever
+   move, and a tick that only looked at those would skip it before ever reading the comment that
+   says it is held. That is what the sentinel is for. Step 4 searches Planned issue bodies and
+   comments for `auto-dev-hold:` each tick and walks the hits regardless of `updatedAt` — so the
+   sentinel is **mandatory**, and a hold posted without it is stranded exactly like the bug this
+   branch exists to fix. Re-read the hold comment, test the condition, and swap to Ready the tick it
+   comes true.
 
 Conditions are only the objective, checkable kind — an issue or PR reaching a terminal state. A
 condition you cannot mechanically test ("once the design settles") is not a hold; treat it as
