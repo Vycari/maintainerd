@@ -125,9 +125,9 @@ gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
     reactions(content: THUMBS_UP) { totalCount }
     comments(last: 100) { nodes { author { login } createdAt body
       reactions(content: THUMBS_UP) { totalCount } } } }
-} }' | jq -r '.data.repository | to_entries[] | .value as $i
+} }' | jq -r --arg marker "<config.autoDev.marker>" '.data.repository | to_entries[] | .value as $i
   | [$i.comments.nodes[]
-     | select((.body | startswith("<!-- auto-dev -->")) | not)
+     | select((.body | startswith($marker)) | not)
      | select(.body | test("(?i)\\b(approved?|lgtm|ship it|go ahead|yes,? do it|sounds good|let'"'"'s do it)\\b"))]
   | select(length > 0) | "#\($i.number)  \(.[-1].createdAt[0:10])"'
 ```
@@ -221,9 +221,13 @@ So after each transition, read the labels back and confirm the new state stuck a
 gone:
 
 ```bash
+# $STATES = the values of config.autoDev.stateLabels, newline-separated.
+# Match the configured names — never a hard-coded "auto:" prefix, which a repo may not use.
 gh issue edit <N> --repo "$REPO" --add-label "<new-state>" --remove-label "<old-state>"
 gh issue view <N> --repo "$REPO" --json number,labels \
-  | jq -r '"#\(.number): \([.labels[].name | select(startswith("auto:"))] | join(", "))"'
+  | jq -r --rawfile s <(printf '%s\n' "$STATES") '
+      ($s | split("\n") | map(select(length > 0))) as $states
+      | "#\(.number): \([.labels[].name | select(. as $n | $states | index($n))] | join(", "))"'
 ```
 
 The **lifecycle** states — needs-info, planned, ready, in-progress, parked — are mutually
