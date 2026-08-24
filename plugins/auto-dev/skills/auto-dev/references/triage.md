@@ -12,11 +12,11 @@ Assess whether the issue contains enough to plan from (clear problem, scoped out
 design fork):
 
 - _Plannable_ → draft an implementation plan, post it as a comment, add the Planned label.
-- _Not plannable, and the gap is missing facts or a call the maintainer can supply_ → post one
-  comment asking the specific missing questions (numbered, concrete — not "please clarify"), add the
-  Needs-info label. Frame each one as a decision the maintainer can make in a single read — area,
-  user impact, problem, options, recommendation — and keep it under 300 words; see the Question
-  comment template in `comment-formats.md`.
+- _Not plannable, and the gap is missing facts the maintainer can supply_ → post one comment asking
+  the specific missing questions (numbered, concrete — not "please clarify"), add the Needs-info
+  label. Frame each one as a decision the maintainer can make in a single read — area, user impact,
+  problem, options, recommendation — and keep it under 300 words; see the Question comment template
+  in `comment-formats.md`.
 - _Not plannable because it needs a maintainer decision the skill can't make_ — a design fork that's
   theirs to resolve, a dependency on still-open work, or the issue body itself signals deferral
   ("not actionable yet", "revisit once X lands") → post a **park proposal**: name the blocker, offer
