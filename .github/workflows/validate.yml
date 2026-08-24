@@ -37,6 +37,35 @@ jobs:
           sys.exit(1 if fail else 0)
           EOF
 
+      - name: Agent Plugins v1.0.0 manifests match and stay within the closed schema
+        run: |
+          python3 - <<'EOF'
+          import json, sys, pathlib
+          ALLOWED = {
+              '$schema', 'name', 'version', 'description', 'author',
+              'homepage', 'repository', 'license', 'keywords', 'extensions',
+          }
+          SCHEMA_URL = 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json'
+          mp = json.loads(pathlib.Path('.claude-plugin/marketplace.json').read_text())
+          fail = False
+          for entry in mp['plugins']:
+              src = entry['source'].lstrip('./')
+              manifest = pathlib.Path(src) / 'plugin.json'
+              if not manifest.exists():
+                  continue  # optional: not every plugin has to opt into the open spec
+              pj = json.loads(manifest.read_text())
+              extra = set(pj) - ALLOWED
+              if extra:
+                  print(f"FAIL {manifest}: fields outside the closed schema: {sorted(extra)}"); fail = True
+              if pj.get('$schema') != SCHEMA_URL:
+                  print(f"FAIL {manifest}: \\$schema is {pj.get('$schema')!r}, expected {SCHEMA_URL!r}"); fail = True
+              if pj.get('name') != entry['name']:
+                  print(f"FAIL {manifest}: name {pj.get('name')!r} != marketplace {entry['name']!r}"); fail = True
+              if pj.get('version') != entry.get('version'):
+                  print(f"FAIL {manifest}: version {pj.get('version')!r} != marketplace {entry.get('version')!r}"); fail = True
+          sys.exit(1 if fail else 0)
+          EOF
+
       - name: Every skill has frontmatter with name and description
         run: |
           python3 - <<'EOF'
