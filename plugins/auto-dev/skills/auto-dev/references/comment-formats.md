@@ -35,18 +35,51 @@ propose the first slice only.
 
 ## Question comment
 
+Each question is a **decision the maintainer makes in one read** — not a request for an essay in
+reply. Keep every question under **300 words** including its options, and give it exactly these five
+parts:
+
+- **Area** — where the problem shows up (file, command, skill, subsystem).
+- **Impact** — what a user experiences because of it; skip if genuinely user-invisible and say so.
+- **Problem** — the ambiguity itself, 1–2 sentences.
+- **Options** — the real choices, one line each with its tradeoff. Two or three; if there is only
+  one real option this isn't a question, it's a plan.
+- **Recommendation** — which one you'd take and why, one sentence.
+
 ```markdown
 <!-- auto-dev -->
 
-Before this can be planned for implementation, a few things need clarification:
+Before this can be planned for implementation, a few decisions need your call:
 
-1. <specific question>
-2. <specific question>
+### 1. <short title of the decision>
+
+**Area:** <file / command / subsystem>
+**Impact:** <what a user sees or loses>
+**Problem:** <the ambiguity, 1–2 sentences>
+**Options:**
+
+- **A** — <option> (<tradeoff>)
+- **B** — <option> (<tradeoff>)
+
+**Recommendation:** A — <one sentence why>
+
+### 2. <short title of the decision>
+
+<same five parts>
 
 ---
 
 Reply here and the next automation pass will pick it up, or add the Skip label to opt this issue out of automation.
 ```
+
+Cut anything that isn't one of the five parts: no restating the issue back to the maintainer, no
+background they already have, no code excerpts, no "as discussed above". Three questions is the
+practical ceiling for one comment — if there are more, ask the ones that block planning and leave
+the rest.
+
+A question with no genuine options is still a question — a pure missing-fact ("which account does
+this run as?") keeps Area / Impact / Problem and replaces Options / Recommendation with the specific
+fact needed. The word cap applies the same way.
 
 ## Park proposal comment
 
