@@ -14,7 +14,9 @@ design fork):
 - _Plannable_ → draft an implementation plan, post it as a comment, add the Planned label.
 - _Not plannable, and the gap is missing facts the maintainer can supply_ → post one comment asking
   the specific missing questions (numbered, concrete — not "please clarify"), add the Needs-info
-  label.
+  label. Frame each one as a decision the maintainer can make in a single read — area, user impact,
+  problem, options, recommendation — and keep it under 300 words; see the Question comment template
+  in `comment-formats.md`.
 - _Not plannable because it needs a maintainer decision the skill can't make_ — a design fork that's
   theirs to resolve, a dependency on still-open work, or the issue body itself signals deferral
   ("not actionable yet", "revisit once X lands") → post a **park proposal**: name the blocker, offer
@@ -30,9 +32,10 @@ comment?
 - _Yes, and it says to park_ ("park it", "hold", "not now", "park", or a 👍 on a park proposal) →
   swap label to Parked.
 - _Yes, and it resolves the questions_ → draft and post the plan, swap label to Planned.
-- _Yes, but it raises new ambiguity_ → ask the follow-up (stay Needs-info) — but if this would be the
-  third unanswered round-trip, stop asking and either propose parking or leave a final note that the
-  issue needs maintainer attention.
+- _Yes, but it raises new ambiguity_ → ask the follow-up (stay Needs-info), in the same five-part,
+  under-300-words shape as the first ask — but if this would be the third unanswered round-trip,
+  stop asking and either propose parking or leave a final note that the issue needs maintainer
+  attention.
 
 ## Planned
 

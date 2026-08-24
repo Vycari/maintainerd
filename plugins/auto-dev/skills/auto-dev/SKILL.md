@@ -260,6 +260,10 @@ The plan, question, and park-proposal templates the triage pass posts live in
 format lives in [`references/fallback-review.md`](references/fallback-review.md). Read the relevant
 file before posting. Every comment's first line is `config.autoDev.marker`.
 
+Questions are written to be answered in one read: each names the area, the user-facing impact, the
+problem, the options, and a recommendation — and each stays under 300 words. Long context-dumps
+stall the queue; a maintainer who can answer from their phone doesn't.
+
 ## Exit report
 
 Every tick ends by printing a structured report — the scheduled task surfaces it, an interactive
