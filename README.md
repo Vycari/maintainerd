@@ -95,14 +95,21 @@ maintainerd/
   scripts/sync-references.sh
   scripts/bump-version.py
   plugins/
-    core/      .claude-plugin/plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
-    repo-ops/  .claude-plugin/plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
-    audits/    .claude-plugin/plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
-    research/  .claude-plugin/plugin.json  skills/{research-radar}/
-    journal/   .claude-plugin/plugin.json  skills/{worklog}/
-    auto-dev/  .claude-plugin/plugin.json  skills/{create-issue,auto-dev,review-queue}/
-    deps-flow/ .claude-plugin/plugin.json  skills/{dependabot}/
+    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
+    repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
+    audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
+    research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
+    journal/   .claude-plugin/plugin.json  plugin.json  skills/{worklog}/
+    auto-dev/  .claude-plugin/plugin.json  plugin.json  skills/{create-issue,auto-dev,review-queue}/
+    deps-flow/ .claude-plugin/plugin.json  plugin.json  skills/{dependabot}/
 ```
+
+Each plugin ships two manifests: `.claude-plugin/plugin.json` is Claude Code's own format;
+the root-level `plugin.json` conforms to the [Agent Plugins v1.0.0](https://agent-plugins.org/specification)
+open spec, for clients that speak that instead. Both describe the same plugin — same `name`,
+same `version` — and both read the same `skills/` directory, since that layout already matches
+what the open spec expects. `bump-version.py` and `validate.yml` keep them in lockstep; edit the
+`.claude-plugin` copy as the source of truth and let the script propagate the version.
 
 ### Shared reference docs
 
@@ -151,9 +158,10 @@ the push didn't touch don't move, so installs of those stay put.
 
 Two things to know when working in this repo:
 
-- **The version lives in two files that must agree** — `plugins/<dir>/.claude-plugin/plugin.json`
-  and the plugin's entry in `.claude-plugin/marketplace.json`. `validate.yml` fails the build if
-  they drift. Use the script rather than editing either by hand:
+- **The version lives in every manifest that must agree** — `plugins/<dir>/.claude-plugin/plugin.json`,
+  the plugin's entry in `.claude-plugin/marketplace.json`, and — where present —
+  `plugins/<dir>/plugin.json`. `validate.yml` fails the build if any of them drift. Use the
+  script rather than editing any of them by hand:
 
   ```bash
   ./scripts/bump-version.py --level minor repo-ops

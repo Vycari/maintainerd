@@ -10,9 +10,11 @@ so a merge that changes a skill but leaves `0.1.0` alone lands nowhere — every
 install keeps serving the old content forever. Bumping is therefore not a release
 ceremony here, it is how the change reaches anyone.
 
-The version lives in two places that CI (`.github/workflows/validate.yml`) requires to
-agree: `plugins/<dir>/.claude-plugin/plugin.json` and the plugin's entry in
-`.claude-plugin/marketplace.json`. This script edits both or neither.
+The version lives in the places that CI (`.github/workflows/validate.yml`) requires to
+agree: `plugins/<dir>/.claude-plugin/plugin.json` (Claude Code's manifest), the plugin's
+entry in `.claude-plugin/marketplace.json`, and — where present — `plugins/<dir>/plugin.json`
+(the Agent Plugins v1.0.0 manifest, kept for clients that speak the open spec instead of
+Claude Code's format). This script edits all of them or none.
 
     scripts/bump-version.py core repo-ops           # bump these (patch)
     scripts/bump-version.py --level minor audits    # bump one, minor
@@ -101,6 +103,7 @@ def plugin_index(marketplace):
             "dir": os.path.basename(source),
             "version": entry.get("version"),
             "manifest": os.path.join(source, ".claude-plugin", "plugin.json"),
+            "manifest_open_spec": os.path.join(source, "plugin.json"),
         }
         index[record["name"]] = record
         index[record["dir"]] = record
@@ -277,6 +280,18 @@ def main():
                 f"{record['version']!r} — fix the mismatch before bumping"
             )
 
+        open_spec_path = os.path.join(ROOT, record["manifest_open_spec"])
+        has_open_spec = os.path.exists(open_spec_path)
+        if has_open_spec:
+            with open(open_spec_path) as handle:
+                open_spec_current = json.load(handle).get("version")
+            if open_spec_current != current:
+                fail(
+                    f"{record['name']}: {record['manifest_open_spec']} version "
+                    f"{open_spec_current!r} != {record['manifest']} {current!r} — "
+                    "fix the mismatch before bumping"
+                )
+
         # An author who deliberately bumped in the PR (a minor or major that this
         # script's default patch would flatten) already published a new version for this
         # range. Bumping again on merge would silently turn their 0.2.0 into 0.2.1.
@@ -313,6 +328,8 @@ def main():
 
         new = bump(current, args.level)
         edits[manifest_path] = replace_plugin_version(manifest_path, current, new)
+        if has_open_spec:
+            edits[open_spec_path] = replace_plugin_version(open_spec_path, current, new)
         marketplace_text = replace_marketplace_version(
             marketplace_text, record["name"], current, new
         )
