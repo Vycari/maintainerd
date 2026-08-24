@@ -104,8 +104,9 @@ jobs:
           # maintainerd-core--v0.1.1 -> "maintainerd-core 0.1.1", joined with commas.
           SUMMARY=$(printf '%s\n' "${TAGS[@]}" | sed 's/--v/ /' | paste -sd, - | sed 's/,/, /g')
           # Stage the manifests by name — the script touches nothing else, and `-A` would
-          # sweep in anything a future step happens to leave in the tree.
-          git add .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json
+          # sweep in anything a future step happens to leave in the tree. plugins/*/plugin.json
+          # is the Agent Plugins v1.0.0 manifest bump-version.py also edits where present.
+          git add .claude-plugin/marketplace.json plugins/*/.claude-plugin/plugin.json plugins/*/plugin.json
 
           # No staged change means every version here was bumped by hand in the PR. That
           # still wants a tag, so fall through to tagging rather than treating it as a
