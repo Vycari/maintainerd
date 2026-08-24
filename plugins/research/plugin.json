@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "research",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Proactive research skills that surface relevant outside knowledge and open a PR or digest. research-radar periodically scans arXiv for papers relevant to the work in this repo and writes a dated digest. A home for future research tooling (deep research, GitHub/code search, prior-art scans). Themes and output paths come from .claude/maintainerd.json.",
   "author": {
     "name": "Allen Hutchison",

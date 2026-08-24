@@ -1,6 +1,6 @@
 {
   "name": "auto-dev",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Autonomous issue-to-PR pipeline. create-issue is the front door — it turns a rough request into a well-formed, buildable issue by investigating the codebase. auto-dev runs one tick of triage -> plan -> build -> address-review against an auto:* GitHub label state machine and never merges; review-queue is the maintainer's console for approving plans, answering questions, and merging. Label names, comment markers, and branch prefixes are configurable via .claude/maintainerd.json so the pipeline drops into any repo.",
   "author": {
     "name": "Allen Hutchison",

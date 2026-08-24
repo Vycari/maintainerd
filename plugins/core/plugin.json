@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "maintainerd-core",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Foundation for the maintainerd maintainer toolkit. Ships bootstrap (generates a repo's .claude/maintainerd.json config contract and starter guidelines) and doctor (validates that setup — config, paths, commands, labels, guidelines, rosters — and reports what's wrong), plus the canonical config schema reference that every other maintainerd plugin reads.",
   "author": {
     "name": "Allen Hutchison",
