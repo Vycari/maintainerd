@@ -137,8 +137,9 @@ maintainerd/
   .claude-plugin/marketplace.json
   scripts/sync-references.sh
   scripts/bump-version.py
+  scripts/test-coverage.sh
   plugins/
-    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md
+    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md  scripts/coverage-{adapt,check}.sh
     repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
     audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
