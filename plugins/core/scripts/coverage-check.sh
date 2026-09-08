@@ -72,8 +72,9 @@ fail() {
 if [ -z "$floor" ]; then
   [ -f "$config" ] || fail "coverage-check: no $config — the floor lives there." \
     "Run /bootstrap in this repo, then /bootstrap --adopt to measure and record the floor."
-  jq -e . "$config" >/dev/null 2>&1 || fail "coverage-check: $config is not valid JSON."
-  floor="$(jq -r '.coverage.floor // empty' "$config")"
+  jq -e 'type == "object"' "$config" >/dev/null 2>&1 \
+    || fail "coverage-check: $config is not a valid JSON object."
+  floor="$(jq -r 'if (.coverage | type) == "object" then (.coverage.floor // empty) else empty end' "$config")"
   [ -n "$floor" ] || fail "coverage-check: $config has no coverage.floor — this repo has not adopted the ratchet." \
     "Run /bootstrap --adopt to measure the default branch and record coverage.floor," \
     "or drop this step from the workflow if the repo is exempt from coverage."
@@ -89,8 +90,11 @@ esac
   "The repo's commands.coverage must leave a summary there, normalized by coverage-adapt.sh." \
   "Failing closed: a missing summary is indistinguishable from a suite that never ran."
 
-jq -e . "$summary" >/dev/null 2>&1 || fail "coverage-check: $summary is not valid JSON." \
-  "Failing closed rather than reading a percentage out of a truncated file."
+# `type == "object"`, not a bare parse check: indexing an array or a bare string with
+# .metric is a jq error, and it would surface as a raw jq message instead of a finding.
+jq -e 'type == "object"' "$summary" >/dev/null 2>&1 \
+  || fail "coverage-check: $summary is not a JSON object — it may be truncated or the wrong file." \
+  "Failing closed rather than reading a percentage out of it."
 
 metric="$(jq -r '.metric // empty' "$summary")"
 [ "$metric" = "lines" ] || fail "coverage-check: $summary reports metric '${metric:-<absent>}', expected 'lines'." \

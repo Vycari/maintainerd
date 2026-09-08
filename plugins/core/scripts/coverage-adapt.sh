@@ -74,8 +74,12 @@ if [ -z "$input" ] || [ ! -f "$input" ]; then
   exit 1
 fi
 
-jq -e . "$input" >/dev/null 2>&1 || {
-  echo "coverage-adapt: $input is not valid JSON — refusing to guess a percentage." >&2; exit 1; }
+# `type == "object"` rather than a bare parse check: every shape below indexes the top
+# level, and indexing an array or a string is a jq *error*, which would surface as a raw
+# jq message rather than as this one.
+jq -e 'type == "object"' "$input" >/dev/null 2>&1 || {
+  echo "coverage-adapt: $input is not a valid JSON object — refusing to guess a percentage." >&2
+  exit 1; }
 
 # Each supported shape, as the jq path to its line-coverage percentage. The normalized
 # shape is included so re-running the adapter on its own output is a no-op rather than an

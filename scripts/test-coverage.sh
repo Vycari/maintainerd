@@ -110,7 +110,7 @@ d="$(scratch)"
 printf '{"totals": {"percent_cov' > "$d/coverage.json"     # truncated mid-write
 run "$d" "$ADAPT" --input coverage.json
 expect_status "malformed JSON: fails" 1 "$status" "$output"
-expect_match "malformed JSON: refuses to guess" "not valid JSON" "$output"
+expect_match "malformed JSON: refuses to guess" "refusing to guess" "$output"
 if [ -f "$d/coverage-summary.json" ]; then
   bad "malformed JSON: writes no output" "wrote a summary anyway"
 else
@@ -201,7 +201,7 @@ d="$(mkrepo 80)"
 printf '{"metric": "lines", "perce' > "$d/coverage-summary.json"
 run "$d" "$CHECK"
 expect_status "malformed summary: fails closed" 1 "$status" "$output"
-expect_match "malformed summary: names the file" "not valid JSON" "$output"
+expect_match "malformed summary: names the file" "coverage-summary.json is not a JSON object" "$output"
 rm -rf "$d"
 
 d="$(mkrepo 80)"
@@ -252,6 +252,28 @@ rm -rf "$d"
 d="$(mkrepo 95 92.4)"
 run "$d" env GITHUB_ACTIONS=true "$CHECK"
 expect_match "on Actions, a failure is annotated" "::error::" "$output"
+rm -rf "$d"
+
+# A JSON document that is valid but not an object: every read below indexes the top level,
+# and jq *errors* on indexing an array. The finding must survive that.
+d="$(mkrepo 80)"
+echo '[{"percent": 91.5}]' > "$d/coverage-summary.json"
+run "$d" "$CHECK"
+expect_status "a JSON array where the summary should be: fails with a finding" 1 "$status" "$output"
+expect_match "a JSON array: names the file, not a jq error" "is not a JSON object" "$output"
+rm -rf "$d"
+
+d="$(mkrepo 80 91.5)"
+printf '["not a config"]\n' > "$d/.claude/maintainerd.json"
+run "$d" "$CHECK"
+expect_status "a config that is not an object: fails with a finding" 1 "$status" "$output"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '[1, 2, 3]' > "$d/coverage.json"
+run "$d" "$ADAPT" --input coverage.json
+expect_status "adapter, a JSON array: fails with a finding" 1 "$status" "$output"
+expect_match "adapter, a JSON array: names the shape" "not a valid JSON object" "$output"
 rm -rf "$d"
 
 echo
