@@ -226,13 +226,14 @@ it. The [Triage](#phase-2--triage) table already says to link a follow-up issue 
 items; this is that line, enforced.
 
 **The check.** Before posting, scan the reply for a deferral cue — *follow-up*, *deferred*, *defer*,
-*in a later PR*, *in a separate PR*, *out of scope for this PR*, *will address later*, *TODO* —
+*in a later PR*, *in a separate PR*, *out of scope*, *will address later*, *TODO* —
 ignoring fenced code blocks and HTML comments (which is also why the ledger block never trips it).
 If a cue is present, the sentence carrying it must also carry an issue reference: `#123`,
 `owner/name#123`, or a full GitHub issue URL.
 
-**The fix, unlike `create-pr`'s, is not a refusal.** The reply is yours, not the author's — there is
-nobody to hand it back to — so do the thing the gate is asking for, in this order:
+**The fix, unlike `create-pr`'s, is not a refusal.** `create-pr` hands a body back to whoever wrote
+it; here you are the one writing the sentence, so there is nobody to refuse it to. Do the thing the
+gate is asking for instead, in this order:
 
 1. **File the issue, then cite it.** Use `create-issue` (auto-dev plugin) if installed, otherwise
    `gh issue create --repo <config.repo>`. Title it after the deferred work, and put the reviewer's

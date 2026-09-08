@@ -134,8 +134,8 @@ promise outlive the thread.
    - **A section heading** whose text is about later work: `Deferred work`, `Deferred`,
      `Follow-ups`, `Follow-up work`, `Future work`, `Next steps`, `Out of scope`, `Not in this PR`.
    - **A phrase inside a sentence or list item**: *follow-up*, *followup*, *deferred*, *defer*,
-     *in a later PR*, *in a separate PR*, *in a future PR*, *out of scope for this PR*, *left for
-     later*, *will be addressed later*, *TODO*.
+     *in a later PR*, *in a separate PR*, *in a future PR*, *out of scope*, *left for later*,
+     *will be addressed later*, *TODO*.
 4. **Take the enclosing unit** — the smallest piece of text that could carry the issue number.
    For a phrase, that's the sentence, or the list item if the phrase is inside one. For a heading,
    it's each list item or paragraph in the section under it (up to the next heading of the same or
