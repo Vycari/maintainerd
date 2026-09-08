@@ -1,6 +1,6 @@
 ---
 name: daily-update
-description: Run the repo's per-day housekeeping skills and bundle their output into one PR. Each sub-skill writes to the working tree (or mutates GitHub directly); this skill runs the configured roster in sequence, collects what they wrote, and packages the combined diff into a single PR. Use when the user asks to "do the daily update", "run the daily skills", "morning sweep", "end-of-day cleanup", or when invoked by a scheduled remote agent doing the daily run. The roster is configured per-repo in `config.dailyUpdate.subSkills`. Bundles the per-day skills behind one entry point so a single schedule slot covers the whole routine. Safe to invoke manually at any time.
+description: Run the repo's per-day housekeeping skills and bundle their output into one PR. Each sub-skill writes to the working tree (or mutates GitHub directly); this skill runs the configured roster in sequence, collects what they wrote, and packages the combined diff into a single PR. Use when the user asks to "do the daily update", "run the daily skills", "morning sweep", "end-of-day cleanup", or when invoked by a scheduled remote agent doing the daily run. The roster is configured per-repo in `config.dailyUpdate.subSkills`. In an umbrella repo whose config carries a `workspace` block, `--workspace` runs the whole routine once per cloned repo in the list — one PR per repo, one combined report. Bundles the per-day skills behind one entry point so a single schedule slot covers the whole routine. Safe to invoke manually at any time.
 ---
 
 # Daily update — orchestrate per-day housekeeping skills
@@ -20,6 +20,53 @@ Before anything else, load the repo config (see
    `config.dailyUpdate.commitSubject`, and — for the inline-PR fallback — `config.commands.*` and
    `config.paths.prTemplate`.
 4. If `config.dailyUpdate.subSkills` is absent or empty, there is nothing to run. Say so and stop.
+
+## Workspace mode (`--workspace`)
+
+Optional, and off unless you pass the flag. In a repo whose config carries a `workspace` block, the
+whole routine below runs **once per cloned repo in the list** — each repo's own roster, in its own
+working tree, producing its own PR — and the run ends with one combined report.
+
+The block's shape and the shared fan-out rules are in
+[`../../references/config-schema.md`](../../references/config-schema.md). What they mean here:
+
+- **No `workspace` block → stop.** "This repo isn't a workspace; run me without `--workspace`."
+  Never assemble a repo list from sibling directories.
+- **Which repos run:** every entry with `clone` not `false` whose checkout exists at `<root>/<name>`.
+  A `clone: false` entry is skipped by config. A missing checkout is reported as unreachable.
+- **Each repo runs its own routine.** `cd` into `<root>/<name>`, read *that repo's*
+  `.claude/maintainerd.json`, and use its `dailyUpdate.subSkills`, `branchPrefix`, `commitSubject`,
+  `defaultBranch`, `repo` and `commands.*`. The umbrella repo's roster describes the umbrella repo
+  and is never run anywhere else. A repo with no config, or with an absent/empty
+  `dailyUpdate.subSkills`, is skipped with that reason — not defaulted to someone else's roster.
+- **Repos run one at a time, in list order.** Each sub-skill writes to a working tree and pushes; a
+  serial run keeps the branches, the PRs and the report unambiguous, and keeps the API traffic sane.
+- **One repo's failure never aborts the rest** — the same rule the sub-skills already follow inside a
+  repo, one level up. Capture the error against that repo and continue.
+
+**There is exactly one PR per repo, and never a PR that spans repos.** A commit can't span
+repositories, so the workspace run is N ordinary daily-update runs with a shared report, not a
+bundled change. Each repo's Case A / B / C outcome is decided independently: a quiet repo produces
+no PR, and that is still the signal it always was.
+
+### The combined report
+
+```text
+daily-update --workspace — my-org   ·   2026-09-08
+
+  app       PR https://github.com/my-org/app/pull/412   (daily-changelog: wrote docs/changelog/2026-09-08.md, 6 PRs
+                                                          audit-product-docs: 2 drift fixes)
+  worker    no changes — no PR
+  site      GitHub-only run — triage-issues labeled 4 issues (#88, #90, #91, #93)
+  infra     ERROR — daily-changelog: `gh` rate-limited after 3 retries; branch deleted, nothing pushed
+  toolkit   skipped (clone: false)
+  docs-hub  skipped (no .claude/maintainerd.json — run /bootstrap there)
+
+Summary: 6 repos · 1 PR · 1 GitHub-only · 1 quiet · 1 error · 2 skipped
+```
+
+Every in-scope repo appears on its own line, including the ones that did nothing. A repo that
+produced no output must still be visible, or a broken schedule looks exactly like a quiet day.
 
 ## What this skill is for
 
@@ -166,6 +213,12 @@ the cron only needs the success/failure signal.
   state, don't paper over it — capture the error and let a human triage from the run report.
 - **Don't try to "fix" a failing sub-skill from inside this skill.** Capture the error, move on, and
   let a human triage it from the run report.
+- **Don't run one repo's roster in another repo.** In workspace mode every value — roster, branch
+  prefix, commit subject, default branch, repo slug — comes from the repo being run.
+- **Don't bundle a workspace run into one PR.** One PR per repo; a commit can't span repositories,
+  and pretending otherwise loses changes.
+- **Don't omit a repo from the combined report because it was quiet or skipped.** A missing line is
+  indistinguishable from a run that never happened.
 - **Don't reimplement sub-skill logic here.** Read the sub-skill's `SKILL.md` and follow it. If a
   sub-skill needs a behavior change, edit *that* skill's `SKILL.md` and ship it as a separate PR.
 

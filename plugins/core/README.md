@@ -9,7 +9,7 @@ it generates and stop with "run `/bootstrap`" if it's missing.
 | Skill | What it does | Typical trigger |
 | --- | --- | --- |
 | [`bootstrap`](skills/bootstrap/SKILL.md) | Generate `.claude/maintainerd.json` and scaffold `.claude/guidelines/{coding,testing,invariants}.md`. Inspects the repo for language, slug, branch, paths and commands; asks only about what's genuinely ambiguous. Idempotent — a re-run never clobbers hand-edited guideline prose. | "bootstrap this repo", "set up maintainerd" |
-| [`doctor`](skills/doctor/SKILL.md) | Validate the contract and everything it points at: the JSON parses and conforms, paths and commands resolve, the configured GitHub labels exist, the daily-update roster names only installed skills. Read-only PASS/WARN/FAIL; offers to create missing labels with `--fix`. | "run doctor", "why isn't <skill> working" |
+| [`doctor`](skills/doctor/SKILL.md) | Validate the contract and everything it points at: the JSON parses and conforms, paths and commands resolve, the configured GitHub labels exist, the daily-update roster names only installed skills. Read-only PASS/WARN/FAIL; offers to create missing labels with `--fix`. With `--workspace`, validates an umbrella repo's `workspace` block and runs the whole check once per repo it lists. | "run doctor", "why isn't <skill> working" |
 
 ## Why `invariants.md` is the file that matters
 
@@ -24,6 +24,12 @@ Every skill here reads the repo's config contract — `.claude/maintainerd.json`
 `.claude/guidelines/*.md`, checked into the consuming repo. Run `/bootstrap` (from
 **maintainerd-core**) to generate it. The canonical schema ships with this plugin at
 [`references/config-schema.md`](references/config-schema.md).
+
+An umbrella repo — one that holds other repos rather than code — adds a top-level `workspace`
+block naming the repos it covers. That block is the one repo list `doctor`, `review-queue` and
+`daily-update` fan out over with `--workspace`, and it's a versioned contract other tools read
+directly. The schema documents it, with a complete example at
+[`references/example-workspace.json`](references/example-workspace.json).
 
 Skills that read text authored outside the repo follow the shared contract in
 [`references/untrusted-input.md`](references/untrusted-input.md); scheduled skills note which model
