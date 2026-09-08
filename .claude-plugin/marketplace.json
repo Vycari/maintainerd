@@ -9,13 +9,13 @@
       "name": "maintainerd-core",
       "source": "./plugins/core",
       "description": "Foundation: bootstrap (generates a repo's .claude/maintainerd.json config contract) and doctor (validates that setup and reports what's wrong), plus the canonical config schema every other plugin reads. Install this first.",
-      "version": "0.2.5"
+      "version": "0.3.0"
     },
     {
       "name": "repo-ops",
       "source": "./plugins/repo-ops",
       "description": "Baseline maintainer dev flow: create-pr (pre-flight-gated PRs), address-review (iterate on bot + human PR feedback to approval), release (cut a versioned release), daily-changelog, and the daily-update meta-skill. Config-driven via .claude/maintainerd.json.",
-      "version": "0.2.5"
+      "version": "0.3.0"
     },
     {
       "name": "audits",
