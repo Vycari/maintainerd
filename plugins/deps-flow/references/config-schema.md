@@ -168,6 +168,16 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "userAgent": "research-radar/1.0 (mailto:you@example.com)" // arXiv API courtesy UA
   },
 
+  // ── create-pr gates (optional) ───────────────────────────────────────────
+  // Absent → the whole block defaults, which is today's behavior: no extra gate.
+  "createPr": {
+    // false (default) = no deferred-work gate. true = `create-pr` refuses to open a PR whose
+    // body or branch commit messages promise follow-up work without naming an issue, and
+    // `address-review` holds a review reply that does the same. An explicit
+    // `<!-- no-deferred-work -->` marker in the body bypasses the gate for that PR.
+    "requireIssueForDeferredWork": false
+  },
+
   // ── review feedback (address-review) ─────────────────────────────────────────
   "review": {
     // Automated-reviewer logins to recognize. Humans need no listing — any reviewer
@@ -344,6 +354,49 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `worklog`: `project` (folder name) and/or `hubNote` (explicit vault-relative path). Absent → the
   project is inferred from the repo name. The **vault itself is not here** — it's user-scoped; see
   [User-level config](#user-level-config).
+
+---
+
+### `createPr`
+
+One optional block, read by the two repo-ops skills that write PR text. Absent → the defaults
+below, which are the pre-gate behavior: a repo that sets nothing sees no change.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `requireIssueForDeferredWork` | `false` | When `true`, text that promises follow-up work must also name an issue. `create-pr` refuses to open the PR otherwise; `address-review` holds the reply. |
+
+The rule it mechanizes is *"a follow-up that lives only in a PR dies with the PR"* — a "we'll
+handle X in a follow-up" in a PR body is invisible the moment the PR merges, and the honest fix is
+cheap: file the issue and cite its number in the same sentence.
+
+**What the gate reads.** `create-pr` checks the PR body it is about to submit plus the subjects and
+bodies of the commits on the branch; `address-review` checks each reply before it posts it. Both
+look for a **deferral cue** — a heading like `Deferred work` / `Follow-ups` / `Future work` /
+`Out of scope`, or a phrase like *follow-up*, *deferred*, *in a later PR*, *out of scope for this
+PR*, *TODO* — and then require an **issue reference** in the same unit of text: the section under a
+matching heading, or the sentence or list item carrying a matching phrase. An issue reference is
+`#123`, `owner/name#123`, or a full GitHub issue URL.
+
+**Its limits, which are real.** This is a lint over prose, not comprehension, and it is wrong in
+both directions:
+
+- It matches words, not intent. "We can look at the caching layer later" trips it whether or not
+  anything was promised; "the retry path needs another pass" promises follow-up work and sails
+  through, because no cue word appears.
+- It checks that a number is *present*, not that it is *right*. `#1` in the same sentence satisfies
+  the gate whether or not that issue exists or has anything to do with the deferred work.
+- It reads text, never the diff. A `TODO` added in code is not what this gate is about; that is an
+  audit's job.
+
+Which is why the bypass is explicit rather than clever: an `<!-- no-deferred-work -->` marker
+anywhere in the PR body turns the gate off **for that PR**, for the case where the "later" is prose
+rather than a promise. It is deliberately per-PR and not per-sentence — a per-sentence escape hatch
+ends up pasted next to every sentence, and then the gate is decoration. The skill says in its run
+report that a marker was honored, so the bypass is visible in the transcript rather than silent.
+
+The full gate, including the refusal message and worked examples, is in the repo-ops plugin's
+`create-pr` and `address-review` skills.
 
 ---
 

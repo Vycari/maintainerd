@@ -77,6 +77,14 @@ for config); the audits and repo-ops compose but don't require each other.
 - **Free-form repo rules → markdown.** Coding standards, test conventions, and load-bearing
   invariants live in `.claude/guidelines/*.md`, which the skills read at runtime. This keeps the
   JSON scannable and lets the prose diff cleanly.
+- **Some of it is policy, not description.** A few keys don't describe the repo, they set a house
+  rule the skills enforce. `createPr.requireIssueForDeferredWork` (default off) is the clearest
+  case: turn it on and `create-pr` refuses to open a PR whose body promises follow-up work without
+  naming an issue, and `address-review` won't post a review reply that defers without one — the
+  rule "a follow-up that lives only in a PR dies with the PR", mechanized. It's a lint over prose,
+  with the limits that implies; the schema reference documents them, and an explicit
+  `<!-- no-deferred-work -->` marker in the body bypasses it for a PR whose "later" is prose rather
+  than a promise.
 
 Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the skill tells you to run
 `/bootstrap`. The canonical schema and the shared "read your repo config" preamble live in
