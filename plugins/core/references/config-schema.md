@@ -368,10 +368,10 @@ cheap: file the issue and cite its number in the same sentence.
 **What the gate reads.** `create-pr` checks the PR body it is about to submit plus the subjects and
 bodies of the commits on the branch; `address-review` checks each reply before it posts it. Both
 look for a **deferral cue** — a heading like `Deferred work` / `Follow-ups` / `Future work` /
-`Out of scope`, or a phrase like *follow-up*, *deferred*, *in a later PR*, *out of scope for this
-PR*, *TODO* — and then require an **issue reference** in the same unit of text: the section under a
-matching heading, or the sentence or list item carrying a matching phrase. An issue reference is
-`#123`, `owner/name#123`, or a full GitHub issue URL.
+`Out of scope`, or a phrase like *follow-up*, *deferred*, *in a later PR*, *out of scope*, *TODO* —
+and then require an **issue reference** in the smallest unit of text that could carry it: the
+sentence or list item holding the phrase, or, under a matching heading, each list item or paragraph
+in that section. An issue reference is `#123`, `owner/name#123`, or a full GitHub issue URL.
 
 **Its limits, which are real.** This is a lint over prose, not comprehension, and it is wrong in
 both directions:
