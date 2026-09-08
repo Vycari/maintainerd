@@ -21,6 +21,11 @@ Before anything else, load the repo config (see
    `config.paths.prTemplate`.
 4. If `config.dailyUpdate.subSkills` is absent or empty, there is nothing to run. Say so and stop.
 
+**With `--workspace`, steps 3 and 4 describe the repo currently being run, not the umbrella repo.**
+Read the umbrella repo's config only for its `workspace` block, dispatch, and then apply this
+preamble — including the stop in step 4 — once per listed repo against *that* repo's config. An
+umbrella repo typically has no roster of its own; stopping on that would skip every repo in the list.
+
 ## Workspace mode (`--workspace`)
 
 Optional, and off unless you pass the flag. In a repo whose config carries a `workspace` block, the
@@ -30,6 +35,10 @@ working tree, producing its own PR — and the run ends with one combined report
 The block's shape and the shared fan-out rules are in
 [`../../references/config-schema.md`](../../references/config-schema.md). What they mean here:
 
+- **The umbrella repo's own roster is not a gate.** With `--workspace`, the only key read from the
+  umbrella repo's config is the `workspace` block. Its `dailyUpdate` block — commonly absent, since
+  an umbrella repo has no code to sweep — is irrelevant unless the list names the umbrella repo
+  itself, and an empty roster there must never stop the fan-out before it starts.
 - **No `workspace` block → stop.** "This repo isn't a workspace; run me without `--workspace`."
   Never assemble a repo list from sibling directories.
 - **Which repos run:** every entry with `clone` not `false` whose checkout exists at `<root>/<name>`.

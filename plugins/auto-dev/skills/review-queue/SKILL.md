@@ -28,8 +28,14 @@ contract). If it does not exist, **stop** and tell the user:
 > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.
 
 Don't guess values or hardcode another repo's settings. If `config.autoDev.enabled` is `false`,
-**stop** and tell the user that the auto-dev / review-queue pipeline is disabled for this repo. The
-keys this skill needs:
+**stop** and tell the user that the auto-dev / review-queue pipeline is disabled for this repo.
+
+**With `--workspace`, that gate belongs to each listed repo, not to the umbrella repo.** Read the
+umbrella repo's config only for its `workspace` block, then apply this preamble — the enabled check
+included — once per listed repo against *that* repo's config. An umbrella repo has no pipeline of
+its own, so gating on its `autoDev.enabled` would drop every enabled repo in the list.
+
+The keys this skill needs:
 
 - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
 - `config.autoDev.enabled` — must be `true` for this skill to run.
@@ -66,6 +72,9 @@ section changes.
 The block's shape and the shared fan-out rules are in
 [`../../references/config-schema.md`](../../references/config-schema.md). What they mean here:
 
+- **The umbrella repo's own `autoDev` block is not a gate.** With `--workspace`, the only key read
+  from the umbrella repo's config is the `workspace` block. Whether *it* has auto-dev enabled says
+  nothing about the repos in the list, and gating on it would silently empty the inbox.
 - **No `workspace` block → stop.** "This repo isn't a workspace; run me without `--workspace`."
   Never assemble a repo list from sibling directories or `gh repo list`.
 - **Which repos are in scope:** every entry with `clone` not `false` whose checkout exists at
