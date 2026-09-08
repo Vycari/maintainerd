@@ -328,8 +328,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `review.sameFileRoundCap` *(optional; default `3`)* — how many **consecutive** review rounds may
   rewrite the same file before the loop halts, regardless of whether it agreed with every finding
   along the way. This is the cap that catches the churn `impasseRounds` cannot see: agreeing with
-  each individual finding is what disguises a file being rewritten in circles. Set either to `null`
-  to disable that cap (not recommended — an uncapped loop is the failure mode both keys exist for).
+  each individual finding is what disguises a file being rewritten in circles.
+
+  Either breaker takes `null` to disable **that** breaker; the other keeps working. Neither takes
+  `0` — a cap of zero would halt before the first round, which is not a policy anyone wants and is
+  read as a misconfiguration, so `address-review` treats a non-positive number as `null` and says
+  so. Disabling is not recommended in either direction: an uncapped loop is the failure mode both
+  keys exist for.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to

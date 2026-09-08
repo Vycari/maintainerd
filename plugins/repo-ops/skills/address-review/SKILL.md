@@ -148,8 +148,11 @@ restart the loop until the human has ruled. Sometimes the stubborn finding turns
 a way that improves the design — that's the human's win to take, and it's why you escalate rather
 than force it through.
 
-Set `sameFileRoundCap` to `null` to disable that cap. An uncapped loop is the failure mode both
-keys exist for, so don't do it silently.
+**Either breaker may be set to `null`**, which disables that one and leaves the other working; a
+non-positive number (`0`, a negative) is a misconfiguration rather than a policy — halting before
+the first round is nobody's intent — so read it as `null` and say so in the round report. Both
+disabled means an uncapped loop, which is the failure mode the keys exist for, so don't pass over
+it silently: name the disabled breaker once per run.
 
 ## The principle: never leave silence
 
