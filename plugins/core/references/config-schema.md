@@ -392,5 +392,143 @@ A sample lives alongside this file as [`example-user.json`](example-user.json).
 
 A complete pepper (`python`) and obsidian-gemini (`typescript`) repo config live alongside this file
 as [`example-pepper.json`](example-pepper.json) and [`example-obsidian.json`](example-obsidian.json),
-and a user-level config as [`example-user.json`](example-user.json). They double as the round-trip
-fixtures the verification step checks the schema against.
+and a user-level config as [`example-user.json`](example-user.json). An umbrella repo carrying a
+`workspace` block lives as [`example-workspace.json`](example-workspace.json). They double as the
+round-trip fixtures the verification step checks the schema against.
+
+---
+
+## Workspace scope: the `workspace` block
+
+An **optional top-level block that belongs only in an umbrella repo** — a repo whose job is to hold
+the other repos rather than to hold code. **Its presence is what makes a directory a workspace.**
+A repo without it is just a repo, and every `--workspace` flag below refuses to run there rather
+than guessing a repo list from what happens to be checked out.
+
+```jsonc
+{
+  "workspace": {
+    "contractVersion": 1,       // shape of `repos`; see "The versioned contract" below
+    "org": "my-org",            // GitHub org (or user) the repos live under
+    "root": ".",                // where the checkouts live, relative to this repo's root
+    "profile": "profiles/repo-profile.json", // optional; the only thing that validates `language`
+
+    // THE repo list. One list, read by every fan-out below and by tools outside maintainerd.
+    "repos": [
+      { "name": "app",     "repo": "my-org/app",     "language": "python-service", "role": "product" },
+      { "name": "worker",  "repo": "my-org/worker",  "language": "python-service", "role": "service" },
+      { "name": "site",    "repo": "my-org/site",    "language": "typescript-web", "role": "site" },
+      { "name": "infra",   "repo": "my-org/infra",   "language": "shell",          "role": "infra" },
+      { "name": "toolkit", "repo": "my-org/toolkit", "language": "none",           "role": "tooling",
+        "clone": false }      // tracked, but not checked out here — fan-out skips it
+    ]
+  }
+}
+```
+
+A complete umbrella-repo config lives alongside this file as
+[`example-workspace.json`](example-workspace.json).
+
+### Fields
+
+| Key | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `contractVersion` | no | `1` | Version of the `repos` shape. Absent means "written before versioning" — read as `1`, and `doctor` says so. |
+| `org` | yes | — | The GitHub org or user the repos live under. Informational for maintainerd (every entry already carries a full slug); it's what a fan-out tool uses to construct calls the list doesn't spell out. |
+| `root` | no | `"."` | Directory holding the checkouts, relative to the umbrella repo root. Repo `name` is the directory name under it, so `app` is checked out at `<root>/app`. |
+| `profile` | no | `null` | Path (repo-root-relative) to a repo-profile JSON. Absent → nothing validates `language`, and `doctor` reports that rather than implying the values are checked. |
+| `repos[].name` | yes | — | Short name; **unique across the list**, and the checkout's directory name. Must be a single path segment — no `/`, no `.` or `..`. |
+| `repos[].repo` | yes | — | GitHub `owner/name`, the same shape as the top-level `repo` key. This, not `name`, is what every `gh --repo` gets. |
+| `repos[].language` | no | `null` | A **profile** language key (`python-service`, `typescript-web`, `shell`, `none`, …) — *not* the top-level `language` key, which is the narrower `python`/`typescript` the audits switch on. Meaningful only against a `profile`. |
+| `repos[].role` | no | `null` | An opaque label for the humans and for downstream tooling (`product`, `service`, `site`, `infra`, `tooling`). Maintainerd never branches on it. |
+| `repos[].clone` | no | `true` | Whether this repo is checked out in the workspace by default. |
+
+**Why one list and not a `repos.toml`.** A second file is a second thing to drift. The repo list
+lives in the config every skill already reads.
+
+**`language` here is not the top-level `language`.** The top-level key selects language-specific
+audit rules and is `python` | `typescript`. A `repos[].language` is a key into the *profile's*
+language table, which is a different and larger vocabulary (it names build/CI shapes, and includes
+`none` for a repo that is tracked but not built). They are deliberately separate namespaces; a repo
+config carries the first, the workspace list carries the second.
+
+### `clone` semantics
+
+`clone` answers exactly one question: **is this repo checked out in the workspace?**
+
+- **`clone: true` (the default, and what an absent key means)** — the repo is expected at
+  `<root>/<name>`. Every `--workspace` fan-out runs there.
+- **`clone: false`** — the repo is *tracked but not checked out*. It stays in the list because the
+  list is the org's inventory: an inventory that omits a repo is how a repo ends up ungoverned. Fan-out
+  **never** runs in it (there is nothing to run in), and `doctor` still validates its list entry —
+  unique name, resolvable slug, known `language` — because those are properties of the entry, not of
+  a working tree.
+
+Two things `clone` does *not* mean. It is **not** "unimportant" — a `clone: false` repo is still
+audited by anything that works over the GitHub API. And it is **not** a lock: checking the repo out
+by hand is fine, and a checkout that exists for a `clone: false` entry is not a finding. The key
+records the default for a fresh workspace, not a prohibition.
+
+Conversely, a `clone: true` repo whose directory is **missing** is a finding, not a silent skip — a
+fan-out that quietly covers four of six repos and reports a clean run is worse than one that says
+which two it couldn't reach.
+
+### The versioned contract
+
+`workspace.repos` is **a published interface, not an implementation detail.** Tools that are not
+maintainerd read it directly — a fan-out automation, a CI job, a dashboard — precisely so they don't
+have to import maintainerd or re-derive the repo list. That makes its shape a compatibility
+surface, and `contractVersion` is what lets a reader tell whether it still understands it.
+
+**Rules for readers:**
+
+- **Ignore keys you don't recognize.** Entries gain optional keys over time; a reader that rejects
+  unknown keys breaks on every additive change.
+- **Check `contractVersion` before parsing, and refuse a version you don't know** rather than
+  guessing. An absent `contractVersion` means `1`.
+- Treat `repo` as identity. `name` is a local label (a directory name); the slug is the thing that
+  identifies the repo everywhere else.
+
+**Rules for writers (this schema):**
+
+- Adding an **optional** key, to the block or to an entry, does **not** bump `contractVersion` —
+  that's what the "ignore unknown keys" rule buys.
+- Removing a key, renaming one, making an optional key required, or changing what an existing key
+  means **does** bump it. Repurposing a key without a bump is the one change that silently corrupts
+  every downstream reader, so it is never done.
+
+**Version 1 guarantees:** `repos` is an array of objects; every entry has a `name` (unique, a single
+path segment) and a `repo` (`owner/name`); `language`, `role` and `clone` are optional with the
+defaults in the field table; `clone` defaults to `true`.
+
+### Fan-out: the `--workspace` flag
+
+`doctor`, `review-queue` and `daily-update` each accept `--workspace`. It is **not a new skill and
+not new per-repo behavior**: the skill runs exactly as it always does, once per listed repo, and
+emits one combined report instead of one report.
+
+The rules are the same for all three:
+
+1. **The flag requires the block.** No `workspace` block in the current repo's config → stop and say
+   so ("this repo isn't a workspace; run me without `--workspace`, or add a `workspace` block").
+   Never infer a repo list from sibling directories.
+2. **`clone: false` entries are skipped**, and named in the report as skipped-by-config.
+3. **A missing checkout is a finding, not a skip.** For a `clone: true` entry, `<root>/<name>` must
+   exist and be a git working tree; if it isn't, report that repo as unreachable and carry on.
+4. **Each repo is read with its own `.claude/maintainerd.json`.** Never carry a value across the
+   boundary — label names, markers, branch prefixes and default branches all differ per repo, and a
+   cross-applied value is how a skill labels the wrong repo's issue. A listed repo with no config of
+   its own is reported as "not bootstrapped", not defaulted.
+5. **No recursion.** Only the current repo's block is expanded. A listed repo that carries a
+   `workspace` block of its own is treated as an ordinary repo.
+6. **The umbrella repo is included only if it lists itself.** The list is the list.
+7. **One repo failing never aborts the rest.** Capture the error against that repo, continue, and
+   report it. A fan-out that dies on repo two has told you less than no fan-out at all.
+8. **One combined report**, grouped by repo, with a workspace-level summary line. Per-repo output
+   keeps its usual shape underneath.
+
+**The umbrella exemption.** An umbrella repo holds config and docs, not code, so the source-tree
+checks don't apply to it. When a config carries a `workspace` block **and** its top-level `language`
+is `"none"`, `doctor` skips its source/tests path checks and its command checks and reports them as
+`n/a (umbrella repo)`. Everything else — JSON validity, guidelines, labels, rosters — is checked
+normally. This exemption is scoped to that pair of conditions; it never applies to a listed repo.
