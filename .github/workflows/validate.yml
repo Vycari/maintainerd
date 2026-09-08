@@ -85,6 +85,9 @@ jobs:
           sys.exit(1 if fail else 0)
           EOF
 
+      - name: The coverage-ratchet shell helpers behave, and fail closed
+        run: ./scripts/test-coverage.sh
+
       - name: Vendored reference docs are in sync with the canonical
         run: ./scripts/sync-references.sh --check
 
