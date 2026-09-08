@@ -167,7 +167,17 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   "review": {
     // Automated-reviewer logins to recognize. Humans need no listing — any reviewer
     // who isn't the PR author is treated as a human reviewer. Optional; defaults to these two.
-    "bots": ["coderabbitai[bot]", "gemini-code-assist[bot]"]
+    "bots": ["coderabbitai[bot]", "gemini-code-assist[bot]"],
+
+    // Review policy. All optional; the defaults below are the pre-policy behavior.
+    "approvalThreshold": "approved", // what "done" means. "approved" = reviewDecision == APPROVED.
+                                     // A "<n>/<m>" string (e.g. "5/5") additionally requires that
+                                     // score from every listed bot that publishes one.
+    "responderTier":     null,       // models.* tier the response loop wants ("fast" | "capable" | ...);
+                                     // null = inherit whatever model the session/routine already runs.
+    "impasseRounds":     2,          // rounds on one disputed finding before the loop halts + escalates
+    "sameFileRoundCap":  3           // consecutive rounds rewriting the same file before the loop halts,
+                                     // whether or not it agrees with each finding
   },
 
   // ── release (the `release` skill) — null/omitted = repo ships continuously, no versioned release ──
@@ -290,6 +300,36 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `review.bots` *(optional)* — extra automated-reviewer logins `address-review` should recognize.
   Defaults to `["coderabbitai[bot]", "gemini-code-assist[bot]"]`. Humans are auto-detected (any
   reviewer who isn't the PR author), so only bots go here.
+- `review.approvalThreshold` *(optional; default `"approved"`)* — what **done** means for
+  `address-review`'s loop. `"approved"` is the GitHub answer: `reviewDecision == APPROVED`. A
+  `"<n>/<m>"` string — `"5/5"` is the common one — says the repo's bar is a **score**, not just an
+  approving review: every login in `review.bots` that publishes a score of that shape in its review
+  comment must be at or above `n`, *and* the `"approved"` conditions still apply. Scoring bots
+  (Greptile, for example) **update one comment in place** rather than posting a new one each round,
+  so the score to read is the current body of that same comment, never an earlier round's. A bot
+  that publishes no score of that shape — or publishes one with a different denominator, which isn't
+  comparable — falls back to `"approved"` semantics **and the skill says so in its round report**,
+  because a silently-skipped gate reads exactly like a met one.
+- `review.responderTier` *(optional; default `null`)* — the `models.*` tier the review-response loop
+  wants (see [`model-tiers.md`](model-tiers.md)). It exists because responding to review is
+  judgment-heavy — adjudicating whether a finding is right — even when the PR it is responding on was
+  built by a cheaper tier, and a repo shouldn't have to re-decide that in prose every time. Same
+  honest limit as every other tier: a running skill cannot change its own model, so this binds the
+  **subagents** the loop spawns and is otherwise a recommendation the skill reports. `null` = inherit.
+- `review.impasseRounds` *(optional; default `2`)* — how many rounds one **disputed** finding may
+  survive before `address-review` stops and escalates to the human instead of churning. A finding is
+  disputed once you have replied disagreeing and the reviewer has re-raised the same point; the
+  counter is per finding, not per PR, and resets when the finding is dropped or conceded.
+- `review.sameFileRoundCap` *(optional; default `3`)* — how many **consecutive** review rounds may
+  rewrite the same file before the loop halts, regardless of whether it agreed with every finding
+  along the way. This is the cap that catches the churn `impasseRounds` cannot see: agreeing with
+  each individual finding is what disguises a file being rewritten in circles.
+
+  Either breaker takes `null` to disable **that** breaker; the other keeps working. Neither takes
+  `0` — a cap of zero would halt before the first round, which is not a policy anyone wants and is
+  read as a misconfiguration, so `address-review` treats a non-positive number as `null` and says
+  so. Disabling is not recommended in either direction: an uncapped loop is the failure mode both
+  keys exist for.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to
