@@ -280,9 +280,27 @@ four before calling it enforced:
    `on:` triggers for pushes to the default branch;
 3. the **step** carries no `if:` that excludes those pushes, and no `continue-on-error: true`,
    which turns the gate into a notification;
-4. the workflow is one of the repo's **required checks** — a gate nobody must pass is advice.
-   Where that can't be read (`gh api repos/<config.repo>/branches/<branch>/protection` needs admin),
-   say "couldn't verify" for that part rather than assuming either answer.
+4. the **job that contains the step** is a required check — a gate nobody must pass is advice.
+   Required checks are named per *job*, not per workflow, so "this workflow has a required job in
+   it" proves nothing: a workflow whose `build` job is required and whose `coverage` job is not
+   will merge a red coverage job all day. Match the containing job's check-run name against the
+   required contexts:
+
+   ```bash
+   gh api "repos/<config.repo>/branches/<config.defaultBranch>/protection/required_status_checks" \
+     --jq '.contexts[]'
+   # ...and, where the repo uses rulesets instead:
+   gh api "repos/<config.repo>/rulesets?includes_parents=true"
+   ```
+
+   The context is the job's `name:` if it has one, else its key in `jobs:`; a matrix job appears
+   once per combination as `<name> (<values>)`, so requiring only some combinations leaves the rest
+   advisory. A job that reaches the gate through a reusable workflow (`uses:`) reports under the
+   *calling* job's name — read that, not the callee's.
+
+   Protection is readable only with admin on many repos, and rulesets can grant the requirement
+   from an org-level parent. When either read fails, say **couldn't verify** for this criterion and
+   report the other three; don't assume enforcement, and don't call it a failure either.
 
 Nothing that actually runs it → **FAIL**: "`coverage.floor` is recorded but nothing enforces it —
 the ratchet is decorative." Report *which* of the four failed, because "the step is there but the
