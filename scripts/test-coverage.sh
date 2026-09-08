@@ -106,18 +106,44 @@ expect_status "no input anywhere: fails" 1 "$status" "$output"
 expect_match "no input: says what to run" "commands.coverage" "$output"
 rm -rf "$d"
 
-# The one that would gate this commit on a previous run's number: a stale root summary
-# sitting beside the coverage.json this run just wrote. Ranking either way is a guess.
+# Two rival *measurements*: a leftover root summary in a tool's own shape beside the
+# coverage.json this run wrote. Ranking either way gates this commit on a previous run's
+# number, so neither is chosen.
 d="$(scratch)"
-echo '{"metric": "lines", "percent": 99}' > "$d/coverage-summary.json"     # last run's
+echo '{"total": {"lines": {"pct": 99}}}' > "$d/coverage-summary.json"      # an older run's
 echo '{"totals": {"percent_covered": 40}}' > "$d/coverage.json"            # this run's
 run "$d" "$ADAPT"
-expect_status "two candidate inputs: refuses to choose" 1 "$status" "$output"
+expect_status "two candidate measurements: refuses to choose" 1 "$status" "$output"
 expect_match "two candidates: names both" "coverage-summary.json, coverage.json" "$output"
-expect_match "two candidates: leaves the stale file alone" '"percent": 99' "$(cat "$d/coverage-summary.json")"
+expect_match "two candidates: leaves the files alone" '"pct": 99' "$(cat "$d/coverage-summary.json")"
 run "$d" "$ADAPT" --input coverage.json
 expect_status "--input resolves the ambiguity" 0 "$status" "$output"
 expect_match "--input: the named file is the one that counts" '{"metric":"lines","percent":40}' \
+  "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+rm -rf "$d"
+
+# ...but the adapter's OWN output is not a rival measurement. The native input stays on
+# disk after the first run, so a retried CI step must still work — and must re-read the
+# native file rather than no-opping on the previous normalization.
+d="$(scratch)"
+mkdir -p "$d/coverage"
+echo '{"total": {"lines": {"pct": 65.5}}}' > "$d/coverage/coverage-summary.json"
+run "$d" "$ADAPT"
+expect_status "istanbul in coverage/: first run succeeds" 0 "$status" "$output"
+run "$d" "$ADAPT"
+expect_status "istanbul in coverage/: the retry is a no-op, not an ambiguity error" 0 "$status" "$output"
+expect_match "the retry re-reads the native input" "coverage/coverage-summary.json (istanbul)" "$output"
+expect_match "the retry's number is unchanged" '{"metric":"lines","percent":65.5}' \
+  "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '{"totals": {"percent_covered": 88.25}}' > "$d/coverage.json"
+run "$d" "$ADAPT"
+expect_status "pytest-cov beside its output: first run succeeds" 0 "$status" "$output"
+run "$d" "$ADAPT"
+expect_status "pytest-cov beside its output: the retry succeeds too" 0 "$status" "$output"
+expect_match "the retry's number is unchanged" '{"metric":"lines","percent":88.25}' \
   "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
 rm -rf "$d"
 

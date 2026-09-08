@@ -35,8 +35,9 @@ usage: coverage-adapt.sh [--tool auto|pytest-cov|istanbul] [--input FILE] [--out
               pytest-cov  coverage.py / pytest-cov `--cov-report=json`  (.totals.percent_covered)
               istanbul    vitest / jest / nyc `json-summary`            (.total.lines.pct)
   --input   the tool's native JSON. Default: whichever ONE of coverage-summary.json,
-            coverage.json, coverage/coverage-summary.json exists. Two or more present is
-            an error, not a ranking: one of them is a previous run's number.
+            coverage.json, coverage/coverage-summary.json holds a measurement. Two or more
+            is an error, not a ranking: one of them is a previous run's number. This
+            script's own normalized output does not count as a rival measurement.
   --output  where to write the normalized summary. Default: coverage-summary.json
 USAGE
 }
@@ -63,21 +64,32 @@ esac
 command -v jq >/dev/null 2>&1 || {
   echo "coverage-adapt: jq is not installed — the summary cannot be read" >&2; exit 2; }
 
-# Discovery refuses to choose between candidates rather than ranking them. A repo whose
-# tool writes coverage.json while an earlier coverage-summary.json is still lying around
-# has two plausible inputs, and *either* ranking silently gates the current commit on a
-# previous run's number — the one failure this whole gate exists to prevent. Any ranking
-# is a guess; the operator knows which file this run wrote, so make them say.
+# Discovery refuses to choose between two *measurements* rather than ranking them: a repo
+# whose tool writes coverage.json while an unrelated coverage-summary.json is still lying
+# around has two plausible inputs, and either ranking silently gates the current commit on
+# a previous run's number — the one failure this whole gate exists to prevent.
+#
+# The adapter's own earlier output is the exception, and not a special case so much as the
+# absence of one: an already-normalized file sitting at the output path is this script's
+# work, not a rival measurement, so a native input beside it simply wins. That keeps the
+# step re-runnable, which matters because CI steps get retried.
 if [ -z "$input" ]; then
   found=""
+  own_output=""
   count=0
   for candidate in coverage-summary.json coverage.json coverage/coverage-summary.json; do
-    if [ -f "$candidate" ]; then
-      found="${found:+$found, }$candidate"
-      input="$candidate"
-      count=$((count + 1))
+    [ -f "$candidate" ] || continue
+    if [ "$candidate" = "$output" ] && jq -e \
+        'type == "object" and .metric == "lines" and (.percent | type == "number")' \
+        "$candidate" >/dev/null 2>&1; then
+      own_output="$candidate"
+      continue
     fi
+    found="${found:+$found, }$candidate"
+    input="$candidate"
+    count=$((count + 1))
   done
+
   if [ "$count" -gt 1 ]; then
     echo "coverage-adapt: more than one coverage JSON is present ($found)." >&2
     echo "  One of them is probably left over from an earlier run, and gating on the wrong" >&2
@@ -85,6 +97,8 @@ if [ -z "$input" ]; then
     echo "  name the file this run wrote, or delete the stale one before the coverage step." >&2
     exit 1
   fi
+  # Nothing but our own output: the re-run no-op.
+  if [ "$count" -eq 0 ] && [ -n "$own_output" ]; then input="$own_output"; fi
 fi
 
 if [ -z "$input" ] || [ ! -f "$input" ]; then
