@@ -374,9 +374,11 @@ cheap: file the issue and cite its number in the same sentence.
 bodies of the commits on the branch; `address-review` checks each reply before it posts it. Both
 look for a **deferral cue** — a heading like `Deferred work` / `Follow-ups` / `Future work` /
 `Out of scope`, or a phrase like *follow-up*, *deferred*, *in a later PR*, *out of scope*, *TODO* —
-and then require an **issue reference** in the smallest unit of text that could carry it: the
-sentence or list item holding the phrase, or, under a matching heading, each list item or paragraph
-in that section. An issue reference is `#123`, `owner/name#123`, or a full GitHub issue URL.
+and then require an **issue reference** in the same unit of text. In a PR body the unit is small —
+the sentence or list item holding the phrase, or, under a matching heading, each list item or
+paragraph in that section — because a body is many paragraphs about many things. In a review reply
+it is the whole reply, which is a few sentences about one finding (each list item, in a multi-item
+round summary). An issue reference is `#123`, `owner/name#123`, or a full GitHub issue URL.
 
 **Its limits, which are real.** This is a lint over prose, not comprehension, and it is wrong in
 both directions:

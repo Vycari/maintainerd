@@ -228,8 +228,15 @@ items; this is that line, enforced.
 **The check.** Before posting, scan the reply for a deferral cue — *follow-up*, *deferred*, *defer*,
 *in a later PR*, *in a separate PR*, *out of scope*, *will address later*, *TODO* —
 ignoring fenced code blocks and HTML comments (which is also why the ledger block never trips it).
-If a cue is present, the sentence carrying it must also carry an issue reference: `#123`,
-`owner/name#123`, or a full GitHub issue URL.
+If a cue is present, an issue reference — `#123`, `owner/name#123`, or a full GitHub issue URL —
+must appear in the same unit of text.
+
+**The unit here is bigger than `create-pr`'s, deliberately.** For an **inline reply**, the unit is
+the whole reply: it is a few sentences answering one finding, so "out of scope here." followed by
+"Tracked in #455." is one thought and passes. A PR body gets the tighter sentence-level rule
+because it is many paragraphs about many things, and there a number three paragraphs away is not
+evidence that *this* promise is tracked. For the **round summary**, which is a list of unrelated
+items, the unit is each list item — same reason.
 
 **The fix, unlike `create-pr`'s, is not a refusal.** `create-pr` hands a body back to whoever wrote
 it; here you are the one writing the sentence, so there is nobody to refuse it to. Do the thing the
@@ -279,6 +286,9 @@ tenant starves the rest. Needs the tenancy migration first."
 Agreed, but out of scope here — per-tenant buckets need the tenancy migration first.
 Tracked in #455.
 ```
+
+(Two sentences, one reply, one unit — the reference does not have to share a sentence with the
+cue. It would in a PR body.)
 
 And note it in the round summary: `- per-tenant buckets: out of scope, filed #455`.
 
