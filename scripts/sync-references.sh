@@ -30,7 +30,7 @@ CONSUMERS="audits auto-dev deps-flow journal repo-ops research"
 DOCS=(config-schema.md model-tiers.md untrusted-input.md)
 
 # Verbatim copies — the schema links these as siblings, and JSON cannot carry a comment banner.
-ASSETS=(example-user.json example-pepper.json example-obsidian.json)
+ASSETS=(example-user.json example-pepper.json example-obsidian.json example-workspace.json)
 
 banner() {
   cat <<EOF

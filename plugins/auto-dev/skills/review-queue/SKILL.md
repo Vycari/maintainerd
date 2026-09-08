@@ -1,6 +1,6 @@
 ---
 name: review-queue
-description: The maintainer's daily console for the auto-dev pipeline — gather everything blocked on you, present a worklist, loop executing your decisions against the `auto:*` state machine as you (never with the bot marker), until the queue drains. Never merges on its own; never builds issues. Use when the user says "review the pipeline", "what needs my input", "process the auto-dev queue", "check what auto-dev is waiting on", "approve/answer/park #N", "let's do the daily review", or similar.
+description: The maintainer's daily console for the auto-dev pipeline — gather everything blocked on you, present a worklist, loop executing your decisions against the `auto:*` state machine as you (never with the bot marker), until the queue drains. In an umbrella repo whose config carries a `workspace` block, `--workspace` gathers the same queue across every cloned repo in the list and presents one inbox. Never merges on its own; never builds issues. Use when the user says "review the pipeline", "what needs my input", "process the auto-dev queue", "check what auto-dev is waiting on", "approve/answer/park #N", "let's do the daily review", or similar.
 ---
 
 # Review queue: the maintainer's console for the auto-dev pipeline
@@ -28,8 +28,14 @@ contract). If it does not exist, **stop** and tell the user:
 > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.
 
 Don't guess values or hardcode another repo's settings. If `config.autoDev.enabled` is `false`,
-**stop** and tell the user that the auto-dev / review-queue pipeline is disabled for this repo. The
-keys this skill needs:
+**stop** and tell the user that the auto-dev / review-queue pipeline is disabled for this repo.
+
+**With `--workspace`, that gate belongs to each listed repo, not to the umbrella repo.** Read the
+umbrella repo's config only for its `workspace` block, then apply this preamble — the enabled check
+included — once per listed repo against *that* repo's config. An umbrella repo has no pipeline of
+its own, so gating on its `autoDev.enabled` would drop every enabled repo in the list.
+
+The keys this skill needs:
 
 - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
 - `config.autoDev.enabled` — must be `true` for this skill to run.
@@ -55,6 +61,72 @@ mapping the **auto-dev** skill uses.)
 
 The bot comment marker is `config.autoDev.marker` (e.g. `<!-- auto-dev -->`). Branches the pipeline
 opens are prefixed with `config.autoDev.branchPrefix` (e.g. `auto/issue-`).
+
+## Workspace mode (`--workspace`)
+
+Optional, and off unless you pass the flag. In a repo whose config carries a `workspace` block, it
+turns the console into **one inbox across every cloned repo in the list** — the same gather, the same
+decisions, the same transitions, run per repo. Per-repo behavior is unchanged; nothing below this
+section changes.
+
+The block's shape and the shared fan-out rules are in
+[`../../references/config-schema.md`](../../references/config-schema.md). What they mean here:
+
+- **The umbrella repo's own `autoDev` block is not a gate.** With `--workspace`, the only key read
+  from the umbrella repo's config is the `workspace` block. Whether *it* has auto-dev enabled says
+  nothing about the repos in the list, and gating on it would silently empty the inbox.
+- **No `workspace` block → stop.** "This repo isn't a workspace; run me without `--workspace`."
+  Never assemble a repo list from sibling directories or `gh repo list`.
+- **Which repos are in scope:** every entry with `clone` not `false` whose checkout exists at
+  `<root>/<name>`. A `clone: false` entry is skipped by config; a missing checkout is reported as
+  unreachable, never dropped silently.
+- **Each repo answers for itself.** Read `<root>/<name>/.claude/maintainerd.json` and use *its*
+  `config.repo`, `config.autoDev.marker`, `config.autoDev.stateLabels.*`, `config.autoDev.branchPrefix`
+  and `config.autoDev.excludedLabels`. A repo whose config is missing, or whose `config.autoDev.enabled`
+  isn't `true`, is listed once as skipped ("auto-dev disabled" / "not bootstrapped") — it is not a
+  reason to stop the run.
+- **Keep the gather cheap.** The per-repo gather in step 1 is already one batch of read-only calls;
+  in workspace mode it runs once per repo and no more. Don't fetch CI or review threads for anything
+  you haven't been asked to act on — that cost is multiplied by the repo count now.
+
+### Every item carries its repo
+
+In workspace mode an item is **`<name>#<number>`** — `app#663`, `worker#12` — everywhere: the
+worklist, your reply, the comment the skill posts, and the session summary. A bare `#663` is not an
+identifier across repos, and acting on the wrong one is unrecoverable in the way that matters (a
+label flip and a comment, under your name, on someone else's issue).
+
+So:
+
+- **A bare `#N` that matches exactly one repo** is accepted, and the skill echoes back the qualified
+  id it acted on.
+- **A bare `#N` that matches several** stops for one question — never a guess, and never "the first
+  one". Issue numbers collide across repos constantly; this is the common case, not the edge.
+- The worklist stays grouped **by bucket, not by repo** — plans together, questions together, oldest
+  first within each — because the buckets are what you triage by. A per-repo count line at the top
+  gives you the other view:
+
+```text
+Pipeline review — <date>   ·   4 repos · app 3 · worker 1 · site 0 · infra 0 (auto-dev disabled)
+```
+
+  Repos with nothing blocked on you still get their zero. A repo that vanished from the report
+  because it was clean is indistinguishable from one that was never gathered.
+
+### The one thing that must not happen
+
+**Never apply one repo's configuration to another repo.** Every `gh` call in workspace mode names
+the repo it belongs to (`--repo <that repo's config.repo>`), every label literal comes from *that*
+repo's `config.autoDev.stateLabels.*`, and the marker check in Invariant 1 uses *that* repo's
+`config.autoDev.marker`. Repos genuinely disagree on all three — a repo that spells its states
+`pipeline:ready` gets a stranded issue and a stray label the moment another repo's literal is used
+against it.
+
+Confirmations name the repo too: "Merge **app**#986 into main?", never "Merge #986?".
+
+The session drains when **every** in-scope repo is drained. The summary in step 5 is grouped by
+repo, and names the skipped and unreachable ones again at the end — the same rule as the worklist:
+a repo that produced no output must still appear.
 
 ## Invariants — read these first
 
@@ -330,6 +402,42 @@ you later.
   over manually after adding the skip label.
 - Never change non-`auto:*` labels; never remove the skip label unless told.
 - Never post a decision you inferred rather than one the maintainer stated. When unsure, ask.
+- Never act on a bare `#N` in workspace mode when it matches more than one repo — ask which.
+- Never use one repo's label names, marker, or `--repo` slug against another repo.
+- Never drop a repo from the workspace report because it had nothing to show. Zero is a result;
+  absence is a bug.
+
+## Example turn — workspace mode
+
+> **Worklist (`--workspace`, 3 repos in scope):**
+>
+> ```text
+> Pipeline review — 2026-09-08   ·   3 repos · app 2 · worker 1 · site 0
+>
+> 🔴 PRs awaiting your review/merge
+>   • app#986     per-use-case thinkingLevel — CI green, review approved, mergeable
+>
+> 🟠 Plans awaiting approval
+>   • worker#12   retry backoff for the ingest queue — plan posted 3d ago
+>   • app#663     AgentLoop streaming follow-ups — plan posted 1d ago
+>
+> ⚪ Skipped: infra (auto-dev disabled) · toolkit (clone: false) · docs-hub (no maintainerd.json)
+> ```
+>
+> **You:** "approve worker#12. #663 approved too. merge app#986."
+>
+> **Skill:**
+>
+> - `worker#12` → reads `<root>/worker/.claude/maintainerd.json`, swaps **worker's** planned label
+>   for **worker's** ready label with `--repo my-org/worker`, reads the labels back to confirm.
+> - `#663` → matches only `app`; echoes "app#663" and does the same swap with **app's** literals and
+>   `--repo my-org/app`.
+> - `app#986` → confirms ("Merge app#986 into main?"), then `gh pr merge --repo my-org/app`, then
+>   offers to clear app's in-progress label on the issue it fixed.
+> - Re-presents the shorter inbox, still showing `site 0` and the skipped repos.
+
+If your reply had been a bare `#12` while both `app` and `worker` had an open `#12`, the skill asks
+which — it does not pick one.
 
 ## Example turn
 

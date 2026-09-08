@@ -1,0 +1,53 @@
+{
+  "repo": "my-org/workspace",
+  "defaultBranch": "main",
+  "language": "none",
+  "commands": {
+    "format": null,
+    "lint": null,
+    "build": null,
+    "test": null,
+    "coverage": null,
+    "typecheck": null
+  },
+  "paths": {
+    "source": null,
+    "tests": null,
+    "designDocs": ["docs/design/"],
+    "productDocs": ["docs/", "README.md", "CLAUDE.md"],
+    "changelogDir": "docs/changelog/",
+    "researchRadarDir": null,
+    "prTemplate": ".github/PULL_REQUEST_TEMPLATE.md",
+    "skillsDir": ".claude/skills/"
+  },
+  "guidelines": {
+    "coding": ".claude/guidelines/coding.md",
+    "testing": ".claude/guidelines/testing.md",
+    "invariants": ".claude/guidelines/invariants.md"
+  },
+  "labels": {
+    "architecture": "architecture",
+    "testQuality": "test-quality",
+    "security": "security",
+    "dependencies": "dependencies",
+    "automated": "automated"
+  },
+  "dailyUpdate": {
+    "subSkills": ["daily-changelog"],
+    "branchPrefix": "daily-update-",
+    "commitSubject": "chore(daily): {date} daily update"
+  },
+  "workspace": {
+    "contractVersion": 1,
+    "org": "my-org",
+    "root": ".",
+    "profile": "profiles/repo-profile.json",
+    "repos": [
+      { "name": "app", "repo": "my-org/app", "language": "python-service", "role": "product" },
+      { "name": "worker", "repo": "my-org/worker", "language": "python-service", "role": "service" },
+      { "name": "site", "repo": "my-org/site", "language": "typescript-web", "role": "site" },
+      { "name": "infra", "repo": "my-org/infra", "language": "shell", "role": "infra" },
+      { "name": "toolkit", "repo": "my-org/toolkit", "language": "none", "role": "tooling", "clone": false }
+    ]
+  }
+}

@@ -87,6 +87,41 @@ Most skills begin by reading `.claude/maintainerd.json`; if it's missing, the sk
   regardless of repo. `worklog` reads the vault from there and an optional per-repo pointer from the
   repo config. See "User-level config" in the schema reference.
 
+## Workspaces: one config, many repos
+
+A maintainer with several repos usually has an **umbrella repo** that holds them — the shared
+CLAUDE.md, the house rules, the checkouts. Give that repo's `.claude/maintainerd.json` a top-level
+`workspace` block and it becomes the **one repo list**:
+
+```jsonc
+"workspace": {
+  "contractVersion": 1,
+  "org": "my-org",
+  "repos": [
+    { "name": "app",     "repo": "my-org/app",     "language": "python-service", "role": "product" },
+    { "name": "toolkit", "repo": "my-org/toolkit", "language": "none", "role": "tooling", "clone": false }
+  ]
+}
+```
+
+The block's presence is what makes a directory a workspace. `clone: false` marks a repo tracked but
+not checked out. `workspace.repos` is a **versioned contract** — tools that aren't maintainerd read
+it directly rather than re-deriving the list, so `contractVersion` tells them whether they still
+understand its shape.
+
+Three skills then take a `--workspace` flag, which runs them once per cloned repo and prints one
+combined report — no new skill, and per-repo behavior unchanged:
+
+| Skill | `--workspace` does |
+| --- | --- |
+| `doctor` | Validates the block itself (unique names, resolvable slugs, `language` values known to the profile), then runs the full check in every cloned repo. |
+| `review-queue` | Gathers the auto-dev queue across every cloned repo into one inbox; items are `repo#number`. |
+| `daily-update` | Runs each repo's own daily roster in its own tree — one PR per repo. |
+
+The full schema, including the compatibility rules for the contract, is in
+[`plugins/core/references/config-schema.md`](plugins/core/references/config-schema.md), with a worked
+example at [`plugins/core/references/example-workspace.json`](plugins/core/references/example-workspace.json).
+
 ## Repository layout
 
 ```text

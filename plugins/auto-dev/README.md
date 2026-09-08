@@ -13,7 +13,7 @@ approved plan) and merge (exclusively yours).
 | --- | --- | --- |
 | [`create-issue`](skills/create-issue/SKILL.md) | The front door — turn a rough request into an issue well-formed enough for the pipeline to pick up: crisp problem statement, acceptance criteria, file pointers. | "file an issue for X" |
 | [`auto-dev`](skills/auto-dev/SKILL.md) | One tick of the state machine: triage issues for readiness, draft plans for approval, build the oldest approved issue into a PR, address review feedback. Does the single highest-priority piece of work and exits. | scheduled, or "/auto-dev" · "/auto-dev dry-run" |
-| [`review-queue`](skills/review-queue/SKILL.md) | The human half — what's waiting on you, what the pipeline is blocked on, and what it did while you weren't looking. | "what's in the review queue" |
+| [`review-queue`](skills/review-queue/SKILL.md) | The human half — what's waiting on you, what the pipeline is blocked on, and what it did while you weren't looking. `--workspace` gathers the same queue across every repo in an umbrella repo's `workspace` list, as one inbox. | "what's in the review queue" |
 
 ## Reading the pipeline
 
