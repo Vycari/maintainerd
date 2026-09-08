@@ -124,6 +124,40 @@ round 3
   files:     src/auth.go — touched r1, r2, r3   ← 3 consecutive
 ```
 
+**The ledger lives on the PR, not in your head.** Most rounds end with the skill exiting — manual
+mode ends every round that way — so counters held only in session state reset on the next
+invocation, and a breaker that resets can never trip. Write the ledger into the PR-level round
+summary you already post each round (Phase 5), inside an HTML comment so it's machine-readable and
+invisible in the rendered thread:
+
+```html
+<!-- address-review ledger v1
+round: 3
+disputed:
+  - finding: guard the nil session
+    where: src/auth.go:42
+    by: some-review-bot
+    rounds: 2
+files:
+  - path: src/auth.go
+    consecutive: 3
+-->
+```
+
+In Phase 1, read the **most recent** comment carrying that marker and resume its counters. If none
+exists — first round, or a PR whose earlier rounds predate this — reconstruct what you can rather
+than starting from zero and calling it round 1:
+
+```bash
+# which files each round touched, newest first
+git log origin/<config.defaultBranch>..HEAD --name-only --pretty=format:'%h %s'
+```
+
+Cross that against the review timestamps to bound the consecutive-round runs, count a finding as
+disputed for each round in which the reviewer re-raised it after a reply of yours, and say in the
+report that the counts were reconstructed — an approximate count that can trip beats an exact count
+that always reads 1.
+
 When a cap trips, **stop the loop**. Don't push another round of edits first. Post one PR comment,
 reply on the thread that tripped it (impasse only), and report to the user, using this shape:
 
@@ -221,10 +255,11 @@ gh api "repos/<config.repo>/issues/<PR>/comments" --paginate
   inline comment and each substantive point in the summary as its own item.
 - Skip your own past replies (filter by author = PR author).
 
-Persist the head SHA you observed, the set of comment IDs, and the round ledger described under
-[Review policy](#impasserounds-and-samefileroundcap--the-circuit-breakers) — you'll diff against
-this next loop to detect "what's new," and the ledger is the only thing that can tell a second round
-on a finding from a fifth.
+Persist the head SHA you observed and the set of comment IDs — you'll diff against these next loop
+to detect "what's new." This is also where you **load the round ledger** described under
+[Review policy](#impasserounds-and-samefileroundcap--the-circuit-breakers): read it from the newest
+PR comment carrying the `address-review ledger` marker, since it's the only thing that can tell a
+second round on a finding from a fifth, and it has to survive this invocation ending.
 
 If `config.review.approvalThreshold` is a `"<n>/<m>"` score, this is also where you re-read the
 scoring bot's comment body and record the current score. It updates its existing comment in place,
@@ -322,8 +357,20 @@ reviewer reads first:
 gh pr comment <PR> --repo <config.repo> --body "Round 2 summary:
 - nil session: $NEW_HEAD
 - file handle leak: <other_sha>
-- naming nit: skipped — \`data\` matches the surrounding convention"
+- naming nit: skipped — \`data\` matches the surrounding convention
+
+<!-- address-review ledger v1
+round: 2
+disputed: []
+files:
+  - path: src/auth.go
+    consecutive: 2
+-->"
 ```
+
+Append the ledger block described under [Review policy](#impasserounds-and-samefileroundcap--the-circuit-breakers)
+to every round summary. It is how the round counters survive this invocation ending, which is what
+lets a breaker trip on round 3 instead of restarting at round 1 forever.
 
 **Optionally resolve threads** you fixed or explained (only if the repo uses GitHub's native
 thread-resolution UI):
@@ -364,6 +411,9 @@ Note the head SHA you just pushed. The next round's signal is one of:
    suggest it when they ask for autonomous iteration). Each invocation does one round and exits; the
    loop wrapper handles cadence. Inside a `/loop` dynamic-mode session, use `ScheduleWakeup` with
    600–900 seconds for the next check.
+
+Either way the counters come back from the ledger comment on the PR, not from session state — so
+option 1 is not a way to lose them.
 
 When you wake, re-run Phase 1 and compare against the saved comment IDs and head SHA:
 - New comments → loop back to Phase 2.
@@ -420,6 +470,8 @@ maintainer's.
 - ❌ Silently siding with a bot over a human (or vice versa) when they conflict — surface it
 - ❌ Round after round on the same disputed finding — that's what `impasseRounds` is for; escalate
 - ❌ Rewriting one file every round because each individual finding sounded reasonable
+- ❌ Keeping the round counters only in session state — every round that ends resets them to zero,
+  and a breaker that resets never trips
 - ❌ Reporting "approved" when the repo's score threshold was never actually read
 
 ## A complete example
