@@ -445,6 +445,12 @@ coverage-adapt.sh                                   # detect the shape, rewrite 
 coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
 ```
 
+With no `--input` it takes whichever **one** of `coverage-summary.json`, `coverage.json` or
+`coverage/coverage-summary.json` is present. Two or more present is an error, not a ranking: one of
+them is almost certainly left over from an earlier run, and gating this commit on a previous
+commit's number is the single failure the ratchet exists to prevent. Pass `--input`, or clear the
+stale file before the coverage step.
+
 One script rather than one file per language: the two translations are a single `jq` path each, and
 a second copy of the argument handling and the fail-closed rules is a second place for them to
 drift. `--tool` selects the format explicitly; the default detects it from the JSON's shape and

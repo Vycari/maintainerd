@@ -9,7 +9,7 @@
 # A consuming repo carries a copy at .claude/maintainerd/coverage-adapt.sh so CI can run
 # it without the plugin installed. Re-copy it when maintainerd-core updates.
 #
-#   coverage-adapt.sh                                  # auto-detect input and format, rewrite in place
+#   coverage-adapt.sh                                  # auto-detect the one input and its format
 #   coverage-adapt.sh --tool pytest-cov                # force the pytest-cov (coverage.py) shape
 #   coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
 #   coverage-adapt.sh --output build/coverage-summary.json
@@ -34,8 +34,9 @@ usage: coverage-adapt.sh [--tool auto|pytest-cov|istanbul] [--input FILE] [--out
   --tool    input format. Default "auto": detect from the JSON's shape.
               pytest-cov  coverage.py / pytest-cov `--cov-report=json`  (.totals.percent_covered)
               istanbul    vitest / jest / nyc `json-summary`            (.total.lines.pct)
-  --input   the tool's native JSON. Default: the first of
-            coverage-summary.json, coverage.json, coverage/coverage-summary.json that exists.
+  --input   the tool's native JSON. Default: whichever ONE of coverage-summary.json,
+            coverage.json, coverage/coverage-summary.json exists. Two or more present is
+            an error, not a ranking: one of them is a previous run's number.
   --output  where to write the normalized summary. Default: coverage-summary.json
 USAGE
 }
@@ -62,10 +63,28 @@ esac
 command -v jq >/dev/null 2>&1 || {
   echo "coverage-adapt: jq is not installed — the summary cannot be read" >&2; exit 2; }
 
+# Discovery refuses to choose between candidates rather than ranking them. A repo whose
+# tool writes coverage.json while an earlier coverage-summary.json is still lying around
+# has two plausible inputs, and *either* ranking silently gates the current commit on a
+# previous run's number — the one failure this whole gate exists to prevent. Any ranking
+# is a guess; the operator knows which file this run wrote, so make them say.
 if [ -z "$input" ]; then
+  found=""
+  count=0
   for candidate in coverage-summary.json coverage.json coverage/coverage-summary.json; do
-    if [ -f "$candidate" ]; then input="$candidate"; break; fi
+    if [ -f "$candidate" ]; then
+      found="${found:+$found, }$candidate"
+      input="$candidate"
+      count=$((count + 1))
+    fi
   done
+  if [ "$count" -gt 1 ]; then
+    echo "coverage-adapt: more than one coverage JSON is present ($found)." >&2
+    echo "  One of them is probably left over from an earlier run, and gating on the wrong" >&2
+    echo "  one would check this commit against a previous commit's number. Pass --input to" >&2
+    echo "  name the file this run wrote, or delete the stale one before the coverage step." >&2
+    exit 1
+  fi
 fi
 
 if [ -z "$input" ] || [ ! -f "$input" ]; then

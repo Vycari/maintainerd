@@ -106,6 +106,21 @@ expect_status "no input anywhere: fails" 1 "$status" "$output"
 expect_match "no input: says what to run" "commands.coverage" "$output"
 rm -rf "$d"
 
+# The one that would gate this commit on a previous run's number: a stale root summary
+# sitting beside the coverage.json this run just wrote. Ranking either way is a guess.
+d="$(scratch)"
+echo '{"metric": "lines", "percent": 99}' > "$d/coverage-summary.json"     # last run's
+echo '{"totals": {"percent_covered": 40}}' > "$d/coverage.json"            # this run's
+run "$d" "$ADAPT"
+expect_status "two candidate inputs: refuses to choose" 1 "$status" "$output"
+expect_match "two candidates: names both" "coverage-summary.json, coverage.json" "$output"
+expect_match "two candidates: leaves the stale file alone" '"percent": 99' "$(cat "$d/coverage-summary.json")"
+run "$d" "$ADAPT" --input coverage.json
+expect_status "--input resolves the ambiguity" 0 "$status" "$output"
+expect_match "--input: the named file is the one that counts" '{"metric":"lines","percent":40}' \
+  "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+rm -rf "$d"
+
 d="$(scratch)"
 printf '{"totals": {"percent_cov' > "$d/coverage.json"     # truncated mid-write
 run "$d" "$ADAPT" --input coverage.json

@@ -321,14 +321,28 @@ nobody can reproduce:
 ```bash
 repo="$PWD"
 git fetch origin "<defaultBranch>"
-worktree="$(mktemp -d)/measure"          # a path git creates itself, so nothing is reused
+tmp="$(mktemp -d)"
+worktree="$tmp/measure"                  # a path git creates itself, so nothing is reused
+
+# Registered BEFORE the worktree is added, and covering every exit — the measurement runs
+# a whole dependency install and test suite, so failing partway through is the ordinary
+# case, not the exception. A leaked worktree stays registered in .git/worktrees and the
+# next adopt inherits it.
+cleanup() { git worktree remove --force "$worktree" 2>/dev/null || true; rm -rf "$tmp"; }
+trap cleanup EXIT INT TERM
+
 git worktree add --detach "$worktree" "origin/<defaultBranch>"
 sha="$(git -C "$worktree" rev-parse HEAD)"
 ( cd "$worktree" && <install deps if the repo needs them> && <commands.coverage> \
     && "$repo/.claude/maintainerd/coverage-adapt.sh" )
 percent="$(jq -r '.percent' "$worktree/coverage-summary.json")"
-git worktree remove --force "$worktree"
 ```
+
+**Running this as separate tool calls rather than one script?** Then there is no `trap`, and the
+cleanup is yours to remember: run `git worktree remove --force "$worktree"` on **every** path out,
+including the ones where the coverage command failed and you are about to report that no floor was
+written. Start with `git worktree prune` so a worktree leaked by an earlier attempt doesn't make
+`git worktree add` fail on a path that no longer exists.
 
 Then **floor the percentage to a whole number** — `87.9` becomes `87`, never `88`. Rounding up
 invents a floor the repo has never actually met, and the first honest run fails. Write both keys:

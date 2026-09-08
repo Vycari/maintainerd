@@ -265,14 +265,30 @@ what it was measured against, so nobody can reproduce it.
 **b. CI enforces it.** The scaffolded gate is two things, and both must be present:
 
 ```bash
-grep -rl "coverage-check" .github/workflows/          # the step that fails the job
+grep -rl "coverage-check" .github/workflows/          # candidate workflows — then READ them
 ls .claude/maintainerd/coverage-check.sh .claude/maintainerd/coverage-adapt.sh
 ```
 
-A workflow that never runs `coverage-check.sh` → **FAIL**: "`coverage.floor` is recorded but nothing
-enforces it — the ratchet is decorative." A referenced-but-missing vendored script is the same
-severity, since the step errors on every run. Fix for both: `/bootstrap --adopt`, which writes the
-scripts and prints the workflow snippet.
+**The grep only narrows the search; it never settles the question.** `coverage-check` appearing
+somewhere in a workflow file is not evidence that anything runs it — the match can be in a `#`
+comment, in a job gated `if: false`, in a workflow triggered only by `workflow_dispatch`, or in a
+step whose own `if:` never holds on the default branch. Read the matching files and confirm all
+four before calling it enforced:
+
+1. the match is a **`run:` step**, not a comment or a string in some other key;
+2. its **job** isn't disabled — no `if: false`, and the job is reachable from the workflow's
+   `on:` triggers for pushes to the default branch;
+3. the **step** carries no `if:` that excludes those pushes, and no `continue-on-error: true`,
+   which turns the gate into a notification;
+4. the workflow is one of the repo's **required checks** — a gate nobody must pass is advice.
+   Where that can't be read (`gh api repos/<config.repo>/branches/<branch>/protection` needs admin),
+   say "couldn't verify" for that part rather than assuming either answer.
+
+Nothing that actually runs it → **FAIL**: "`coverage.floor` is recorded but nothing enforces it —
+the ratchet is decorative." Report *which* of the four failed, because "the step is there but the
+job is `if: false`" and "there is no step" have different fixes. A referenced-but-missing vendored
+script is the same severity, since the step errors on every run. Fix for the missing pieces:
+`/bootstrap --adopt`, which writes the scripts and prints the workflow snippet.
 
 **c. The default branch is above its own floor.** Read the `coverage` artifact from the **latest**
 `ci` run on the default branch:
