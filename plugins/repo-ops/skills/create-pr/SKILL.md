@@ -136,13 +136,14 @@ promise outlive the thread.
    - **A phrase inside a sentence or list item**: *follow-up*, *followup*, *deferred*, *defer*,
      *in a later PR*, *in a separate PR*, *in a future PR*, *out of scope for this PR*, *left for
      later*, *will be addressed later*, *TODO*.
-4. **Take the enclosing unit.** For a heading, the unit is the whole section under it, up to the
-   next heading of the same or higher level. For a phrase, the unit is the sentence — or, in a
-   list, the list item — that contains it.
-5. **Require an issue reference in that unit**: `#123`, `owner/name#123`, or a full GitHub issue
-   URL. Under a matching heading, **each list item is its own unit** — a "Deferred work" section
-   where three of four bullets cite an issue fails on the fourth, and the refusal names that bullet,
-   not the section.
+4. **Take the enclosing unit** — the smallest piece of text that could carry the issue number.
+   For a phrase, that's the sentence, or the list item if the phrase is inside one. For a heading,
+   it's each list item or paragraph in the section under it (up to the next heading of the same or
+   higher level), checked separately: a "Deferred work" section where three of four bullets cite an
+   issue fails on the fourth, and the refusal names *that bullet*, not the section. A section with
+   no list and no paragraph break is one unit.
+5. **Require an issue reference in each unit**: `#123`, `owner/name#123`, or a full GitHub issue
+   URL.
 6. **Any failing unit fails the gate.** Refuse; do not open the PR.
 
 ### Refusing
@@ -169,7 +170,8 @@ To proceed, pick one:
   4. If that "later" is prose rather than a promise, add <!-- no-deferred-work --> to the
      body to bypass this gate for this PR.
 
-The branch is pushed; no PR was opened. Re-run me once the body is fixed.
+No PR was opened; the branch and its commits are untouched. Re-run me once the body
+is fixed.
 ```
 
 Offer to run `create-issue` — don't file the issue unasked. What the follow-up should say is the
