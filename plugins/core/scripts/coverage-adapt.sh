@@ -112,16 +112,20 @@ fi
 awk -v p="$percent" 'BEGIN { exit !(p + 0 >= 0 && p + 0 <= 100) }' || {
   echo "coverage-adapt: $input yielded percent=$percent, which is not in 0-100." >&2; exit 1; }
 
-tmp="$(mktemp "${TMPDIR:-/tmp}/coverage-summary.XXXXXX")"
+outdir="$(dirname "$output")"
+[ -d "$outdir" ] || mkdir -p "$outdir"
+
+# The temp file is created beside the output, not in TMPDIR: mv is only atomic within one
+# filesystem, and on CI runners TMPDIR is regularly on another. A reader — the gate, the
+# artifact upload — must never see a half-written summary.
+tmp="$(mktemp "$outdir/.coverage-summary.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 # Written through jq so the output is valid JSON with a real number, whatever the input's
 # formatting. `-n` plus --argjson keeps the value numeric rather than a quoted string.
 jq -n --argjson percent "$percent" '{metric: "lines", percent: $percent}' > "$tmp"
-
-outdir="$(dirname "$output")"
-[ -d "$outdir" ] || mkdir -p "$outdir"
-# mv, not cp, so a reader never sees a half-written summary — and so rewriting the input
-# in place (the common case) is atomic.
+# mktemp creates the file 0600; the summary is uploaded as an artifact and read by the
+# gate, so give it the ordinary readable mode a generated file would have.
+chmod 644 "$tmp"
 mv "$tmp" "$output"
 trap - EXIT
 
