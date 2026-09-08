@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Validate a repo's Maintainerd setup and report what's wrong — the companion to `bootstrap`. Checks that `.claude/maintainerd.json` exists, parses, and conforms to the schema; that the configured paths, commands, and guidelines files resolve; that the GitHub labels the skills apply actually exist; that the daily-update roster only names installed skills; that the auto-dev state labels exist when the pipeline is enabled; and that release config is coherent. In an umbrella repo whose config carries a `workspace` block, `--workspace` additionally validates that block and then runs the whole check once per cloned repo in the list, emitting one combined report. Read-only diagnosis by default, grouped PASS/WARN/FAIL with a concrete fix for each finding; offers to create missing labels and points at `/bootstrap` or the guidelines files for the rest. Use when the user asks to "run doctor", "check the maintainerd setup", "validate the config", "why isn't <skill> working", "diagnose the agent-skills config", or after onboarding a repo to confirm it's wired correctly.
+description: Validate a repo's Maintainerd setup and report what's wrong — the companion to `bootstrap`. Checks that `.claude/maintainerd.json` exists, parses, and conforms to the schema; that the configured paths, commands, and guidelines files resolve; that the GitHub labels the skills apply actually exist; that the daily-update roster only names installed skills; that the auto-dev state labels exist when the pipeline is enabled; that release config is coherent; and that the coverage ratchet holds — a floor is recorded, CI enforces it, the default branch's latest run is above it, and no commit has ever lowered it. In an umbrella repo whose config carries a `workspace` block, `--workspace` additionally validates that block and then runs the whole check once per cloned repo in the list, emitting one combined report. Read-only diagnosis by default, grouped PASS/WARN/FAIL with a concrete fix for each finding; offers to create missing labels and points at `/bootstrap` or the guidelines files for the rest. Use when the user asks to "run doctor", "check the maintainerd setup", "validate the config", "why isn't <skill> working", "diagnose the agent-skills config", or after onboarding a repo to confirm it's wired correctly.
 ---
 
 # Diagnose a repo's Maintainerd setup
@@ -23,8 +23,8 @@ to regenerate X", "fill in `invariants.md`", "fix this key by hand".
   side effects: runs the test/build). Default is the static check (the command's script is defined),
   not running it.
 - `/doctor --workspace` — only in a repo whose config carries a `workspace` block: validate that
-  block (check 12), then run checks 1–11 once per **cloned** repo in the list and print one combined
-  report. Composes with the other two — `--workspace --fix` still confirms each label creation, per
+  block (check 12), then run every per-repo check once per **cloned** repo in the list and print one
+  combined report. Composes with the other two — `--workspace --fix` still confirms each label creation, per
   repo; `--workspace --run` executes every repo's commands, which is slow enough to be worth saying
   out loud before you start.
 
@@ -221,18 +221,114 @@ Validate it first — a fan-out driven by a broken list produces confident nonse
 
 ### The fan-out
 
-Then, for each entry with `clone` not `false` whose checkout resolved, run **checks 1–11 in that
-repo** exactly as a plain `/doctor` would: `cd` into `<root>/<name>` and read *that repo's*
+Then, for each entry with `clone` not `false` whose checkout resolved, run **checks 1–11 and 13 in
+that repo** exactly as a plain `/doctor` would: `cd` into `<root>/<name>` and read *that repo's*
 `.claude/maintainerd.json`. Never carry a value across the boundary — the umbrella repo's labels,
 branch and roster describe the umbrella repo and nothing else.
 
-- A listed repo with **no** `.claude/maintainerd.json` is one finding, not eleven: **FAIL**, "not
+- A listed repo with **no** `.claude/maintainerd.json` is one finding, not a dozen: **FAIL**, "not
   bootstrapped — run `/bootstrap` there", and move to the next repo.
 - **One repo's failure never aborts the run.** An unhandled error against a repo is captured as that
   repo's finding; the remaining repos still get checked. A fan-out that dies on repo two has told you
   less than no fan-out at all.
 - **No recursion.** A listed repo carrying its own `workspace` block is checked as an ordinary repo.
 - The umbrella repo itself is checked only if the list names it.
+
+### 13. Coverage ratchet
+
+`coverage.floor` in `.claude/maintainerd.json` is the line coverage this repo has promised not to
+drop below (the contract is in [`../../references/config-schema.md`](../../references/config-schema.md)).
+This check answers three questions: is there a floor, does CI enforce it, and is the default branch
+currently above it — plus a fourth the other three can't see, whether the floor has ever been
+*lowered*.
+
+**When it runs.** `config.commands.coverage` is `null` → PASS ("exempt from the coverage ratchet"),
+skip the rest. That is a complete exemption, not a floor of zero, and it's the right answer for a
+config repo, a static site or a docs repo. Say it out loud rather than skipping silently, for the
+same reason check 9 does: a maintainer who thinks the gate is on should see that it isn't. Where a
+repo profile is available and its language block says `coverage: null`, that exempts the repo too.
+
+**a. The floor exists.** `config.coverage.floor` present → else **WARN**, as **one** finding:
+
+> coverage ratchet not yet adopted — no `coverage.floor` in `.claude/maintainerd.json`.
+> Fix: `/bootstrap --adopt` (measures `origin/<defaultBranch>` and records the floor)
+
+That is the whole finding. Don't also report the missing CI step, the missing artifact and the
+un-checkable history — they are all the same fact, and a repo that hasn't adopted the ratchet yet is
+not violating it. **Stop this check there.**
+
+Otherwise: `floor` is a whole number in 0–100 → else **FAIL** (`coverage-check.sh` refuses to run
+against it, so every build fails). `coverage.floorCommit` present and resolvable
+(`git cat-file -e <sha>^{commit}`) → else **WARN**: the number is still enforced, but nothing records
+what it was measured against, so nobody can reproduce it.
+
+**b. CI enforces it.** The scaffolded gate is two things, and both must be present:
+
+```bash
+grep -rl "coverage-check" .github/workflows/          # the step that fails the job
+ls .claude/maintainerd/coverage-check.sh .claude/maintainerd/coverage-adapt.sh
+```
+
+A workflow that never runs `coverage-check.sh` → **FAIL**: "`coverage.floor` is recorded but nothing
+enforces it — the ratchet is decorative." A referenced-but-missing vendored script is the same
+severity, since the step errors on every run. Fix for both: `/bootstrap --adopt`, which writes the
+scripts and prints the workflow snippet.
+
+**c. The default branch is above its own floor.** Read the `coverage` artifact from the **latest**
+`ci` run on the default branch:
+
+```bash
+gh api "repos/<config.repo>/actions/runs?branch=<config.defaultBranch>&per_page=100" \
+  --jq '[.workflow_runs[] | select(.name == "ci" or (.path | endswith("/ci.yml")))]
+        | sort_by([.run_number, .run_attempt]) | last
+        | {id, run_number, run_attempt, status, conclusion, head_sha, html_url}'
+gh run download <id> --repo <config.repo> --name coverage --dir "$tmp"
+jq -r '.percent' "$tmp/coverage-summary.json"
+```
+
+**Latest means latest, and a rerun of the same commit is newer than the original.** Sort by
+`run_number` and then `run_attempt`, and take the last — never `--status success`, never the newest
+green. A stale green run is exactly the run that hides the regression this check exists to catch, so
+falling back to one turns the check into a rubber stamp.
+
+- `percent` ≥ `floor` → **PASS**. If `percent` floored to a whole number is **greater** than
+  `coverage.floor`, append the suggestion: "measured <n>%, floor <m>% — consider raising the floor to
+  <n> in `.claude/maintainerd.json`". **Suggest it; never apply it.** doctor is report-only, and a
+  ratchet that tightens itself turns the next unrelated red build into a mystery.
+- `percent` < `floor` → **FAIL**: "the default branch is below its own floor" — naming both numbers
+  and the run URL.
+- The latest run **failed or was cancelled** → **FAIL** in its own words: "the default branch's
+  latest `ci` run is red — coverage is unknown, and the run before it doesn't answer for this
+  commit." Report the run URL. Don't reach back for an older run to salvage a number.
+- The latest run has **no `coverage` artifact** → **FAIL**: "CI is not producing the coverage
+  summary" — the upload step is missing, or the coverage command failed before writing one.
+- The latest run is still `in_progress`/`queued` → **couldn't verify**, not a FAIL and not a PASS.
+  It will have an answer in a few minutes.
+- The artifact has **expired** (`gh run download` reports it gone on an old run) → **couldn't
+  verify**, naming the run's age. Expiry is a retention setting, not a coverage problem.
+- No `ci` run on the default branch at all → **WARN**: nothing has enforced the floor yet.
+
+**d. The floor has never been lowered.** The ratchet direction can't be seen at `HEAD` — a lowered
+floor looks exactly like a floor. Check it against history:
+
+```bash
+git fetch origin "<config.defaultBranch>"
+git log --reverse --format='%H' "origin/<config.defaultBranch>" -- .claude/maintainerd.json
+# for each commit, in order:
+git show "<sha>:.claude/maintainerd.json" | jq -r '.coverage.floor // empty'
+```
+
+Walk the values forward and keep the highest seen. If any earlier commit's floor is **higher** than
+the floor at `HEAD` → **FAIL**, naming the commit that lowered it and both numbers:
+
+> `coverage.floor` was lowered from 78 to 71 in a1b2c3d ("chore: relax coverage", 2026-08-14).
+> The floor is a ratchet. Fix: restore it to 78 and add tests, or — if the drop was deliberate and
+> reviewed — say so in the issue this drift report opens.
+
+A commit where the floor first *appears* is adoption, not a lowering. A commit that **removes** the
+block is a lowering to nothing: **FAIL**, same finding. If the history isn't present (a shallow
+clone — `git rev-parse --is-shallow-repository` is `true`), report **couldn't verify** and name
+`--unshallow`; don't read one commit's worth of history as a clean ratchet.
 
 ## Report
 
@@ -308,6 +404,9 @@ they're reading the report.
 - **Don't fail on things it can't verify** (schedules) — mark advisory, not FAIL.
 - **Don't report PASS for a check it skipped** — if a tool needed to verify something is missing, say
   "couldn't verify", not "OK".
+- **Don't raise `coverage.floor`, and don't fall back to an older CI run to find a green one.**
+  Raising the floor is a suggestion for the maintainer; reading a stale green run is how a coverage
+  regression reports as clean.
 - **Don't create labels silently** — always confirm, like `bootstrap`.
 - **Don't infer a workspace.** `--workspace` runs off the `workspace` block and nothing else — not
   sibling directories, not `gh repo list <org>`. An inferred list is a list nobody reviewed.
