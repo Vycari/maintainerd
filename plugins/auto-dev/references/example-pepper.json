@@ -7,8 +7,12 @@
     "lint": "uv run ruff check",
     "build": null,
     "test": "uv run pytest",
-    "coverage": "uv run pytest --cov --cov-report=json",
+    "coverage": "uv run pytest --cov --cov-report=json:coverage-summary.json",
     "typecheck": null
+  },
+  "coverage": {
+    "floor": 78,
+    "floorCommit": "9f2c1ab4d7e5c8b13a06f2d9e4471c0b5a8e3f21"
   },
   "paths": {
     "source": "src/pepper/",
