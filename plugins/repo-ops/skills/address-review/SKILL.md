@@ -65,12 +65,16 @@ Some review bots (Greptile, for example) grade a PR rather than approving it, an
 house rule is "must be 5/5 to merge" wants the loop to keep going at 4/5 even though nothing is
 formally blocking. To evaluate a `"<n>/<m>"` threshold:
 
-1. For each login in `config.review.bots`, find its **most recent** review or issue comment on the
-   PR. Scoring bots **edit one comment in place** across rounds rather than posting a new one, so
-   re-fetch that comment's current body every round — an earlier round's score is stale by
-   construction, and matching on comment *creation* time will read the wrong number.
-2. Parse the first score token of the form `n/m` from that body (tolerate surrounding markdown:
-   `**4/5**`, `Score: 4/5`, a table cell).
+1. For each login in `config.review.bots`, look at **all** of its comments on the PR (review
+   bodies and issue comments both) and pick the **score comment**: the most recently *updated* one
+   whose body contains a score token. The bot's newest comment is often not the one carrying the
+   score — a scoring bot keeps one persistent score comment and edits it in place while posting
+   ordinary inline findings around it, so "newest comment" would read a finding, see no score, and
+   quietly downgrade the gate to `"approved"`.
+2. Re-fetch that comment's **current body** every round and parse the first score token of the form
+   `n/m` from it (tolerate surrounding markdown: `**4/5**`, `Score: 4/5`, a table cell). Because
+   the comment is edited rather than replaced, its creation time and its id are both stable across
+   rounds — a cached score, or one matched by creation time, is stale by construction.
 3. Compare against the threshold: the score meets it when the denominators match and the numerator
    is `>= n`.
 
