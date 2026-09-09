@@ -457,8 +457,9 @@ Four things the helper encodes that a hand-rolled diff gets wrong:
   is built from the branch **as read**, with the profile's opinions laid over it, so every key the
   profile doesn't name — a locked branch, blocked creations, conversation resolution, push
   restrictions, code-owner review — keeps the value it had. A profile that is silent about a key has
-  not asked for it to be switched off. The two the API cannot round-trip — review bypass allowances,
-  and app-pinned required checks — are warned about instead.
+  not asked for it to be switched off. Push restrictions, review bypass allowances and app-pinned
+  required checks are **translated** into the shapes the PUT accepts rather than dropped — a warning
+  above a call that still loses the thing is a warning read after the paste.
 - **The merge queue is a ruleset rule, not a protection key.** `rulesets?includes_parents=true`,
   because an org-level parent ruleset can be what supplies it. The fix is a ruleset `POST`.
   A ruleset can also supply required checks that classic protection doesn't list; a requirement from

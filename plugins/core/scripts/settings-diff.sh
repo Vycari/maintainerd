@@ -30,9 +30,10 @@
 # branch is open. A drift report that turns a read-only token into six fabricated diffs
 # is worse than no report.
 #
-# The branch-protection PUT replaces the whole object, so the body printed here carries
-# through every protection the profile has no opinion on, read from the branch itself.
-# Fixing a merge method must never switch off a safeguard as a side effect.
+# The branch-protection PUT replaces the whole object, so the body printed here is built
+# from the branch AS READ with the opinions from the profile laid over it. Fixing a merge
+# method must never switch off a safeguard as a side effect, and a warning above a call
+# that still loses one is a warning read after the paste.
 #
 # Requires: bash 3.2+, jq.
 #
@@ -344,7 +345,7 @@ if printf '%s' "$findings" | jq -e '.protectionDiffers and .protectionKnown' >/d
   printf 'The one call that fixes every branch-protection difference above.\n'
   printf 'PUT replaces the whole object — sending only the diverging key would clear the rest.\n'
   printf 'Protections the profile has no opinion on are carried through from the settings\n'
-  printf 'as read; the two the API cannot round-trip are warned about above:\n\n'
+  printf 'as read, translated into the shapes the PUT accepts:\n\n'
   printf '  gh api --method PUT "repos/%s/branches/%s/protection" --input - <<'"'"'JSON'"'"'\n' "$repo" "$branch"
   printf '%s' "$findings" | jq '.protectionBody' | sed 's/^/  /'
   printf '  JSON\n\n'
