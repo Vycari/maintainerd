@@ -14,7 +14,7 @@ skill generates that contract for any repo.
 
 | Plugin | Skills | Install when |
 | --- | --- | --- |
-| **[maintainerd-core](plugins/core/README.md)** | `bootstrap`, `doctor` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it. |
+| **[maintainerd-core](plugins/core/README.md)** | `bootstrap`, `doctor`, `new-repo` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it; `new-repo` brings a repo to a fleet's standard. |
 | **[repo-ops](plugins/repo-ops/README.md)** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
 | **[audits](plugins/audits/README.md)** | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` | You want scheduled tech-debt / test / security / dependency / doc sweeps. |
 | **[research](plugins/research/README.md)** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
@@ -139,7 +139,7 @@ maintainerd/
   scripts/bump-version.py
   scripts/test-coverage.sh
   plugins/
-    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor}/  references/{config-schema,model-tiers}.md  scripts/coverage-{adapt,check}.sh
+    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor,new-repo}/  references/{config-schema,model-tiers,profile-schema}.md  scripts/{coverage-adapt,coverage-check,profile-resolve,settings-diff}.sh
     repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
     audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
@@ -249,6 +249,26 @@ Both halves of that command matter, and each fails in its own way:
 A restart is required for either to take effect. If a skill looks like it's running an old
 version, compare the version in `claude plugin list` against `marketplace.json` — and check the
 version segment of the cache path, since that is what the skill is actually being read from.
+
+## One standard, many repos
+
+A workspace's repos should be configured the same way, and "the same way" should be a file rather
+than a habit. A **repo profile** is that file: one versioned JSON holding the standard — private or
+public, merge methods, branch protection, required checks by name, labels, the CI shape per language,
+the coverage policy — with per-language blocks and a per-repo override valve.
+
+Maintainerd ships the mechanism and no values. The profile is an argument; nothing here names an org.
+
+- **[`new-repo`](plugins/core/skills/new-repo/SKILL.md)** creates or `--adopt`s a repo against a
+  profile: scaffolds the files, runs `bootstrap`, creates the labels, and applies the GitHub settings
+  — showing every `gh api` call first, and **refusing the mutating half outside an interactive
+  session with a human's own token**.
+- **[`doctor --profile`](plugins/core/skills/doctor/SKILL.md)** reports drift and never fixes it:
+  files vs profile, GitHub settings vs profile (each difference with the call that fixes it), and a
+  producer for every required check. The cadence it is built for is a weekly issue per drifted repo,
+  updated in place and closed on conformance — a human pastes the calls.
+
+The contract is [`plugins/core/references/profile-schema.md`](plugins/core/references/profile-schema.md).
 
 ## Roadmap
 

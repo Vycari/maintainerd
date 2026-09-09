@@ -547,6 +547,12 @@ repo:
 }
 ```
 
+The full profile contract — its shape, the `defaults` + language + override resolution, and what it
+deliberately does not govern — is a document of its own, `profile-schema.md`, shipped beside this one
+in **maintainerd-core**. It is named rather than linked here because this file is vendored into every
+plugin that reads it, and the profile is core's alone: a link would resolve in core's copy and dangle
+in the other six.
+
 `mode: "ratchet"` is the only mode: the effective floor is whatever the repo measured at adoption
 and may only rise. `target` records where the coverage should land and is never a gate — a number
 that fails a build has to be one the repo has already met. `coverage: null` exempts every repo of
