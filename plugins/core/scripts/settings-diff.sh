@@ -315,11 +315,16 @@ findings="$(jq -n \
       required_status_checks:
         ( { strict: resolve($e.protection.strictRequiredChecks;
                             (if prot_present then $prot.required_status_checks.strict else null end)) }
+          # `contexts` is deprecated but still required by the PUT schema, so it is sent
+          # whether or not `checks` is; `checks` adds the per-context app pin on top.
+          # `app_id` is an OPTIONAL integer in the request — an unpinned check omits the
+          # key rather than sending the null the response shape uses.
+          + { contexts: ($e.requiredChecks // []) }
           + (if has_app_pins
                then { checks: [ ($e.requiredChecks // [])[] as $c
-                                | { context: $c,
-                                    app_id: ([obs_checks[] | select(.context == $c) | .app_id] | first) } ] }
-               else { contexts: ($e.requiredChecks // []) } end) ),
+                                | ([obs_checks[] | select(.context == $c) | .app_id] | first) as $a
+                                | if $a == null then { context: $c } else { context: $c, app_id: $a } end ] }
+               else {} end) ),
       enforce_admins: resolve($e.protection.enforceAdmins; obs_enabled("enforce_admins")),
       required_pull_request_reviews:
         ((observed_reviews + profile_reviews) as $r | if ($r | length) == 0 then null else $r end),

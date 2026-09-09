@@ -372,13 +372,13 @@ else
   bad "review bypass allowances survive the replacement" "$body"
 fi
 if printf '%s' "$body" | jq -e '
-      (.required_status_checks | has("contexts") | not)
+      (.required_status_checks.contexts == ["ci","docs","migration-collision","docker-smoke"])
       and ([.required_status_checks.checks[] | select(.context == "ci")] | .[0].app_id == 15368)
       and ([.required_status_checks.checks[] | select(.context == "docs")] | .[0].app_id == 15368)
-      and ([.required_status_checks.checks[] | select(.context == "docker-smoke")] | .[0].app_id == null)' >/dev/null 2>&1; then
-  ok "an app-pinned check keeps its pin, and a check the profile adds carries none"
+      and ([.required_status_checks.checks[] | select(.context == "docker-smoke")] | .[0] | has("app_id") | not)' >/dev/null 2>&1; then
+  ok "a pinned check keeps its pin; an added one omits app_id, and contexts is still sent"
 else
-  bad "an app-pinned check keeps its pin, and a check the profile adds carries none" "$body"
+  bad "a pinned check keeps its pin; an added one omits app_id, and contexts is still sent" "$body"
 fi
 expect_match "and the checks the profile adds without a pin are called out" \
   "with no pin — any app could satisfy those"
