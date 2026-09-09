@@ -326,22 +326,26 @@ locked branch, blocked creations, required conversation resolution, fork syncing
 code-owner review, last-push approval — keeps the value the branch already had, so that fixing a
 merge method never quietly switches off a safeguard.
 
-Two consequences worth stating, because both are cases where the obvious implementation is wrong:
+Three consequences worth stating, because each is a case where the obvious implementation is wrong:
 
-- **A profile that is silent about a key has not asked for it to be off.** Silence inherits;
-  only an explicit value in the profile changes anything.
+- **A profile that is silent about a key has not asked for it to be off.** Silence inherits; only an
+  explicit value in the profile changes anything. (Written out rather than reached with jq's `//`,
+  which treats `false` as empty and would promote every disabled setting to the fallback.)
 - **`requiredReviews.count: 0` is a statement about approvals, not about the object they live in.**
-  Code-owner review and last-push approval share `required_pull_request_reviews` with the approval
-  count, and a body that nulls the whole object to express "no approvals required" switches those
-  off too. Two things the GET cannot be round-tripped into a PUT, and
-both are **warned about** rather than silently dropped:
+  Code-owner review, last-push approval and the bypass allowances share
+  `required_pull_request_reviews` with the approval count, and a body that nulls the whole object to
+  express "no approvals required" switches those off too.
+- **The values whose GET shape differs from their PUT shape are translated, not dropped.** Push
+  restrictions and review bypass allowances come back as user/team/app objects and go out as logins
+  and slugs. App-pinned required checks come back as `checks[{context, app_id}]`, a shape the PUT
+  accepts alongside the deprecated-but-still-required `contexts` list, so both are sent and each pin
+  is carried across — an unpinned check omitting `app_id` entirely, since the request schema takes an
+  optional integer there and `null` is the response's spelling. A warning printed above a call that
+  still loses the thing is a warning read after the paste.
 
-- **review bypass allowances** — the GET returns user/team/app objects the PUT will not accept, and
-  a reconstruction from them would be a guess about who may bypass review;
-- **app-pinned required checks** (`required_status_checks.checks[].app_id`) — the profile names
-  contexts only, so the replacement unpins them and any app could then satisfy the check.
-
-Where either is present, the report says the call would drop it and points at the UI.
+The one widening nothing can avoid is a check the **profile adds** to a branch whose existing checks
+are app-pinned: there is no pin to carry across, so any app could satisfy it. That is one warning
+naming the added checks, and it is the only protection warning left.
 
 **And a failed read is not an unprotected branch.** GitHub answers both with a JSON object carrying
 `message`, and only its not-protected message means the branch is open. A permissions error, a 404
