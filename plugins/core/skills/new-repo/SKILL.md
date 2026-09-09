@@ -124,7 +124,7 @@ with a stub is a scaffolder people turn off.
 | `files.claudeMd` | `CLAUDE.md` | A stub: what the repo is, its architecture in a paragraph, and a pointer to the fleet's house rules. |
 | `claudeSettings` present | `.claude/settings.json` | `extraKnownMarketplaces` for each entry in `claudeSettings.marketplaces`, `enabledPlugins` for each in `claudeSettings.plugins`. Merge into an existing file key by key; never replace one. |
 | `dependabot` non-empty | `.github/dependabot.yml` | One `updates` entry per ecosystem, `directory: "/"`, `schedule.interval: weekly`. |
-| always | `.github/workflows/ci.yml` | Below. |
+| `ci` is an effective check | `.github/workflows/ci.yml` | Below. |
 
 **`.claude/settings.json` is the one file to merge rather than write.** It carries the user's own
 permissions and hooks; replacing it to add a marketplace destroys work that has nothing to do with
@@ -132,8 +132,12 @@ the standard. Read it, add the missing entries, keep everything else, and show t
 
 ### 5. The CI workflow
 
-Scaffold **one** workflow, `.github/workflows/ci.yml`, with **one job whose key is `ci`** — the check
-run's name is the job's, so this is what makes a required check called `ci` exist. It runs the
+**Only when `ci` is one of the effective checks.** A `none`-language repo — tracked but not built
+here — has an empty `requiredChecks` and no commands; scaffolding it a workflow that runs nothing
+would be inventing a pipeline the profile didn't ask for. Skip the file and say so.
+
+Otherwise scaffold **one** workflow, `.github/workflows/ci.yml`, with **one job whose key is `ci`** —
+the check run's name is the job's, so this is what makes a required check called `ci` exist. It runs the
 commands from `effective.commands`, in order, skipping every `null` one:
 
 ```yaml

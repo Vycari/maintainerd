@@ -397,10 +397,15 @@ Then, against `effective`:
 | `files.codeowners` non-null | `.github/CODEOWNERS` exists **and contains that line** | **FAIL** |
 | `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
 | `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
-| always | `.github/workflows/ci.yml` exists and has a job producing the `ci` check | **FAIL** |
+| `ci` is an effective check | `.github/workflows/ci.yml` exists and has a job producing the `ci` check | **FAIL** |
 | `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem | **FAIL** for the file, **WARN** per missing ecosystem |
 | `claudeSettings` present | `.claude/settings.json` declares each named marketplace and plugin | **WARN** per missing entry |
 | always | `.claude/maintainerd.json` agrees with the effective `commands` and `coverage` | **WARN** per key |
+
+**A language with no required checks scaffolds no workflow.** A `none`-language repo — tracked but
+not built here — has an empty `requiredChecks` and no `commands`, so there is no `ci` job to look for
+and its absence is not a finding. Check 16 has nothing to verify there either, and says so rather
+than reporting a clean run it didn't perform.
 
 **Existence, not content** — for every file but `CODEOWNERS`. A PR template and a review-rules file
 are the repo's prose; the profile says they exist, and a check that diffed their text would report
