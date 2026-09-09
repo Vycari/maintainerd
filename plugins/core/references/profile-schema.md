@@ -335,9 +335,11 @@ Three consequences worth stating, because each is a case where the obvious imple
   Code-owner review, last-push approval and the bypass allowances share
   `required_pull_request_reviews` with the approval count, and a body that nulls the whole object to
   express "no approvals required" switches those off too.
-- **The values whose GET shape differs from their PUT shape are translated, not dropped.** Push
-  restrictions and review bypass allowances come back as user/team/app objects and go out as logins
-  and slugs. App-pinned required checks come back as `checks[{context, app_id}]`, a shape the PUT
+- **The values whose GET shape differs from their PUT shape are translated, not dropped.** Three
+  keys are actor lists — push restrictions, dismissal restrictions and review bypass allowances —
+  and all three come back as user/team/app objects and go out as logins and slugs. That covers
+  `required_pull_request_reviews` completely: all six of its fields are carried, the two the profile
+  has an opinion on and the four it does not. App-pinned required checks come back as `checks[{context, app_id}]`, a shape the PUT
   accepts alongside the deprecated-but-still-required `contexts` list, so both are sent and each pin
   is carried across — an unpinned check omitting `app_id` entirely, since the request schema takes an
   optional integer there and `null` is the response's spelling. A warning printed above a call that

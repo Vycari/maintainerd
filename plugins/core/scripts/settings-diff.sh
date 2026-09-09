@@ -166,36 +166,32 @@ findings="$(jq -n \
            then { allow_fork_syncing: $prot.allow_fork_syncing.enabled } else {} end) )
     end;
 
+  # GitHub returns an actor list as user/team/app OBJECTS and accepts it as logins and
+  # slugs. Three keys use that shape — top-level restrictions, dismissal_restrictions and
+  # bypass_pull_request_allowances — so the translation is written once. Converting them
+  # is a translation, not a guess, which is why they are preserved rather than warned about.
+  def actors(o): if o == null then null
+                 else { users: [o.users[]?.login], teams: [o.teams[]?.slug], apps: [o.apps[]?.slug] } end;
+
   # The GET returns push restrictions as objects; the PUT wants logins and slugs.
   def preserved_restrictions:
-    if (prot_present | not) or ($prot.restrictions == null) then null
-    else { users: [$prot.restrictions.users[]?.login],
-           teams: [$prot.restrictions.teams[]?.slug],
-           apps:  [$prot.restrictions.apps[]?.slug] } end;
+    if prot_present | not then null else actors($prot.restrictions) end;
 
-  # The review block, like every other key here, is built as OBSERVED first and the
-  # opinions from the profile laid over it. A profile that says nothing about code-owner review
-  # is not a profile that asked for it to be switched off — and neither is one that says
-  # zero approvals are required, which is a statement about approvals and not about the
-  # other three safeguards that live in the same object.
-  # Bypass allowances round-trip exactly like `restrictions` do: the GET returns objects,
-  # the PUT wants logins and slugs. Converting them is a translation, not a guess, so they
-  # are preserved rather than warned about.
-  def preserved_bypass:
-    if prot_present | not then null
-    else ($prot.required_pull_request_reviews.bypass_pull_request_allowances // null)
-         | if . == null then null
-           else { users: [.users[]?.login], teams: [.teams[]?.slug], apps: [.apps[]?.slug] } end
-    end;
-
+  # required_pull_request_reviews has exactly six fields, and ALL SIX are carried:
+  # the four booleans/counts below, plus the two actor lists. The profile has an opinion
+  # on two of them; a replacement that dropped the other four would broaden who can merge,
+  # dismiss a review, or bypass one — every time an unrelated key was fixed.
   def observed_reviews:
     if (prot_present | not) or (($prot.required_pull_request_reviews | type) != "object") then {}
-    else ( ( $prot.required_pull_request_reviews
-             | { required_approving_review_count, dismiss_stale_reviews,
-                 require_code_owner_reviews, require_last_push_approval }
-             | with_entries(select(.value != null)) )
-         + (if preserved_bypass == null then {}
-            else { bypass_pull_request_allowances: preserved_bypass } end) )
+    else $prot.required_pull_request_reviews as $r
+      | ( ( $r
+            | { required_approving_review_count, dismiss_stale_reviews,
+                require_code_owner_reviews, require_last_push_approval }
+            | with_entries(select(.value != null)) )
+        + (actors($r.dismissal_restrictions) as $d
+           | if $d == null then {} else { dismissal_restrictions: $d } end)
+        + (actors($r.bypass_pull_request_allowances) as $b
+           | if $b == null then {} else { bypass_pull_request_allowances: $b } end) )
     end;
 
   def profile_reviews:

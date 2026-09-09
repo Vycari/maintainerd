@@ -360,6 +360,7 @@ fi
 # the replacement rather than being warned about and then dropped by it. A warning above
 # a call that still loses the thing is a warning that gets read after the paste.
 jq '.required_pull_request_reviews.bypass_pull_request_allowances = {"users":[{"login":"someone"}],"teams":[{"slug":"admins"}],"apps":[]}
+    | .required_pull_request_reviews.dismissal_restrictions = {"users":[{"login":"a-maintainer"}],"teams":[],"apps":[{"slug":"an-app"}]}
     | .required_status_checks.checks = [{"context":"ci","app_id":15368},{"context":"docs","app_id":15368}]' \
    "$d/prot-extras.json" > "$d/prot-pinned.json"
 run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-pinned.json"
@@ -370,6 +371,15 @@ if printf '%s' "$body" | jq -e '
   ok "review bypass allowances survive the replacement"
 else
   bad "review bypass allowances survive the replacement" "$body"
+fi
+# The other actor list in the same object. Dropping it would broaden who may dismiss a
+# review — quietly, as a side effect of fixing an unrelated key.
+if printf '%s' "$body" | jq -e '
+      (.required_pull_request_reviews.dismissal_restrictions.users == ["a-maintainer"])
+      and (.required_pull_request_reviews.dismissal_restrictions.apps == ["an-app"])' >/dev/null 2>&1; then
+  ok "so do dismissal restrictions, translated to logins and slugs"
+else
+  bad "so do dismissal restrictions, translated to logins and slugs" "$body"
 fi
 if printf '%s' "$body" | jq -e '
       (.required_status_checks.contexts == ["ci","docs","migration-collision","docker-smoke"])
