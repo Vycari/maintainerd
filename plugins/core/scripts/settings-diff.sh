@@ -24,10 +24,15 @@
 #   #   gh api "repos/my-org/app/rulesets/<id>" | jq -s '.' > rules.json
 #   gh api "repos/my-org/app/labels" --paginate --jq '[.[].name]'    > labels.json
 #
-# An input that was NOT passed is reported as "couldn't verify", never as a pass. A
-# read that failed because the token lacks admin is the commonest reason for a missing
-# protection file, and a drift report that turns a read-only token into six fabricated
-# diffs is worse than no report.
+# An input that was NOT passed is reported as "couldn't verify", never as a pass. Nor is
+# a read that FAILED: GitHub answers "you may not read this" and "this branch has no
+# protection" with the same JSON shape, and only its not-protected message means the
+# branch is open. A drift report that turns a read-only token into six fabricated diffs
+# is worse than no report.
+#
+# The branch-protection PUT replaces the whole object, so the body printed here carries
+# through every protection the profile has no opinion on, read from the branch itself.
+# Fixing a merge method must never switch off a safeguard as a side effect.
 #
 # Requires: bash 3.2+, jq.
 #
@@ -126,23 +131,87 @@ findings="$(jq -n \
            | .parameters.required_status_checks[]?.context ]
     end;
 
-  def protection_absent: ($prot == null) or ($prot | has("message"));
+  # An error body and "this branch has no protection" are the same JSON shape and
+  # opposite facts. Only the not-protected message GitHub returns means the branch is open; every
+  # other `message` — a permissions error, a 404 on the repo, a rate limit — means the
+  # read never established the current state, and inventing drift from a failed read is
+  # how a report gets muted and how a blind write gets pasted.
+  def prot_unreadable: ($prot != null) and ($prot | has("message"))
+                       and (($prot.message | ascii_downcase | test("branch not protected")) | not);
+  def prot_unprotected: ($prot != null) and ($prot | has("message"))
+                        and ($prot.message | ascii_downcase | test("branch not protected"));
+  def prot_present: ($prot != null) and (($prot | has("message")) | not);
 
   def prot_contexts:
-    if protection_absent then []
+    if prot_present | not then []
     else ($prot.required_status_checks.contexts
           // ([$prot.required_status_checks.checks[]?.context])
           // []) end;
+
+  # Protections the profile has no opinion on are CARRIED THROUGH the replacement, not
+  # dropped. The PUT replaces the whole object, so a body built from the profile alone
+  # would silently switch off a safeguard the repo had — conversation resolution, a
+  # locked branch, blocked creations — as a side effect of fixing a merge method.
+  def preserved_protections:
+    if prot_present | not then {}
+    else
+      ( (if ($prot | has("required_conversation_resolution"))
+           then { required_conversation_resolution: $prot.required_conversation_resolution.enabled } else {} end)
+      + (if ($prot | has("block_creations"))
+           then { block_creations: $prot.block_creations.enabled } else {} end)
+      + (if ($prot | has("lock_branch"))
+           then { lock_branch: $prot.lock_branch.enabled } else {} end)
+      + (if ($prot | has("allow_fork_syncing"))
+           then { allow_fork_syncing: $prot.allow_fork_syncing.enabled } else {} end) )
+    end;
+
+  # The GET returns push restrictions as objects; the PUT wants logins and slugs.
+  def preserved_restrictions:
+    if (prot_present | not) or ($prot.restrictions == null) then null
+    else { users: [$prot.restrictions.users[]?.login],
+           teams: [$prot.restrictions.teams[]?.slug],
+           apps:  [$prot.restrictions.apps[]?.slug] } end;
+
+  def preserved_reviews:
+    if prot_present | not then {}
+    else
+      ( (if ($prot.required_pull_request_reviews | type) != "object" then {}
+         else
+           ( (if ($prot.required_pull_request_reviews | has("require_code_owner_reviews"))
+                then { require_code_owner_reviews: $prot.required_pull_request_reviews.require_code_owner_reviews } else {} end)
+           + (if ($prot.required_pull_request_reviews | has("require_last_push_approval"))
+                then { require_last_push_approval: $prot.required_pull_request_reviews.require_last_push_approval } else {} end) )
+         end) )
+    end;
+
+  # Two things the GET cannot be round-tripped into a PUT. They are warned about rather
+  # than silently dropped, because the operator is the one who has to decide.
+  def unpreservable_findings:
+    if prot_present | not then []
+    else
+      ( if (($prot.required_pull_request_reviews.bypass_pull_request_allowances // {}
+             | [.users[]?, .teams[]?, .apps[]?] | length) > 0)
+          then [{ sev: "WARN", section: "protection",
+                  msg: "\($branch) has review bypass allowances, which the GET does not return in a shape the PUT accepts — the call below would DROP them. Re-add them in the UI afterwards, or apply this change there instead." }]
+          else [] end )
+      + ( if ([$prot.required_status_checks.checks[]? | select(.app_id != null)] | length) > 0
+            then [{ sev: "WARN", section: "protection",
+                    msg: "\($branch) pins its required checks to specific apps (checks[].app_id); the profile names contexts only, so the call below would unpin them — any app could then satisfy those checks." }]
+            else [] end )
+    end;
 
   # ── branch protection ──────────────────────────────────────────────────────
   def protection_findings:
     if $prot == null then
       [{ sev: "SKIP", section: "protection",
          msg: "branch protection on \($branch) not read — couldn'"'"'t verify. Reading it needs admin on most repos." }]
-    elif ($prot | has("message")) then
+    elif prot_unreadable then
+      [{ sev: "SKIP", section: "protection",
+         msg: "the protection read on \($branch) returned an error (\($prot.message)) — couldn'"'"'t verify. That is a failed read, not an unprotected branch, so nothing is diffed against it and no replacement call is printed." }]
+    elif prot_unprotected then
       [{ sev: "FAIL", section: "protection",
-         msg: "\($branch) has no branch protection at all (\($prot.message)) — every profile rule below is unmet",
-         fix: "see the single PUT above" }]
+         msg: "\($branch) has no branch protection at all (\($prot.message)) — every profile rule is unmet",
+         fix: "see the single PUT below" }]
     else
       ( [ { key: "required_linear_history", want: $e.protection.requiredLinearHistory, got: $prot.required_linear_history.enabled }
         , { key: "allow_force_pushes",      want: $e.protection.allowForcePushes,      got: $prot.allow_force_pushes.enabled }
@@ -165,6 +234,7 @@ findings="$(jq -n \
       + ( ((prot_contexts) - ($e.requiredChecks // []))
           | map({ sev: "WARN", section: "protection",
                   msg: "\($branch) requires the check \"\(.)\", which the profile does not name. The PUT below would REMOVE it, because it replaces the whole object — add it to the profile'"'"'s requiredChecks first if it should stay." }) )
+      + unpreservable_findings
     end;
 
   # ── merge queue: a ruleset rule, not a protection key ──────────────────────
@@ -212,21 +282,25 @@ findings="$(jq -n \
 
   { findings: (repo_findings + protection_findings + merge_queue_findings + label_findings),
     protectionDiffers: (([ protection_findings[] | select(.section == "protection" and .sev == "FAIL") ] | length) > 0),
-    protectionReadable: ($prot != null),
-    protectionBody: {
+    # "Known" means the current state was actually established: the branch is protected
+    # and we read it, or GitHub told us it is not protected. A failed read is neither, and
+    # a replacement computed from one would be a guess.
+    protectionKnown: (prot_present or prot_unprotected),
+    protectionBody: ({
       required_status_checks: { strict: ($e.protection.strictRequiredChecks // false),
                                 contexts: ($e.requiredChecks // []) },
       enforce_admins: ($e.protection.enforceAdmins // false),
       required_pull_request_reviews:
         (if ($e.protection.requiredReviews.count // 0) > 0
-         then { required_approving_review_count: $e.protection.requiredReviews.count,
-                dismiss_stale_reviews: ($e.protection.requiredReviews.dismissStale // false) }
+         then ({ required_approving_review_count: $e.protection.requiredReviews.count,
+                 dismiss_stale_reviews: ($e.protection.requiredReviews.dismissStale // false) }
+               + preserved_reviews)
          else null end),
-      restrictions: null,
+      restrictions: preserved_restrictions,
       required_linear_history: ($e.protection.requiredLinearHistory // false),
       allow_force_pushes: ($e.protection.allowForcePushes // false),
       allow_deletions: ($e.protection.allowDeletions // false)
-    } }
+    } + preserved_protections) }
 ')"
 
 # ── Render ───────────────────────────────────────────────────────────────────
@@ -240,9 +314,11 @@ printf '%s' "$findings" | jq -r '
 # Branch protection is REPLACED by its PUT, never patched: a call carrying only the
 # diverging key clears every key it omits. So one call, carrying the whole desired state,
 # with the per-key differences above as its reasons.
-if printf '%s' "$findings" | jq -e '.protectionDiffers and .protectionReadable' >/dev/null; then
+if printf '%s' "$findings" | jq -e '.protectionDiffers and .protectionKnown' >/dev/null; then
   printf 'The one call that fixes every branch-protection difference above.\n'
-  printf 'PUT replaces the whole object — sending only the diverging key would clear the rest:\n\n'
+  printf 'PUT replaces the whole object — sending only the diverging key would clear the rest.\n'
+  printf 'Protections the profile has no opinion on are carried through from the settings\n'
+  printf 'as read; the two the API cannot round-trip are warned about above:\n\n'
   printf '  gh api --method PUT "repos/%s/branches/%s/protection" --input - <<'"'"'JSON'"'"'\n' "$repo" "$branch"
   printf '%s' "$findings" | jq '.protectionBody' | sed 's/^/  /'
   printf '  JSON\n\n'

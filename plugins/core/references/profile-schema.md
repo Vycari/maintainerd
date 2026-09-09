@@ -320,6 +320,26 @@ The per-key differences are still listed individually — that is what a human r
 listed as *reasons for the one call*, with the current value beside the wanted one. Repo-level
 settings (`PATCH repos/{slug}`) genuinely are a patch, so those are printed per key.
 
+**Protections the profile has no opinion on are carried through that call, not dropped.** The
+profile governs seven keys; branch protection has more. Required conversation resolution, a locked
+branch, blocked creations, fork syncing, push restrictions, code-owner review and last-push approval
+are read from the branch and written back unchanged, so that fixing a merge method never quietly
+switches off a safeguard the repo had. Two things the GET cannot be round-tripped into a PUT, and
+both are **warned about** rather than silently dropped:
+
+- **review bypass allowances** — the GET returns user/team/app objects the PUT will not accept, and
+  a reconstruction from them would be a guess about who may bypass review;
+- **app-pinned required checks** (`required_status_checks.checks[].app_id`) — the profile names
+  contexts only, so the replacement unpins them and any app could then satisfy the check.
+
+Where either is present, the report says the call would drop it and points at the UI.
+
+**And a failed read is not an unprotected branch.** GitHub answers both with a JSON object carrying
+`message`, and only its not-protected message means the branch is open. A permissions error, a 404
+on the repo, a rate limit — each of those means the current state was never established, so the diff
+reports `couldn't verify` and prints **no** replacement call. A PUT computed from a read that failed
+is a guess with the blast radius of a write.
+
 ---
 
 ## What the profile does not govern

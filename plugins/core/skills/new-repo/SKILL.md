@@ -274,8 +274,11 @@ Then, in this order:
    repo *less* protected rather than protected against a check that doesn't exist yet.
 4. **Branch protection is a PUT that replaces the whole object.** Send the complete desired state —
    the one body `settings-diff.sh` prints — never the diverging key alone, which clears every key it
-   omits. If the repo currently requires a check the profile doesn't name, that PUT removes it: say
-   so before asking, and let the operator add it to the profile instead if it should stay.
+   omits. That body already carries through the protections the profile has no opinion on, read from
+   the branch itself; **don't hand-write one**, and don't apply it if the protection read failed.
+   Two things it cannot carry (review bypass allowances, app-pinned required checks) and anything the
+   repo requires that the profile doesn't name are printed as warnings: say those out loud before
+   asking, and let the operator add them to the profile instead if they should stay.
 5. **A failed call stops the batch.** Report what succeeded, what didn't, and the exact call to
    retry. Never retry a settings write in a loop.
 

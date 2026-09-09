@@ -267,6 +267,55 @@ run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/pro
 expect_status "an unprotected branch is a difference" 1
 expect_match  "reported as the one fact it is" "has no branch protection at all"
 
+# A failed protection read is NOT an unprotected branch. Same JSON shape, opposite fact:
+# reporting drift from a read that never established the current state is how a weekly
+# drift issue gets muted, and how a blind replacement gets pasted.
+echo '{"message": "Must have admin rights to Repository.", "status": "403"}' > "$d/prot-403.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-403.json"
+expect_status "a permissions error on the protection read is not a difference" 0
+expect_match  "it is reported as a failed read" "returned an error (Must have admin rights"
+expect_no_match "and no replacement call is printed from a state nobody read" "method PUT"
+
+# The PUT replaces the whole object, so protections the profile has no opinion on have
+# to be carried through — otherwise fixing a merge method silently unlocks a branch.
+cat > "$d/prot-extras.json" <<'JSON'
+{"required_status_checks": {"strict": false, "contexts": ["ci","docs","migration-collision","docker-smoke"]},
+ "enforce_admins": {"enabled": false},
+ "required_pull_request_reviews": {"required_approving_review_count": 1, "dismiss_stale_reviews": false,
+                                   "require_code_owner_reviews": true, "require_last_push_approval": true},
+ "required_linear_history": {"enabled": true},
+ "allow_force_pushes": {"enabled": false},
+ "allow_deletions": {"enabled": false},
+ "required_conversation_resolution": {"enabled": true},
+ "block_creations": {"enabled": true},
+ "lock_branch": {"enabled": false},
+ "restrictions": {"users": [{"login": "a-maintainer"}], "teams": [{"slug": "core"}], "apps": [{"slug": "some-app"}]}}
+JSON
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-extras.json"
+expect_status "the one profile-governed difference is reported" 1
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '
+      (.required_conversation_resolution == true) and (.block_creations == true)
+      and (.lock_branch == false)
+      and (.restrictions.users == ["a-maintainer"]) and (.restrictions.teams == ["core"])
+      and (.restrictions.apps == ["some-app"])
+      and (.required_pull_request_reviews.require_code_owner_reviews == true)
+      and (.required_pull_request_reviews.require_last_push_approval == true)
+      and (.required_pull_request_reviews.dismiss_stale_reviews == true)' >/dev/null 2>&1; then
+  ok "the replacement carries through every protection the profile has no opinion on"
+else
+  bad "the replacement carries through every protection the profile has no opinion on" "$body"
+fi
+
+# The two the GET cannot be round-tripped into a PUT are warned about, not dropped quietly.
+jq '.required_pull_request_reviews.bypass_pull_request_allowances = {"users":[{"login":"someone"}],"teams":[],"apps":[]}
+    | .required_status_checks.checks = [{"context":"ci","app_id":15368}]' \
+   "$d/prot-extras.json" > "$d/prot-unpreservable.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-unpreservable.json"
+expect_match "review bypass allowances are called out as unpreservable" \
+  "the call below would DROP them"
+expect_match "and so is unpinning app-scoped required checks" "would unpin them"
+
 # An exempt repo still has settings; the exemption is about coverage, not conformance.
 run "$DIFF" --repo my-org/site --effective "$d/eff-site.json" --repo-settings "$d/repo-ok.json"
 expect_status "a coverage-exempt repo is still held to the settings standard" 0
