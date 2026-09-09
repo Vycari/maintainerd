@@ -54,6 +54,13 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "typecheck": null                           // e.g. "npm run typecheck:test"; null if covered elsewhere
   },
 
+  // ── Coverage ratchet (optional; ABSENT = not yet adopted, never "no floor") ──
+  // Written by `bootstrap --adopt`, read by the CI gate and by doctor's check 13.
+  "coverage": {
+    "floor":       78,         // whole percent of LINE coverage CI must not drop below. Ratchet: may rise, never fall.
+    "floorCommit": "9f2c1ab"   // the default-branch commit the floor was measured on, so the number is traceable
+  },
+
   // ── Paths ───────────────────────────────────────────────────────────────
   "paths": {
     "source":       "src/pepper/",              // root of source the audits sweep
@@ -231,7 +238,7 @@ Each value is a shell command or `null`. A skill that needs a step whose command
 | `lint` | create-pr, audits | May be `null` if the formatter also lints. |
 | `build` | create-pr, auto-dev | `null` for interpreted languages with no build. |
 | `test` | create-pr, audit-tests, auto-dev | The suite that gates PRs. |
-| `coverage` | audit-tests | Optional; emits machine-readable coverage. |
+| `coverage` | audit-tests, the CI ratchet gate | Optional; `null` = this repo is exempt from the coverage ratchet. Non-null **must** leave `coverage-summary.json` in the repo root — the contract below. |
 | `typecheck` | create-pr, auto-dev | Optional separate type-check pass. |
 
 ### `paths`
@@ -250,8 +257,13 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`
+### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`
 
+- `coverage.*` *(optional; absent = the ratchet has not been adopted here)* — `floor`, the whole
+  percent of line coverage CI refuses to drop below, and `floorCommit`, the default-branch commit it
+  was measured on. Both are written by `bootstrap --adopt`; nothing else may write them, and the
+  floor may only ever **rise**. The mechanism is in [The coverage ratchet](#the-coverage-ratchet)
+  below.
 - `labels.*` — GitHub label names the skills apply. They must already exist in the repo (bootstrap
   offers to create them).
 - `audits.*` — per-run caps, plus the two pattern-promotion knobs. Cap defaults `3/5`
@@ -394,6 +406,146 @@ report that a marker was honored, so the bypass is visible in the transcript rat
 
 The full gate, including the refusal message and worked examples, is in the repo-ops plugin's
 `create-pr` and `address-review` skills.
+
+## The coverage ratchet
+
+`coverage.floor` is the whole contract's one number: **the line coverage this repo will not drop
+below.** It is measured once, from the repo as it actually is, and after that it may only rise. That
+is what makes coverage adoptable in a repo that already exists — nobody has to hit an aspirational
+target to turn the gate on, and the gate still catches the change that quietly deletes tests.
+
+The number lives in `.claude/maintainerd.json`, not in a workflow flag or a tool's config, for one
+reason: **lowering it should be a reviewable diff to a tracked file.** A threshold passed on a
+command line moves in a workflow edit nobody reads.
+
+### The summary contract
+
+A repo's `commands.coverage` must leave a file named `coverage-summary.json` in the repo root:
+
+```json
+{"metric": "lines", "percent": 87.43}
+```
+
+That is the entire contract, and it has exactly three readers: adoption, the CI gate, and `doctor`.
+`metric` is always `"lines"` — **branch coverage is not gated**, because it moves for reasons that
+have nothing to do with test quality and a ratchet on it ratchets on noise.
+
+### The adapters
+
+No coverage tool emits that shape natively, so maintainerd-core ships an adapter that translates
+the ones it knows into it: `plugins/core/scripts/coverage-adapt.sh`.
+
+| Language | Tool | Native output | The key it reads |
+| --- | --- | --- | --- |
+| Python | pytest-cov / coverage.py `--cov-report=json` | `coverage.json` | `.totals.percent_covered` |
+| TypeScript | vitest / jest / nyc `json-summary` | `coverage/coverage-summary.json` | `.total.lines.pct` |
+
+```bash
+coverage-adapt.sh                                   # detect the shape, rewrite coverage-summary.json in place
+coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
+```
+
+With no `--input` it takes whichever **one** of `coverage-summary.json`, `coverage.json` or
+`coverage/coverage-summary.json` holds a measurement. Two or more is an error, not a ranking: one of
+them is almost certainly left over from an earlier run, and gating this commit on a previous
+commit's number is the single failure the ratchet exists to prevent. Pass `--input`, or clear the
+stale file before the coverage step. Its **own** normalized output doesn't count as a rival — the
+native file stays on disk after the first pass, and a retried CI step has to keep working.
+
+One script rather than one file per language: the two translations are a single `jq` path each, and
+a second copy of the argument handling and the fail-closed rules is a second place for them to
+drift. `--tool` selects the format explicitly; the default detects it from the JSON's shape and
+also recognizes its **own** output, so re-running the step is a no-op rather than an error.
+
+It fails, and writes nothing, on anything it cannot read with certainty — a missing file, malformed
+JSON, an unrecognized shape, a percentage outside 0–100, or istanbul's literal `"Unknown"` (what it
+writes when it measured no lines at all). A coverage gate that guesses a number is worse than one
+that stops.
+
+### The gate
+
+`plugins/core/scripts/coverage-check.sh` reads the normalized summary and `coverage.floor`, and
+fails the job when the measured percentage is below it. **Equal passes** — the floor is the lowest
+acceptable value, not a value to beat.
+
+It fails closed on a missing summary, malformed JSON, a summary still in a tool's native shape, and
+on an absent `coverage.floor`. Every one of those states is indistinguishable from "the suite never
+ran", and a gate that waves them through is a gate that has never once fired. A repo that is exempt
+drops the step rather than relying on it to no-op.
+
+### In the workflow
+
+Both scripts are vendored into the consuming repo — `bootstrap` writes them to
+`.claude/maintainerd/` — because CI runs without the plugin installed and a workflow that curls a
+script from a branch is a supply chain nobody reviewed. They are checked in, so the version CI ran
+is the version in the diff.
+
+```yaml
+      - name: Coverage
+        run: uv run pytest --cov --cov-report=json:coverage-summary.json   # commands.coverage
+
+      - name: Normalize the coverage summary
+        run: .claude/maintainerd/coverage-adapt.sh --tool pytest-cov
+
+      # Before the gate, so a regression still publishes the number that proves it.
+      - name: Upload the coverage summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage                 # doctor's check 13 looks for this exact name
+          path: coverage-summary.json
+          if-no-files-found: error
+
+      - name: Coverage ratchet
+        run: .claude/maintainerd/coverage-check.sh
+```
+
+The artifact name is load-bearing: `doctor` reads the `coverage` artifact from the latest
+default-branch run of the `ci` workflow to tell whether the branch is currently above its own floor.
+Uploading **before** the gate is what makes a failing run diagnosable — an artifact-less red run
+tells `doctor` only that something broke.
+
+### Adoption, and the direction of travel
+
+`bootstrap --adopt` measures the default branch on a **fresh worktree of `origin/<defaultBranch>`**
+— never the operator's working copy, which carries uncommitted work — floors the percentage to a
+whole number, and writes `coverage.floor` with the `floorCommit` it measured.
+
+After that the number is one-directional. `doctor` walks the default branch's history of
+`.claude/maintainerd.json` and reports any commit that lowered the floor, naming it. Raising the
+floor to the currently measured value is **suggested, never applied**: a ratchet that tightens
+itself turns an unrelated red build into a mystery.
+
+### Exemption
+
+**A repo with no coverage gate sets `commands.coverage: null` and carries no `coverage` block.**
+That is a complete exemption, not a floor of zero: no CI step, no gate, and `doctor` skips check 13
+entirely rather than reporting an un-adopted ratchet forever. Config repos, static sites and
+docs-only repos are exempt for the same honest reason — there is nothing under test.
+
+An **absent** `coverage` block in a repo whose `commands.coverage` is non-null means something
+different: the ratchet applies here and has not been adopted yet. `doctor` reports that as one
+finding naming `/bootstrap --adopt`, never as a ratchet violation.
+
+### The profile side
+
+A [workspace](#workspace-scope-the-workspace-block) that governs several repos from one
+repo profile carries the *policy* there, per language, while the measured number stays in each
+repo:
+
+```jsonc
+"languages": {
+  "python-service": {
+    "coverage": { "mode": "ratchet", "target": 70 },   // target is aspirational; it gates nothing
+    "commands": { "coverage": "uv run pytest --cov --cov-report=json:coverage-summary.json" }
+  },
+  "shell": { "coverage": null }                        // complete exemption, as above
+}
+```
+
+`mode: "ratchet"` is the only mode: the effective floor is whatever the repo measured at adoption
+and may only rise. `target` records where the coverage should land and is never a gate — a number
+that fails a build has to be one the repo has already met. `coverage: null` exempts every repo of
+that language, and any `commands.coverage` left in the merged block is ignored.
 
 ---
 

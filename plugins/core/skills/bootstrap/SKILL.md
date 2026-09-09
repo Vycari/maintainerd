@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Generate the maintainerd config contract for a repo — write `.claude/maintainerd.json` and scaffold `.claude/guidelines/{coding,testing,invariants}.md` so the repo-ops, audits, research, and auto-dev skills can run here. Inspects the repo (language, GitHub slug, default branch, source/test dirs, lint/format/build/test commands), confirms anything ambiguous, and seeds starter guidelines from existing CLAUDE.md/AGENTS.md. Use when the user asks to "bootstrap this repo", "set up maintainerd", "create the maintainerd config", "configure the maintainer skills", "onboard this repo to maintainerd", or when any other maintainerd skill reports the config is missing. Idempotent — re-running re-confirms and only rewrites changed keys; never clobbers hand-edited guideline prose.
+description: Generate the maintainerd config contract for a repo — write `.claude/maintainerd.json` and scaffold `.claude/guidelines/{coding,testing,invariants}.md` so the repo-ops, audits, research, and auto-dev skills can run here. Inspects the repo (language, GitHub slug, default branch, source/test dirs, lint/format/build/test commands), confirms anything ambiguous, seeds starter guidelines from existing CLAUDE.md/AGENTS.md, and adopts the coverage ratchet by measuring the default branch on a fresh worktree and recording `coverage.floor`. `--adopt` runs only that last part, for a repo that is already bootstrapped. Use when the user asks to "bootstrap this repo", "set up maintainerd", "create the maintainerd config", "configure the maintainer skills", "onboard this repo to maintainerd", or when any other maintainerd skill reports the config is missing. Idempotent — re-running re-confirms and only rewrites changed keys; never clobbers hand-edited guideline prose.
 ---
 
 # Bootstrap a repo for the Maintainerd toolkit
@@ -20,6 +20,16 @@ needs human judgment (especially `invariants.md`).
 
 Read the schema reference first: [`../../references/config-schema.md`](../../references/config-schema.md).
 Every key you write must match it.
+
+## Inputs
+
+- `/bootstrap` — the full pass: detect, confirm, write the config and the guidelines, and (step 10)
+  measure the coverage floor if the repo doesn't have one yet.
+- `/bootstrap --adopt` — **just the coverage floor.** Skip straight to step 10 and (re-)measure
+  `origin/<defaultBranch>`, writing `coverage.floor` and `coverage.floorCommit` into an existing
+  config. This is what you run to put an already-bootstrapped repo under the ratchet, and what
+  `doctor`'s check 13 names when it finds no floor. It requires an existing
+  `.claude/maintainerd.json` — it never writes one.
 
 ## Workflow
 
@@ -71,6 +81,12 @@ Read the project manifest and pull the real commands rather than guessing:
 - **TypeScript** (`package.json` `scripts`): map `format`/`format-check`, `lint`, `build`,
   `test`, `typecheck`/`typecheck:test` to whatever scripts exist. Use the exact `npm run <script>`
   names present; don't invent scripts.
+- `coverage` has a **contract**, not just a command: whatever it runs must leave a
+  `coverage-summary.json` in the repo root for the adapter to normalize. Point the tool's own
+  reporter at that path where it can (`--cov-report=json:coverage-summary.json`,
+  `--coverage.reporter=json-summary`) rather than adding a second step. A repo with no test
+  suite — or one deliberately exempt from the coverage ratchet — gets an explicit `null` here,
+  which is what makes step 10 skip.
 - Show the user the command block you inferred and let them correct it. A wrong test command
   silently breaks create-pr and auto-dev, so confirm this one explicitly.
 
@@ -281,7 +297,77 @@ This step is CodeRabbit-specific because the negative-label matcher is. Other re
 `review.bots` (e.g. `gemini-code-assist[bot]`) have their own mechanisms — don't guess at their
 config format; mention in the report that they were left alone.
 
-### 10. Report
+### 10. Adopt the coverage floor
+
+The coverage ratchet is one number in the config — `coverage.floor`, the line coverage CI refuses to
+drop below — measured from the repo **as it actually is** and thereafter allowed only to rise. The
+full contract, including the CI snippet, is in
+[`../../references/config-schema.md`](../../references/config-schema.md).
+
+**Skip this step entirely** when `commands.coverage` is `null`: that repo is exempt, and writing a
+floor of zero would be a gate that can never fire while looking like one that can. Say so in the
+report. On a plain `/bootstrap` re-run where `coverage.floor` already exists, skip it too — only
+`--adopt` re-measures.
+
+**First, vendor the two scripts.** CI runs without the plugin installed, so copy this plugin's
+`scripts/coverage-adapt.sh` and `scripts/coverage-check.sh` into the repo at `.claude/maintainerd/`,
+executable and checked in — the version CI ran should be the version in the diff. The measurement
+below uses the adapter, so this comes first.
+
+**Then measure, on a fresh worktree of the default branch — never the working copy.** The working
+copy carries uncommitted work, and a floor measured against a half-finished feature is a floor
+nobody can reproduce:
+
+```bash
+repo="$PWD"
+git fetch origin "<defaultBranch>"
+tmp="$(mktemp -d)"
+worktree="$tmp/measure"                  # a path git creates itself, so nothing is reused
+
+# Registered BEFORE the worktree is added, and covering every exit — the measurement runs
+# a whole dependency install and test suite, so failing partway through is the ordinary
+# case, not the exception. A leaked worktree stays registered in .git/worktrees and the
+# next adopt inherits it.
+cleanup() { git worktree remove --force "$worktree" 2>/dev/null || true; rm -rf "$tmp"; }
+trap cleanup EXIT INT TERM
+
+git worktree add --detach "$worktree" "origin/<defaultBranch>"
+sha="$(git -C "$worktree" rev-parse HEAD)"
+( cd "$worktree" && <install deps if the repo needs them> && <commands.coverage> \
+    && "$repo/.claude/maintainerd/coverage-adapt.sh" )
+percent="$(jq -r '.percent' "$worktree/coverage-summary.json")"
+```
+
+**Running this as separate tool calls rather than one script?** Then there is no `trap`, and the
+cleanup is yours to remember: run `git worktree remove --force "$worktree"` on **every** path out,
+including the ones where the coverage command failed and you are about to report that no floor was
+written. Start with `git worktree prune` so a worktree leaked by an earlier attempt doesn't make
+`git worktree add` fail on a path that no longer exists.
+
+Then **floor the percentage to a whole number** — `87.9` becomes `87`, never `88`. Rounding up
+invents a floor the repo has never actually met, and the first honest run fails. Write both keys:
+
+```jsonc
+"coverage": { "floor": 87, "floorCommit": "<sha>" }
+```
+
+`floorCommit` is the full SHA the measurement came from, so the number is reproducible later.
+
+**Print the CI snippet; don't edit their workflow.** The schema reference carries the four steps
+(coverage → adapt → upload the `coverage` artifact → gate) for the user to paste in. A coverage gate
+appearing in CI unannounced is exactly the surprise that gets automation switched off.
+
+**Never lower an existing floor.** On `--adopt` in a repo that already has one, if the fresh
+measurement is *below* the recorded floor, **write nothing** and report it: the branch has regressed
+below its own promise, and the fix is tests, not a smaller number. If it's higher, show the user
+both values and write the new one only on a yes — raising the floor tightens the gate for everyone
+working in the repo, so it is their call, not the skill's.
+
+If the coverage command fails, or leaves no `coverage-summary.json` the adapter can read, **write no
+`coverage` block at all** and report what happened. An absent floor is an honest "not yet adopted"
+that `doctor` will name; a guessed one is a gate built on a number nobody measured.
+
+### 11. Report
 
 Tell the user, concisely:
 - The path of the config written and that it validated.
@@ -290,8 +376,10 @@ Tell the user, concisely:
 - Which guideline files were created vs left alone, and that **`invariants.md` needs human review**.
 - Whether labels / PR template were created or skipped, and whether a CodeRabbit ignore rule was
   written (and that any other review bot was left alone).
+- The coverage floor: the measured percentage, the floor written and the commit it came from — or
+  why no floor was written (exempt, command failed, already adopted).
 - The reminder to **commit `.claude/maintainerd.json` and `.claude/guidelines/`** so scheduled
-  cloud agents pick them up — plus `.coderabbit.yaml` if step 9 wrote one: CodeRabbit reads it from
+  cloud agents pick them up — plus `.claude/maintainerd/coverage-*.sh` if step 10 wrote them, and `.coderabbit.yaml` if step 9 wrote one: CodeRabbit reads it from
   the branch, so an uncommitted rule silences nothing.
 
 ## What not to do
@@ -312,4 +400,7 @@ Tell the user, concisely:
 - **Don't enable `depsFlow` without an explicit yes.** It grants a skill permission to merge PRs in
   this repo — the one setting in the config with real, irreversible blast radius. `false` is the
   correct value whenever there's any doubt.
+- **Don't guess a coverage floor, and don't round one up.** It comes from a real run on a fresh
+  worktree of the default branch, floored to a whole number, or it isn't written at all. And never
+  lower an existing one: the ratchet only turns one way.
 - **Don't commit.** Write the files and let the user review and commit them.

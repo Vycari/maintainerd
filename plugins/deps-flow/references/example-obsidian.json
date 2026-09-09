@@ -7,8 +7,12 @@
     "lint": null,
     "build": "npm run build",
     "test": "npm test",
-    "coverage": "npm test -- --coverage",
+    "coverage": "npm run coverage -- --coverage.reporter=json-summary",
     "typecheck": "npm run typecheck:test"
+  },
+  "coverage": {
+    "floor": 41,
+    "floorCommit": "3c7d1e02b95a4f6d8021ce5b7a4f93d6e1c08b7a"
   },
   "paths": {
     "source": "src/",
