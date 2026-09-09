@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Validate a repo's Maintainerd setup and report what's wrong — the companion to `bootstrap`. Checks that `.claude/maintainerd.json` exists, parses, and conforms to the schema; that the configured paths, commands, and guidelines files resolve; that the GitHub labels the skills apply actually exist; that the daily-update roster only names installed skills; that the auto-dev state labels exist when the pipeline is enabled; that release config is coherent; and that the coverage ratchet holds — a floor is recorded, CI enforces it, the default branch's latest run is above it, and no commit has ever lowered it. In an umbrella repo whose config carries a `workspace` block, `--workspace` additionally validates that block and then runs the whole check once per cloned repo in the list, emitting one combined report. Read-only diagnosis by default, grouped PASS/WARN/FAIL with a concrete fix for each finding; offers to create missing labels and points at `/bootstrap` or the guidelines files for the rest. Use when the user asks to "run doctor", "check the maintainerd setup", "validate the config", "why isn't <skill> working", "diagnose the agent-skills config", or after onboarding a repo to confirm it's wired correctly.
+description: Validate a repo's Maintainerd setup and report what's wrong — the companion to `bootstrap`. Checks that `.claude/maintainerd.json` exists, parses, and conforms to the schema; that the configured paths, commands, and guidelines files resolve; that the GitHub labels the skills apply actually exist; that the daily-update roster only names installed skills; that the auto-dev state labels exist when the pipeline is enabled; that release config is coherent; and that the coverage ratchet holds — a floor is recorded, CI enforces it, the default branch's latest run is above it, and no commit has ever lowered it. With `--profile <path>` it additionally holds the repo to a fleet's repo profile: the files the profile requires, its GitHub settings (merge methods, branch protection, rulesets, labels) diffed key by key with the exact `gh api` call that fixes each difference, and a producer for every required check. That profile mode is report-only and never mutates GitHub. In an umbrella repo whose config carries a `workspace` block, `--workspace` additionally validates that block and then runs the whole check once per cloned repo in the list, emitting one combined report. Read-only diagnosis by default, grouped PASS/WARN/FAIL with a concrete fix for each finding; offers to create missing labels and points at `/bootstrap` or the guidelines files for the rest. Use when the user asks to "run doctor", "check the maintainerd setup", "validate the config", "why isn't <skill> working", "diagnose the agent-skills config", or after onboarding a repo to confirm it's wired correctly.
 ---
 
 # Diagnose a repo's Maintainerd setup
@@ -22,11 +22,19 @@ to regenerate X", "fill in `invariants.md`", "fix this key by hand".
 - `/doctor --run` — additionally *execute* `config.commands.*` to confirm they work (slower, has
   side effects: runs the test/build). Default is the static check (the command's script is defined),
   not running it.
+- `/doctor --profile <path>` — additionally run checks 14-16 against a
+  [repo profile](../../references/profile-schema.md): the files it requires, its GitHub settings, and
+  a producer for every required check. **Report-only** — it prints the `gh api` call that fixes each
+  difference and runs none of them, and `--fix` does not change that. Needs the repo's language,
+  which it takes from the workspace entry, from `--language <key>`, or by asking.
 - `/doctor --workspace` — only in a repo whose config carries a `workspace` block: validate that
   block (check 12), then run every per-repo check once per **cloned** repo in the list and print one
-  combined report. Composes with the other two — `--workspace --fix` still confirms each label creation, per
+  combined report. Composes with the others — `--workspace --fix` still confirms each label creation, per
   repo; `--workspace --run` executes every repo's commands, which is slow enough to be worth saying
-  out loud before you start.
+  out loud before you start; `--workspace --profile` holds every listed repo to the profile, with each
+  repo's `language` coming from its own entry in `workspace.repos`. With `--workspace` and no
+  `--profile`, the profile at `workspace.profile` is used when the block names one — the workspace
+  already declared which standard it holds its repos to, and an explicit `--profile` overrides it.
 
 ## The check
 
@@ -207,7 +215,9 @@ Validate it first — a fan-out driven by a broken list produces confident nonse
   slugs when the real finding is one missing token.
 - **`clone`**, where present, is a boolean → else **WARN** (a string `"false"` is truthy, so the repo
   would be cloned and swept exactly against the maintainer's intent).
-- **`profile`**, where set, points at a file that exists and parses as JSON → else **FAIL** (the
+- **`profile`**, where set, points at a file that exists and is a valid repo profile
+  ([the contract](../../references/profile-schema.md); `profile-resolve.sh --validate` is the check)
+  → else **FAIL** (the
   `language` values it is the only validator for go unchecked). Then every entry's `language` is a
   key in the profile's `languages` table → else **FAIL**, naming the unknown value and the keys that
   do exist. A repo whose language has no profile entry is an error, not a silent skip: it is exactly
@@ -222,7 +232,8 @@ Validate it first — a fan-out driven by a broken list produces confident nonse
 ### The fan-out
 
 Then, for each entry with `clone` not `false` whose checkout resolved, run **checks 1–11 and 13 in
-that repo** exactly as a plain `/doctor` would: `cd` into `<root>/<name>` and read *that repo's*
+that repo** — plus **14–16 when a profile is in play**, with that entry's `language` — exactly as a
+plain `/doctor` would: `cd` into `<root>/<name>` and read *that repo's*
 `.claude/maintainerd.json`. Never carry a value across the boundary — the umbrella repo's labels,
 branch and roster describe the umbrella repo and nothing else.
 
@@ -364,6 +375,132 @@ block is a lowering to nothing: **FAIL**, same finding. If the history isn't pre
 clone — `git rev-parse --is-shallow-repository` is `true`), report **couldn't verify** and name
 `--unshallow`; don't read one commit's worth of history as a clean ratchet.
 
+### 14. Files vs profile (`--profile` only)
+
+Every file the profile requires exists, and the two files the profile has an opinion about say what
+it says. Resolve first — everything here reads `effective`, never the profile directly:
+
+```bash
+plugins/core/scripts/profile-resolve.sh --profile <path> --repo <config.repo> --language <key>
+```
+
+The resolver **fails** on a profile whose shape is wrong, and on a language with no entry in the
+profile's `languages`. Both are a **FAIL** for this repo, reported as one finding with the resolver's
+message, and checks 14–16 stop there: nothing downstream can be judged against a standard that didn't
+resolve. Name the known language keys — the value is usually a typo or a language nobody added.
+
+Then, against `effective`:
+
+| Condition | Checked | Missing → |
+| --- | --- | --- |
+| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` exists | **FAIL** |
+| `files.codeowners` non-null | `.github/CODEOWNERS` exists **and contains that line** | **FAIL** |
+| `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
+| `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
+| `ci` is an effective check | `.github/workflows/ci.yml` exists and has a job producing the `ci` check | **FAIL** |
+| `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem | **FAIL** for the file, **WARN** per missing ecosystem |
+| `claudeSettings` present | `.claude/settings.json` declares each named marketplace and plugin | **WARN** per missing entry |
+| always | `.claude/maintainerd.json` agrees with the effective `commands` and `coverage` | **WARN** per key |
+
+**A language with no required checks scaffolds no workflow.** A `none`-language repo — tracked but
+not built here — has an empty `requiredChecks` and no `commands`, so there is no `ci` job to look for
+and its absence is not a finding. Check 16 has nothing to verify there either, and says so rather
+than reporting a clean run it didn't perform.
+
+**Existence, not content** — for every file but `CODEOWNERS`. A PR template and a review-rules file
+are the repo's prose; the profile says they exist, and a check that diffed their text would report
+every improvement as drift. `CODEOWNERS` is the exception because an ownership rule that varies per
+repo isn't one.
+
+**A `files.*` key the profile doesn't carry is not a requirement.** Report it as not specified, never
+as a pass and never as a missing file. Same for an absent `claudeSettings`: maintainerd cannot know
+which plugins a fleet installs, and a check that guessed would flag every repo. Say "not specified by
+the profile" so nobody reads silence as approval.
+
+**`maintainerd.json` vs the profile is a WARN, not a FAIL.** The profile seeds `bootstrap`; it
+doesn't own the file afterwards, and a repo that has moved its test command on purpose is a
+conversation, not a break. Name both values and the fix (`/bootstrap`, or update the profile).
+
+### 15. GitHub settings vs profile (`--profile` only) — report-only, forever
+
+Read the settings, diff them against `effective`, and print **every** difference with the exact
+`gh api` call that fixes it. **This check never mutates GitHub. Not with `--fix`, not with any flag.**
+`--fix` remains what it always was — offering to create missing labels — and settings live outside
+that boundary permanently, for the same reason `new-repo`'s mutating half needs a human: branch
+protection and merge methods are org configuration with the blast radius of a production write.
+
+Capture the reads, then hand them to the helper:
+
+```bash
+gh api "repos/<config.repo>"                                          > "$tmp/repo.json"
+gh api "repos/<config.repo>/branches/<branch>/protection"             > "$tmp/prot.json"    # 404 body is fine
+gh api "repos/<config.repo>/rulesets?includes_parents=true"                                 # then each by id
+gh api "repos/<config.repo>/labels" --paginate --jq '[.[].name]'      > "$tmp/labels.json"
+
+plugins/core/scripts/settings-diff.sh --repo <config.repo> --effective "$tmp/eff.json" \
+  --repo-settings "$tmp/repo.json" --protection "$tmp/prot.json" \
+  --rulesets "$tmp/rules.json" --labels "$tmp/labels.json"
+```
+
+Report its output as findings — each difference a **FAIL**, each `couldn't verify` as exactly that.
+Four things the helper encodes that a hand-rolled diff gets wrong:
+
+- **A read that failed is `couldn't verify`, not a finding.** Protection and rulesets need admin on
+  most repos, and GitHub answers "you may not read this" and "this branch has no protection" with
+  the same JSON shape — only its not-protected message means the branch is open. Everything else is
+  a read that never established the current state: no diff, and no replacement call. A drift report
+  that turns a read-only token into six fabricated diffs is worse than no report, and it is the
+  failure that gets weekly drift issues muted.
+- **Branch protection is replaced by its PUT, not patched.** One consolidated call carrying the whole
+  desired state, with the per-key differences listed above it as its reasons. A call that sends only
+  the diverging key clears every key it omits — including, on a bad day, the required checks. The body
+  is built from the branch **as read**, with the profile's opinions laid over it, so every key the
+  profile doesn't name — a locked branch, blocked creations, conversation resolution, push
+  restrictions, code-owner review — keeps the value it had. A profile that is silent about a key has
+  not asked for it to be switched off. Push restrictions, review bypass allowances and app-pinned
+  required checks are **translated** into the shapes the PUT accepts rather than dropped — a warning
+  above a call that still loses the thing is a warning read after the paste.
+- **The merge queue is a ruleset rule, not a protection key.** `rulesets?includes_parents=true`,
+  because an org-level parent ruleset can be what supplies it. The fix is a ruleset `POST`.
+  A ruleset can also supply required checks that classic protection doesn't list; a requirement from
+  either satisfies this check.
+- **`protection.requiredReviews.countsBotApproval` is not checked**, because GitHub has no setting
+  behind it. It records the fleet's intent for the review skills. Say so in the report rather than
+  passing it silently — an unchecked key that reads as a pass is how a report loses its meaning.
+
+Labels: missing ones are a **FAIL** (covered by check 6 too, and named once). **Labels the repo has
+and the profile doesn't are not drift** — never report them and never offer to delete one.
+
+### 16. Required-check producers (`--profile` only)
+
+For every name in `effective.requiredChecks`, something must produce a check run by that name.
+**A required check with no producer blocks every merge in the repo forever**, and it is invisible
+until someone opens a PR and watches it sit there.
+
+```bash
+# jobs in the default branch's workflows...
+git show "origin/<config.defaultBranch>:.github/workflows/<file>.yml"
+# ...and check runs that actually appeared on its latest commit
+gh api "repos/<config.repo>/commits/<config.defaultBranch>/check-runs" --paginate --jq '.check_runs[].name'
+```
+
+Match on the **check-run name, which is per job and not per workflow**: a job's `name:` if it has
+one, else its key under `jobs:`; a matrix job appears once per combination as `<name> (<values>)`; a
+job reached through a reusable workflow (`uses:`) reports under the *calling* job's name. A workflow
+file called `ci.yml` produces no check called `ci` unless a job in it is called that — this is the
+same rule check 13b uses, and the same mistake it exists to catch.
+
+- Produced by a job in a workflow on the default branch → **PASS**.
+- Not in any workflow, but present in the check-run list → **PASS**, and say where it came from: a
+  matrix combination, or an external app the workflow scan can't see.
+- Neither → **FAIL**: "`<name>` is required but nothing produces it — every PR will wait on a check
+  that never runs." The fix is to add the workflow **or** to remove the name from the profile, and
+  the report should say both, because which one is right isn't doctor's call.
+- The default branch has **no runs at all** → the check-run list proves nothing. Report
+  **couldn't verify** for the names the workflow scan didn't cover; don't call the repo conformant
+  and don't call it broken.
+- A name required on the branch that the profile doesn't list is check 15's finding, not this one.
+
 ## Report
 
 ```text
@@ -425,6 +562,34 @@ against is a workspace that reports green because four of its repos were quietly
 Fixes name the repo they belong to, since the maintainer will run them somewhere other than where
 they're reading the report.
 
+### The profile report, and the weekly drift issue
+
+Profile findings are reported in the same PASS/WARN/FAIL shape, in their own block, with **the fixing
+call under each difference** — that is the deliverable, not a footnote:
+
+```text
+Profile: repo-profile.json (v1) — language python-service, override "app"
+
+FAIL (3) — this repo is off the standard:
+  - repos/my-org/app allow_merge_commit is true, profile wants false
+        gh api --method PATCH "repos/my-org/app" -F allow_merge_commit=false
+  - main does not require the check "docker-smoke"
+        (see the single protection PUT below — it replaces the whole object)
+  - `docs` is required but nothing produces it — every PR will wait on a check that never runs.
+        Add the workflow, or drop "docs" from the profile's python-service requiredChecks.
+
+Couldn't verify (1): rulesets — the token lacks admin, so the merge queue is unchecked.
+Not checked here: protection.requiredReviews.countsBotApproval — GitHub has no setting behind it.
+```
+
+**This report is built to be an issue body.** The cadence it exists for is weekly, one issue per
+drifted repo: a scheduled run over a fleet's repo list, one issue per repo with findings titled
+`chore: repo standard drift` and labeled `automated`, **updated in place** rather than reopened or
+duplicated, and **closed** when the repo conforms. A human pastes the calls; nothing in the loop
+applies one. Maintainerd ships the check, not the scheduler — the repo list and the credentials live
+with the fleet. The full pattern is in
+[`../../references/profile-schema.md`](../../references/profile-schema.md).
+
 ## What not to do
 
 - **Don't rewrite the config or guidelines.** doctor diagnoses; `bootstrap` (or the user) fixes.
@@ -442,6 +607,16 @@ they're reading the report.
   Raising the floor is a suggestion for the maintainer; reading a stale green run is how a coverage
   regression reports as clean.
 - **Don't create labels silently** — always confirm, like `bootstrap`.
+- **Don't apply a settings change.** Check 15 prints `gh api` calls; a person runs them. This is not
+  a missing feature waiting for a `--fix` flag — settings writes are org configuration with the blast
+  radius of a production write, and `new-repo`, run interactively by a human with their own token, is
+  where they belong.
+- **Don't report a failed read as a difference.** Protection and rulesets need admin on most repos;
+  "couldn't verify" is the honest answer and a fabricated diff is how a drift report gets muted.
+- **Don't report labels the repo has and the profile doesn't**, and never offer to delete one. The
+  profile says what must exist, not what may.
+- **Don't fall back to the profile's `defaults` for an unknown language.** It's a FAIL naming the
+  known keys — the repo the profile doesn't name is the one that gets missed when it's applied.
 - **Don't infer a workspace.** `--workspace` runs off the `workspace` block and nothing else — not
   sibling directories, not `gh repo list <org>`. An inferred list is a list nobody reviewed.
 - **Don't let a workspace run report green with repos it never reached.** An unreachable repo is a

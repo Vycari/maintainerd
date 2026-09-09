@@ -8,8 +8,8 @@
     {
       "name": "maintainerd-core",
       "source": "./plugins/core",
-      "description": "Foundation: bootstrap (generates a repo's .claude/maintainerd.json config contract) and doctor (validates that setup and reports what's wrong), plus the canonical config schema every other plugin reads. Install this first.",
-      "version": "0.5.0"
+      "description": "Foundation: bootstrap (generates a repo's .claude/maintainerd.json config contract), doctor (validates that setup, and reports drift from a fleet's repo standard with --profile) and new-repo (creates or adopts a repo against that standard), plus the canonical config schema every other plugin reads. Install this first.",
+      "version": "0.6.0"
     },
     {
       "name": "repo-ops",

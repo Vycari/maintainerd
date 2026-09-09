@@ -1,0 +1,101 @@
+{
+  "profileVersion": 1,
+  "org": "my-org",
+
+  "defaults": {
+    "private": true,
+    "defaultBranch": "main",
+    "merge": { "squash": true, "mergeCommit": false, "rebase": false, "deleteBranchOnMerge": true },
+    "mergeQueue": { "enabled": true, "mergeMethod": "squash" },
+    "protection": {
+      "requiredLinearHistory": true,
+      "allowForcePushes": false,
+      "allowDeletions": false,
+      "strictRequiredChecks": false,
+      "requiredReviews": { "count": 1, "countsBotApproval": true, "dismissStale": true },
+      "enforceAdmins": false
+    },
+    "labels": [
+      "architecture", "test-quality", "security", "dependencies", "automated",
+      "auto:needs-info", "auto:planned", "auto:ready", "auto:in-progress",
+      "auto:parked", "auto:skip", "auto:pr", "deps:blocked"
+    ],
+    "review": {
+      "bots": ["coderabbitai[bot]"],
+      "approvalThreshold": "approved",
+      "responderTier": "capable",
+      "impasseRounds": 2,
+      "sameFileRoundCap": 3
+    },
+    "requireIssueForDeferredWork": true,
+    "files": {
+      "prTemplate": true,
+      "codeowners": "* @a-maintainer",
+      "greptileRules": false,
+      "claudeMd": true
+    },
+    "claudeSettings": {
+      "marketplaces": ["my-org/maintainerd"],
+      "plugins": ["maintainerd-core@maintainerd", "repo-ops@maintainerd", "audits@maintainerd"]
+    }
+  },
+
+  "languages": {
+    "python-service": {
+      "requiredChecks": ["ci", "docs"],
+      "coverage": { "mode": "ratchet", "target": 70 },
+      "commands": {
+        "format": "uv run ruff format --check",
+        "lint": "uv run ruff check",
+        "typecheck": "uv run mypy {source}",
+        "test": "uv run pytest",
+        "coverage": "uv run pytest --cov --cov-report=json:coverage-summary.json"
+      },
+      "dependabot": ["pip", "github-actions", "docker"]
+    },
+
+    "typescript-web": {
+      "requiredChecks": ["ci"],
+      "coverage": { "mode": "ratchet", "target": 50 },
+      "commands": {
+        "format": "npm run format:check",
+        "lint": "npm run lint",
+        "typecheck": "npm run typecheck",
+        "test": "npm test",
+        "coverage": "npm run coverage -- --coverage.reporter=json-summary"
+      },
+      "dependabot": ["npm", "github-actions"]
+    },
+
+    "shell": {
+      "requiredChecks": ["ci"],
+      "coverage": null,
+      "commands": {
+        "format": null,
+        "lint": "shellcheck -x $(git ls-files '*.sh')",
+        "typecheck": null,
+        "test": null,
+        "coverage": null
+      },
+      "dependabot": ["github-actions", "docker"]
+    },
+
+    "none": {
+      "requiredChecks": [],
+      "coverage": null,
+      "commands": {},
+      "dependabot": ["github-actions"]
+    }
+  },
+
+  "repoOverrides": {
+    "app": { "requiredChecks": ["ci", "migration-collision", "docker-smoke"] },
+
+    "infra": { "requiredChecks": ["invariants"] },
+
+    "site": {
+      "coverage": null,
+      "commands": { "test": "npm run build && npm run linkcheck", "coverage": null }
+    }
+  }
+}
