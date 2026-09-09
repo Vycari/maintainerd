@@ -75,6 +75,17 @@ scratch() { mktemp -d "${TMPDIR:-/tmp}/maintainerd-profile.XXXXXX"; }
 d="$(scratch)"
 trap 'rm -rf "$d"' EXIT INT TERM
 
+echo "both scripts parse"
+
+# Both scripts embed a long single-quoted jq program, where one unescaped apostrophe in a
+# comment silently ends the quote and turns the rest of the program into shell. `bash -n`
+# catches that in a millisecond; without it the symptom is twenty unrelated assertion
+# failures.
+for script in "$RESOLVE" "$DIFF"; do
+  run bash -n "$script"
+  expect_status "$(basename "$script") is syntactically valid shell" 0
+done
+
 echo "profile-resolve.sh — shape"
 
 run "$RESOLVE" --profile "$EXAMPLE" --validate
@@ -305,6 +316,44 @@ if printf '%s' "$body" | jq -e '
   ok "the replacement carries through every protection the profile has no opinion on"
 else
   bad "the replacement carries through every protection the profile has no opinion on" "$body"
+fi
+
+# "Zero approvals required" is a statement about approvals, not about the three other
+# safeguards that share the required_pull_request_reviews object.
+jq '.effective.protection.requiredReviews.count = 0' "$d/eff-app.json" > "$d/eff-noreview.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-noreview.json" --protection "$d/prot-extras.json"
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '
+      (.required_pull_request_reviews.required_approving_review_count == 0)
+      and (.required_pull_request_reviews.require_code_owner_reviews == true)
+      and (.required_pull_request_reviews.require_last_push_approval == true)' >/dev/null 2>&1; then
+  ok "requiring zero approvals does not null out code-owner review"
+else
+  bad "requiring zero approvals does not null out code-owner review" "$body"
+fi
+
+# A profile with no opinion about a protection key must not switch it off. `//` would:
+# it treats false as empty, so every disabled setting would fall through to the default.
+jq 'del(.effective.protection.enforceAdmins, .effective.protection.allowDeletions)' \
+   "$d/eff-app.json" > "$d/eff-silent.json"
+jq '.enforce_admins.enabled = true | .allow_deletions.enabled = true' \
+   "$d/prot-extras.json" > "$d/prot-strict.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-silent.json" --protection "$d/prot-strict.json"
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '(.enforce_admins == true) and (.allow_deletions == true)' >/dev/null 2>&1; then
+  ok "a key the profile is silent on keeps the value the branch already had"
+else
+  bad "a key the profile is silent on keeps the value the branch already had" "$body"
+fi
+
+# ...and a profile that explicitly says false still means false, rather than falling
+# through to the observed true.
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-strict.json"
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '(.enforce_admins == false) and (.allow_deletions == false)' >/dev/null 2>&1; then
+  ok "an explicit false in the profile still wins over the observed value"
+else
+  bad "an explicit false in the profile still wins over the observed value" "$body"
 fi
 
 # The two the GET cannot be round-tripped into a PUT are warned about, not dropped quietly.

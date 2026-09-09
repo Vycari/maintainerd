@@ -453,12 +453,12 @@ Four things the helper encodes that a hand-rolled diff gets wrong:
   failure that gets weekly drift issues muted.
 - **Branch protection is replaced by its PUT, not patched.** One consolidated call carrying the whole
   desired state, with the per-key differences listed above it as its reasons. A call that sends only
-  the diverging key clears every key it omits — including, on a bad day, the required checks. The
-  protections the profile has no opinion on (conversation resolution, a locked branch, blocked
-  creations, push restrictions, code-owner review) are **carried through** that body from the branch
-  as read, so a merge-method fix never switches off a safeguard as a side effect. The two the API
-  cannot round-trip — review bypass allowances, and app-pinned required checks — are warned about
-  instead.
+  the diverging key clears every key it omits — including, on a bad day, the required checks. The body
+  is built from the branch **as read**, with the profile's opinions laid over it, so every key the
+  profile doesn't name — a locked branch, blocked creations, conversation resolution, push
+  restrictions, code-owner review — keeps the value it had. A profile that is silent about a key has
+  not asked for it to be switched off. The two the API cannot round-trip — review bypass allowances,
+  and app-pinned required checks — are warned about instead.
 - **The merge queue is a ruleset rule, not a protection key.** `rulesets?includes_parents=true`,
   because an org-level parent ruleset can be what supplies it. The fix is a ruleset `POST`.
   A ruleset can also supply required checks that classic protection doesn't list; a requirement from

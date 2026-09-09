@@ -320,11 +320,20 @@ The per-key differences are still listed individually — that is what a human r
 listed as *reasons for the one call*, with the current value beside the wanted one. Repo-level
 settings (`PATCH repos/{slug}`) genuinely are a patch, so those are printed per key.
 
-**Protections the profile has no opinion on are carried through that call, not dropped.** The
-profile governs seven keys; branch protection has more. Required conversation resolution, a locked
-branch, blocked creations, fork syncing, push restrictions, code-owner review and last-push approval
-are read from the branch and written back unchanged, so that fixing a merge method never quietly
-switches off a safeguard the repo had. Two things the GET cannot be round-tripped into a PUT, and
+**The body is built from the branch as it is, with the profile's opinions laid over it.** The
+profile governs seven keys; branch protection has more. Every key the profile does *not* name — a
+locked branch, blocked creations, required conversation resolution, fork syncing, push restrictions,
+code-owner review, last-push approval — keeps the value the branch already had, so that fixing a
+merge method never quietly switches off a safeguard.
+
+Two consequences worth stating, because both are cases where the obvious implementation is wrong:
+
+- **A profile that is silent about a key has not asked for it to be off.** Silence inherits;
+  only an explicit value in the profile changes anything.
+- **`requiredReviews.count: 0` is a statement about approvals, not about the object they live in.**
+  Code-owner review and last-push approval share `required_pull_request_reviews` with the approval
+  count, and a body that nulls the whole object to express "no approvals required" switches those
+  off too. Two things the GET cannot be round-tripped into a PUT, and
 both are **warned about** rather than silently dropped:
 
 - **review bypass allowances** — the GET returns user/team/app objects the PUT will not accept, and

@@ -172,17 +172,29 @@ findings="$(jq -n \
            teams: [$prot.restrictions.teams[]?.slug],
            apps:  [$prot.restrictions.apps[]?.slug] } end;
 
-  def preserved_reviews:
-    if prot_present | not then {}
-    else
-      ( (if ($prot.required_pull_request_reviews | type) != "object" then {}
-         else
-           ( (if ($prot.required_pull_request_reviews | has("require_code_owner_reviews"))
-                then { require_code_owner_reviews: $prot.required_pull_request_reviews.require_code_owner_reviews } else {} end)
-           + (if ($prot.required_pull_request_reviews | has("require_last_push_approval"))
-                then { require_last_push_approval: $prot.required_pull_request_reviews.require_last_push_approval } else {} end) )
-         end) )
+  # The review block, like every other key here, is built as OBSERVED first and the
+  # opinions from the profile laid over it. A profile that says nothing about code-owner review
+  # is not a profile that asked for it to be switched off — and neither is one that says
+  # zero approvals are required, which is a statement about approvals and not about the
+  # other three safeguards that live in the same object.
+  def observed_reviews:
+    if (prot_present | not) or (($prot.required_pull_request_reviews | type) != "object") then {}
+    else ( $prot.required_pull_request_reviews
+           | { required_approving_review_count, dismiss_stale_reviews,
+               require_code_owner_reviews, require_last_push_approval }
+           | with_entries(select(.value != null)) )
     end;
+
+  def profile_reviews:
+    ($e.protection.requiredReviews // {}) as $r
+    | ( (if ($r | has("count")) then { required_approving_review_count: $r.count } else {} end)
+      + (if ($r | has("dismissStale")) then { dismiss_stale_reviews: $r.dismissStale } else {} end) );
+
+  # profile value, else what the branch already had, else off. Written out rather than
+  # reached with `//`, because the jq alternative operator treats `false` as empty and
+  # would quietly promote every disabled setting to the next fallback.
+  def resolve(prof; obs): if (prof) != null then (prof) elif (obs) != null then (obs) else false end;
+  def obs_enabled(k): if prot_present and (($prot[k] | type) == "object") then $prot[k].enabled else null end;
 
   # Two things the GET cannot be round-tripped into a PUT. They are warned about rather
   # than silently dropped, because the operator is the one who has to decide.
@@ -287,19 +299,17 @@ findings="$(jq -n \
     # a replacement computed from one would be a guess.
     protectionKnown: (prot_present or prot_unprotected),
     protectionBody: ({
-      required_status_checks: { strict: ($e.protection.strictRequiredChecks // false),
-                                contexts: ($e.requiredChecks // []) },
-      enforce_admins: ($e.protection.enforceAdmins // false),
+      required_status_checks:
+        { strict: resolve($e.protection.strictRequiredChecks;
+                          (if prot_present then $prot.required_status_checks.strict else null end)),
+          contexts: ($e.requiredChecks // []) },
+      enforce_admins: resolve($e.protection.enforceAdmins; obs_enabled("enforce_admins")),
       required_pull_request_reviews:
-        (if ($e.protection.requiredReviews.count // 0) > 0
-         then ({ required_approving_review_count: $e.protection.requiredReviews.count,
-                 dismiss_stale_reviews: ($e.protection.requiredReviews.dismissStale // false) }
-               + preserved_reviews)
-         else null end),
+        ((observed_reviews + profile_reviews) as $r | if ($r | length) == 0 then null else $r end),
       restrictions: preserved_restrictions,
-      required_linear_history: ($e.protection.requiredLinearHistory // false),
-      allow_force_pushes: ($e.protection.allowForcePushes // false),
-      allow_deletions: ($e.protection.allowDeletions // false)
+      required_linear_history: resolve($e.protection.requiredLinearHistory; obs_enabled("required_linear_history")),
+      allow_force_pushes: resolve($e.protection.allowForcePushes; obs_enabled("allow_force_pushes")),
+      allow_deletions: resolve($e.protection.allowDeletions; obs_enabled("allow_deletions"))
     } + preserved_protections) }
 ')"
 
