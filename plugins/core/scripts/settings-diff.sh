@@ -177,12 +177,24 @@ findings="$(jq -n \
   # is not a profile that asked for it to be switched off — and neither is one that says
   # zero approvals are required, which is a statement about approvals and not about the
   # other three safeguards that live in the same object.
+  # Bypass allowances round-trip exactly like `restrictions` do: the GET returns objects,
+  # the PUT wants logins and slugs. Converting them is a translation, not a guess, so they
+  # are preserved rather than warned about.
+  def preserved_bypass:
+    if prot_present | not then null
+    else ($prot.required_pull_request_reviews.bypass_pull_request_allowances // null)
+         | if . == null then null
+           else { users: [.users[]?.login], teams: [.teams[]?.slug], apps: [.apps[]?.slug] } end
+    end;
+
   def observed_reviews:
     if (prot_present | not) or (($prot.required_pull_request_reviews | type) != "object") then {}
-    else ( $prot.required_pull_request_reviews
-           | { required_approving_review_count, dismiss_stale_reviews,
-               require_code_owner_reviews, require_last_push_approval }
-           | with_entries(select(.value != null)) )
+    else ( ( $prot.required_pull_request_reviews
+             | { required_approving_review_count, dismiss_stale_reviews,
+                 require_code_owner_reviews, require_last_push_approval }
+             | with_entries(select(.value != null)) )
+         + (if preserved_bypass == null then {}
+            else { bypass_pull_request_allowances: preserved_bypass } end) )
     end;
 
   def profile_reviews:
@@ -196,20 +208,20 @@ findings="$(jq -n \
   def resolve(prof; obs): if (prof) != null then (prof) elif (obs) != null then (obs) else false end;
   def obs_enabled(k): if prot_present and (($prot[k] | type) == "object") then $prot[k].enabled else null end;
 
-  # Two things the GET cannot be round-tripped into a PUT. They are warned about rather
-  # than silently dropped, because the operator is the one who has to decide.
-  def unpreservable_findings:
-    if prot_present | not then []
-    else
-      ( if (($prot.required_pull_request_reviews.bypass_pull_request_allowances // {}
-             | [.users[]?, .teams[]?, .apps[]?] | length) > 0)
-          then [{ sev: "WARN", section: "protection",
-                  msg: "\($branch) has review bypass allowances, which the GET does not return in a shape the PUT accepts — the call below would DROP them. Re-add them in the UI afterwards, or apply this change there instead." }]
-          else [] end )
-      + ( if ([$prot.required_status_checks.checks[]? | select(.app_id != null)] | length) > 0
-            then [{ sev: "WARN", section: "protection",
-                    msg: "\($branch) pins its required checks to specific apps (checks[].app_id); the profile names contexts only, so the call below would unpin them — any app could then satisfy those checks." }]
-            else [] end )
+  # App-pinned required checks round-trip too: the PUT accepts
+  # `required_status_checks.checks[{context, app_id}]`, not only the bare `contexts` list.
+  # So a pinned check keeps its pin, and only a check the profile ADDS to a pinned branch
+  # is unpinned — which is worth one warning, because it is a real widening.
+  def obs_checks: if prot_present then ($prot.required_status_checks.checks // []) else [] end;
+  def has_app_pins: ([obs_checks[] | select(.app_id != null)] | length) > 0;
+
+  def unpinned_addition_findings:
+    if has_app_pins | not then []
+    else (($e.requiredChecks // []) - [obs_checks[] | select(.app_id != null) | .context])
+         | if length == 0 then []
+           else [{ sev: "WARN", section: "protection",
+                   msg: "\($branch) pins its existing required checks to specific apps, but the profile adds \(join(", ")) with no pin — any app could satisfy those. Pin them in the UI afterwards if that matters." }]
+           end
     end;
 
   # ── branch protection ──────────────────────────────────────────────────────
@@ -246,7 +258,7 @@ findings="$(jq -n \
       + ( ((prot_contexts) - ($e.requiredChecks // []))
           | map({ sev: "WARN", section: "protection",
                   msg: "\($branch) requires the check \"\(.)\", which the profile does not name. The PUT below would REMOVE it, because it replaces the whole object — add it to the profile'"'"'s requiredChecks first if it should stay." }) )
-      + unpreservable_findings
+      + unpinned_addition_findings
     end;
 
   # ── merge queue: a ruleset rule, not a protection key ──────────────────────
@@ -300,9 +312,13 @@ findings="$(jq -n \
     protectionKnown: (prot_present or prot_unprotected),
     protectionBody: ({
       required_status_checks:
-        { strict: resolve($e.protection.strictRequiredChecks;
-                          (if prot_present then $prot.required_status_checks.strict else null end)),
-          contexts: ($e.requiredChecks // []) },
+        ( { strict: resolve($e.protection.strictRequiredChecks;
+                            (if prot_present then $prot.required_status_checks.strict else null end)) }
+          + (if has_app_pins
+               then { checks: [ ($e.requiredChecks // [])[] as $c
+                                | { context: $c,
+                                    app_id: ([obs_checks[] | select(.context == $c) | .app_id] | first) } ] }
+               else { contexts: ($e.requiredChecks // []) } end) ),
       enforce_admins: resolve($e.protection.enforceAdmins; obs_enabled("enforce_admins")),
       required_pull_request_reviews:
         ((observed_reviews + profile_reviews) as $r | if ($r | length) == 0 then null else $r end),

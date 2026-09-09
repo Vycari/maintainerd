@@ -356,14 +356,32 @@ else
   bad "an explicit false in the profile still wins over the observed value" "$body"
 fi
 
-# The two the GET cannot be round-tripped into a PUT are warned about, not dropped quietly.
-jq '.required_pull_request_reviews.bypass_pull_request_allowances = {"users":[{"login":"someone"}],"teams":[],"apps":[]}
-    | .required_status_checks.checks = [{"context":"ci","app_id":15368}]' \
-   "$d/prot-extras.json" > "$d/prot-unpreservable.json"
-run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-unpreservable.json"
-expect_match "review bypass allowances are called out as unpreservable" \
-  "the call below would DROP them"
-expect_match "and so is unpinning app-scoped required checks" "would unpin them"
+# Bypass allowances and app-pinned checks both round-trip into the PUT, so they survive
+# the replacement rather than being warned about and then dropped by it. A warning above
+# a call that still loses the thing is a warning that gets read after the paste.
+jq '.required_pull_request_reviews.bypass_pull_request_allowances = {"users":[{"login":"someone"}],"teams":[{"slug":"admins"}],"apps":[]}
+    | .required_status_checks.checks = [{"context":"ci","app_id":15368},{"context":"docs","app_id":15368}]' \
+   "$d/prot-extras.json" > "$d/prot-pinned.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-pinned.json"
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '
+      (.required_pull_request_reviews.bypass_pull_request_allowances.users == ["someone"])
+      and (.required_pull_request_reviews.bypass_pull_request_allowances.teams == ["admins"])' >/dev/null 2>&1; then
+  ok "review bypass allowances survive the replacement"
+else
+  bad "review bypass allowances survive the replacement" "$body"
+fi
+if printf '%s' "$body" | jq -e '
+      (.required_status_checks | has("contexts") | not)
+      and ([.required_status_checks.checks[] | select(.context == "ci")] | .[0].app_id == 15368)
+      and ([.required_status_checks.checks[] | select(.context == "docs")] | .[0].app_id == 15368)
+      and ([.required_status_checks.checks[] | select(.context == "docker-smoke")] | .[0].app_id == null)' >/dev/null 2>&1; then
+  ok "an app-pinned check keeps its pin, and a check the profile adds carries none"
+else
+  bad "an app-pinned check keeps its pin, and a check the profile adds carries none" "$body"
+fi
+expect_match "and the checks the profile adds without a pin are called out" \
+  "with no pin — any app could satisfy those"
 
 # An exempt repo still has settings; the exemption is about coverage, not conformance.
 run "$DIFF" --repo my-org/site --effective "$d/eff-site.json" --repo-settings "$d/repo-ok.json"
