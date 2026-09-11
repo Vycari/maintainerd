@@ -119,6 +119,28 @@ run "$CHECK" --effective "$d/eff-noheadings.json" --headings --template "$d/tmpl
 expect_status "a profile with no prTemplateHeadings opinion always passes — existence-only" 0
 expect_no_match "nothing is printed" "missing:"
 
+echo "--headings — malformed prTemplateHeadings fails loudly rather than checking nothing"
+
+# profile-resolve.sh --validate rejects these at the profile now (see test-profile.sh), but this
+# script is handed an already-built `effective` object and cannot assume every caller validated
+# first — a hand-built test fixture, or a future caller that skips validation. `[]?` on a
+# non-array silently yields zero elements, which is indistinguishable from "nothing to check" —
+# exactly the false PASS this guards against.
+echo '{"effective":{"files":{"prTemplateHeadings":"## Human overview"}}}' > "$d/eff-scalar.json"
+run "$CHECK" --effective "$d/eff-scalar.json" --headings --template "$d/tmpl-decoy.md"
+expect_status "a bare string instead of an array fails, rather than checking zero headings" 1
+expect_match "naming the malformed shape, not silence" "invalid: files.prTemplateHeadings must be an array"
+
+echo '{"effective":{"files":{"prTemplateHeadings":false}}}' > "$d/eff-false-headings.json"
+run "$CHECK" --effective "$d/eff-false-headings.json" --headings --template "$d/tmpl-decoy.md"
+expect_status "false instead of an array fails the same way" 1
+expect_match "and says which type it actually got" "got boolean"
+
+echo '{"effective":{"files":{"prTemplateHeadings":["## ok", ""]}}}' > "$d/eff-emptyelem.json"
+run "$CHECK" --effective "$d/eff-emptyelem.json" --headings --template "$d/tmpl-decoy.md"
+expect_status "an array containing an empty-string element fails too" 1
+expect_match "naming the element rule" "must be an array of non-empty strings"
+
 echo "--resolve-source — the layout precondition"
 
 mkdir -p "$d/plug/references"
@@ -153,6 +175,25 @@ jq 'del(.defaults.files.prTemplateSource)' "$EXAMPLE" > "$d/plug/references/nosr
 run "$CHECK" --effective "$d/eff-nosrc.json" --resolve-source --profile "$d/plug/references/nosrc-profile.json"
 expect_status "prTemplateSource simply absent is not an error" 0
 if [ -z "$output" ]; then ok "and nothing is printed"; else bad "and nothing is printed" "$output"; fi
+
+echo "--resolve-source — malformed prTemplateSource fails loudly rather than reading as absent"
+
+# The bug this guards against: jq's `//` treats `false` exactly like `null`, so
+# `.prTemplateSource // empty` would silently read `"prTemplateSource": false` as "not set" and
+# exit 0 with nothing printed — indistinguishable from a profile that never mentioned the key.
+echo '{"effective":{"files":{"prTemplateSource":false}}}' > "$d/eff-false-source.json"
+run "$CHECK" --effective "$d/eff-false-source.json" --resolve-source --profile "$d/plug/references/nosrc-profile.json"
+expect_status "prTemplateSource: false is rejected, not read as not-set" 1
+expect_match "naming the type it actually got" "must be a string, got boolean"
+
+echo '{"effective":{"files":{"prTemplateSource":42}}}' > "$d/eff-number-source.json"
+run "$CHECK" --effective "$d/eff-number-source.json" --resolve-source --profile "$d/plug/references/nosrc-profile.json"
+expect_status "a number is rejected the same way" 1
+expect_match "naming its type too" "must be a string, got number"
+
+echo '{"effective":{"files":{"prTemplateSource":""}}}' > "$d/eff-empty-source.json"
+run "$CHECK" --effective "$d/eff-empty-source.json" --resolve-source --profile "$d/plug/references/nosrc-profile.json"
+expect_status "an empty string is rejected — a real string, but not a usable path" 1
 
 echo "usage errors"
 

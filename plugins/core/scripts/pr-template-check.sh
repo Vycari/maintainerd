@@ -17,15 +17,21 @@
 #   pr-template-check.sh --effective FILE --headings --template FILE
 #     Prints every prTemplateHeadings entry missing from FILE, one per line as "missing: <heading>".
 #     A heading is present only as an exact line (`grep -qxF`) — no markdown parsing.
-#     Exit 0: nothing missing, or the profile has no opinion (prTemplateHeadings absent/null/empty).
-#     Exit 1: at least one heading is missing (or the template file itself doesn't exist).
+#     Exit 0: nothing missing, or the profile has no opinion (prTemplateHeadings absent/null).
+#     Exit 1: at least one heading is missing (or the template file itself doesn't exist), OR
+#     prTemplateHeadings is present but not an array of non-empty strings — printed as
+#     "invalid: ..." rather than silently treated as no headings to check. `profile-resolve.sh
+#     --validate` already rejects this shape at the profile; this is the same guard for an
+#     `effective` object built by hand (a test fixture, a caller that skipped validation).
 #
 #   pr-template-check.sh --effective FILE --resolve-source --profile FILE
 #     Prints the resolved, existing path of effective.files.prTemplateSource on stdout and exits 0.
-#     Exit 0, no output: prTemplateSource is absent from `effective` — nothing to resolve, not an
-#     error.
+#     Exit 0, no output: prTemplateSource is absent (JSON null) from `effective` — nothing to
+#     resolve, not an error.
 #     Exit 1: prTemplateSource is set but can't be resolved, or resolves to a path that doesn't
-#     exist — the reason is on stderr.
+#     exist, or isn't a string at all (e.g. `false`) — the reason is on stderr. jq's `//` treats
+#     `false` the same as absent, so this checks the JSON type explicitly rather than writing
+#     `.prTemplateSource // empty`, which would silently read a malformed `false` as "not set".
 #
 # Requires: bash 3.2+, jq. No other dependency (no realpath, which isn't guaranteed present).
 #
@@ -81,6 +87,26 @@ command -v jq >/dev/null 2>&1 || { echo "pr-template-check: jq is not installed"
 case "$mode" in
   headings)
     [ -n "$template" ] || { echo "pr-template-check: --template is required with --headings" >&2; usage; exit 2; }
+    # Check the JSON shape before iterating, not by consequence of iterating. `[]?` on a
+    # non-array value (a string, `false`) suppresses jq's error and yields zero elements — the
+    # same value as a genuinely empty or absent list — so a malformed profile would otherwise
+    # check nothing and this mode would exit 0 as if every heading were present.
+    heading_shape="$(jq -r '
+      .effective.files.prTemplateHeadings as $h
+      | if $h == null then "absent"
+        elif ($h | type) != "array" then "not-array:" + ($h | type)
+        elif ($h | any(type != "string" or length == 0)) then "bad-element"
+        else "ok" end
+    ' "$effective")"
+    case "$heading_shape" in
+      absent) exit 0 ;;
+      not-array:*)
+        echo "invalid: files.prTemplateHeadings must be an array of strings, got ${heading_shape#not-array:}"
+        exit 1 ;;
+      bad-element)
+        echo "invalid: files.prTemplateHeadings must be an array of non-empty strings"
+        exit 1 ;;
+    esac
     missing=0
     # A `while read` loop over process substitution, not `for h in $(...)` — the latter splits
     # each heading on IFS before the loop body ever sees it, turning "## Human overview" into
@@ -91,14 +117,28 @@ case "$mode" in
         printf 'missing: %s\n' "$heading"
         missing=1
       fi
-    done < <(jq -r '.effective.files.prTemplateHeadings[]? // empty' "$effective")
+    done < <(jq -r '.effective.files.prTemplateHeadings[]' "$effective")
     exit "$missing"
     ;;
   resolve-source)
     [ -n "$profile" ] || { echo "pr-template-check: --profile is required with --resolve-source" >&2; usage; exit 2; }
     [ -f "$profile" ] || { echo "pr-template-check: no such profile: $profile" >&2; exit 1; }
-    source_rel="$(jq -r '.effective.files.prTemplateSource // empty' "$effective")"
-    [ -n "$source_rel" ] || exit 0   # nothing set — nothing to resolve, and not an error
+    # Type-checked explicitly, not `.prTemplateSource // empty` — `//` substitutes on `false`
+    # exactly as it does on `null`, so a profile with `"prTemplateSource": false` would silently
+    # read as "not set" instead of as the malformed value it is.
+    source_type="$(jq -r '.effective.files.prTemplateSource | type' "$effective")"
+    case "$source_type" in
+      "null") exit 0 ;;
+      string) : ;;
+      *)
+        echo "pr-template-check: files.prTemplateSource must be a string, got $source_type" >&2
+        exit 1 ;;
+    esac
+    source_rel="$(jq -r '.effective.files.prTemplateSource' "$effective")"
+    if [ -z "$source_rel" ]; then
+      echo "pr-template-check: files.prTemplateSource is an empty string" >&2
+      exit 1
+    fi
     case "$source_rel" in
       /*)
         resolved="$source_rel"
