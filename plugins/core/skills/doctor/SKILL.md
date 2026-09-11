@@ -414,32 +414,41 @@ ownership rule that varies per repo isn't one.
 
 **`files.prTemplateHeadings`, when the profile sets it, checks the template's shape without checking
 its prose.** After confirming `files.prTemplate`'s path exists (above), confirm each listed heading
-is present as a literal line — no markdown parsing, just a grep per heading:
+is present as a literal line — no markdown parsing. Call the helper rather than re-deriving this in
+shell here: a heading like `"## Human overview"` is one array element with a space in it, and an
+unquoted `for h in $(jq -r ...)` splits it into three separately meaningless grep targets before the
+loop body ever runs — a bug worth fixing once, not retyping correctly every time this check runs:
 
 ```bash
-missing=""
-for h in $(jq -r '.effective.files.prTemplateHeadings[]? // empty' "$tmp/eff.json"); do
-  grep -qxF "$h" .github/PULL_REQUEST_TEMPLATE.md || missing="$missing- $h
-"
-done
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" --headings \
+  --template .github/PULL_REQUEST_TEMPLATE.md
 ```
 
-Any missing heading → **FAIL**, naming every one that's missing (not just the first — a template
-missing both sections should say so once, not report the first FAIL and hide the second behind it).
-The fix is a copy-paste, not free text to write from scratch: when `effective.files.prTemplateSource`
-is also set, name it — "copy `<prTemplateSource>` (resolved against the profile's own plugin root,
-[`../../references/profile-schema.md`](../../references/profile-schema.md)) over
+Any line printed (`missing: <heading>`) → **FAIL**, naming every one that's missing (not just the
+first — a template missing both sections should say so once, not report the first FAIL and hide the
+second behind it). The fix is a copy-paste, not free text to write from scratch: when
+`effective.files.prTemplateSource` is also set, name it — "copy `<prTemplateSource>` over
 `.github/PULL_REQUEST_TEMPLATE.md`" — rather than asking the maintainer to reconstruct the missing
-section by hand. Without `prTemplateSource`, the fix is exactly the missing heading list above.
+section by hand. Without `prTemplateSource`, the fix is exactly the missing-heading list above.
 
-`prTemplateHeadings` absent from `effective.files` → today's existence-only check, unchanged; don't
-report a content finding for a profile that has no opinion on content.
+Exit `0` with nothing printed covers two cases the report should tell apart: every heading present,
+or `prTemplateHeadings` absent from `effective.files` — the latter is today's existence-only check,
+unchanged. Don't report a content finding for a profile that has no opinion on content.
 
-**`files.prTemplateSource` set but unresolvable is its own finding.** If `effective.files.prTemplateSource`
-is set and the path it resolves to (against the profile's own plugin root) doesn't exist, that's a
-**FAIL** in its own right — "the profile points bootstrap at `<path>`, which doesn't exist; a repo
-bootstrapped against it right now would silently fall back to the generic template" — independent of
-whether this repo's own template currently passes the heading check.
+**`files.prTemplateSource` set but unresolvable is its own finding.** The same helper resolves it:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" --resolve-source \
+  --profile <path>
+```
+
+No output and exit `0` covers both "not set" and "resolved, and the file exists" — nothing to
+report either way. A non-zero exit means it's set but couldn't be resolved (stderr says why — see
+[`../../references/profile-schema.md`](../../references/profile-schema.md)'s **Resolving
+`prTemplateSource`**) or resolved to a path that doesn't exist: **FAIL** — "the profile points
+`bootstrap` at `<prTemplateSource>`, which is unresolvable or missing (stderr has the exact reason);
+a repo bootstrapped against it right now would silently fall back to the built-in template" —
+independent of whether this repo's own template currently passes the heading check.
 
 **A `files.*` key the profile doesn't carry is not a requirement.** Report it as not specified, never
 as a pass and never as a missing file. Same for an absent `claudeSettings`: maintainerd cannot know

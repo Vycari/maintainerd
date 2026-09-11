@@ -200,21 +200,25 @@ If the user opted in during step 5, scaffold the file at the path you put in `pa
 (conventionally `.github/PULL_REQUEST_TEMPLATE.md`):
 
 **When `--profile <path> --language <key>` was passed** (or a caller such as `new-repo` handed down
-an already-resolved profile), resolve it first:
+an already-resolved profile), resolve it first. Both scripts live in this plugin, at
+`${CLAUDE_PLUGIN_ROOT}/scripts/` — not at a path relative to the consuming repo's working
+directory, which is what's actually checked out when this step runs:
 
 ```bash
-plugins/core/scripts/profile-resolve.sh --profile <path> --repo <config.repo> --language <key>
+"${CLAUDE_PLUGIN_ROOT}/scripts/profile-resolve.sh" --profile <path> --repo <config.repo> \
+  --language <key> > "$tmp/eff.json"
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" \
+  --resolve-source --profile <path>
 ```
 
-If `effective.files.prTemplateSource` is set, resolve it against **the profile's own plugin root** —
-the directory two levels up from the profile file itself (`<path>` is always
-`<pluginRoot>/references/<name>.json`, so `"references/pr-template.md"` resolves to
-`<pluginRoot>/references/pr-template.md`; the full rule, with why, is in
-[`../../references/profile-schema.md`](../../references/profile-schema.md)). If that file exists,
-**copy it verbatim** as the PR template — it is the fleet's canonical shape, and a generic scaffold
-here would only be replaced by hand later, one repo at a time. If the resolver fails, or the source
-path doesn't exist, say so and fall through to the built-in template below rather than failing the
-run — a bad profile shouldn't block bootstrapping the rest of the config.
+If that prints a path, **copy it verbatim** as the PR template — it is the fleet's canonical shape
+(`effective.files.prTemplateSource`, resolved against the profile's own plugin root; the exact rule,
+and why, is in [`../../references/profile-schema.md`](../../references/profile-schema.md)'s
+**Resolving `prTemplateSource`**), and a generic scaffold here would only be replaced by hand later,
+one repo at a time. If it prints nothing, `prTemplateSource` isn't set — fall through to the built-in
+template below. If it exits non-zero, `prTemplateSource` **is** set but couldn't be resolved (stderr
+says why); say so and fall through to the built-in template rather than failing the run — a bad
+profile shouldn't block bootstrapping the rest of the config.
 
 **Otherwise** (no profile, or no `prTemplateSource`), write the built-in template. It carries the
 same two-audience shape the profile-driven copy does — a glanceable section for a human reviewer, a
