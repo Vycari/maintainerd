@@ -393,7 +393,7 @@ Then, against `effective`:
 
 | Condition | Checked | Missing → |
 | --- | --- | --- |
-| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` exists | **FAIL** |
+| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` exists, **and**, when `files.prTemplateHeadings` is also set, contains every listed heading as an exact line | **FAIL** |
 | `files.codeowners` non-null | `.github/CODEOWNERS` exists **and contains that line** | **FAIL** |
 | `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
 | `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
@@ -407,10 +407,39 @@ not built here — has an empty `requiredChecks` and no `commands`, so there is 
 and its absence is not a finding. Check 16 has nothing to verify there either, and says so rather
 than reporting a clean run it didn't perform.
 
-**Existence, not content** — for every file but `CODEOWNERS`. A PR template and a review-rules file
-are the repo's prose; the profile says they exist, and a check that diffed their text would report
-every improvement as drift. `CODEOWNERS` is the exception because an ownership rule that varies per
-repo isn't one.
+**Existence, not content** — for every file but `CODEOWNERS` and the one content check below. A PR
+template and a review-rules file are the repo's prose; the profile says they exist, and a check that
+diffed their text would report every improvement as drift. `CODEOWNERS` is the exception because an
+ownership rule that varies per repo isn't one.
+
+**`files.prTemplateHeadings`, when the profile sets it, checks the template's shape without checking
+its prose.** After confirming `files.prTemplate`'s path exists (above), confirm each listed heading
+is present as a literal line — no markdown parsing, just a grep per heading:
+
+```bash
+missing=""
+for h in $(jq -r '.effective.files.prTemplateHeadings[]? // empty' "$tmp/eff.json"); do
+  grep -qxF "$h" .github/PULL_REQUEST_TEMPLATE.md || missing="$missing- $h
+"
+done
+```
+
+Any missing heading → **FAIL**, naming every one that's missing (not just the first — a template
+missing both sections should say so once, not report the first FAIL and hide the second behind it).
+The fix is a copy-paste, not free text to write from scratch: when `effective.files.prTemplateSource`
+is also set, name it — "copy `<prTemplateSource>` (resolved against the profile's own plugin root,
+[`../../references/profile-schema.md`](../../references/profile-schema.md)) over
+`.github/PULL_REQUEST_TEMPLATE.md`" — rather than asking the maintainer to reconstruct the missing
+section by hand. Without `prTemplateSource`, the fix is exactly the missing heading list above.
+
+`prTemplateHeadings` absent from `effective.files` → today's existence-only check, unchanged; don't
+report a content finding for a profile that has no opinion on content.
+
+**`files.prTemplateSource` set but unresolvable is its own finding.** If `effective.files.prTemplateSource`
+is set and the path it resolves to (against the profile's own plugin root) doesn't exist, that's a
+**FAIL** in its own right — "the profile points bootstrap at `<path>`, which doesn't exist; a repo
+bootstrapped against it right now would silently fall back to the generic template" — independent of
+whether this repo's own template currently passes the heading check.
 
 **A `files.*` key the profile doesn't carry is not a requirement.** Report it as not specified, never
 as a pass and never as a missing file. Same for an absent `claudeSettings`: maintainerd cannot know
@@ -570,13 +599,15 @@ call under each difference** — that is the deliverable, not a footnote:
 ```text
 Profile: repo-profile.json (v1) — language python-service, override "app"
 
-FAIL (3) — this repo is off the standard:
+FAIL (4) — this repo is off the standard:
   - repos/my-org/app allow_merge_commit is true, profile wants false
         gh api --method PATCH "repos/my-org/app" -F allow_merge_commit=false
   - main does not require the check "docker-smoke"
         (see the single protection PUT below — it replaces the whole object)
   - `docs` is required but nothing produces it — every PR will wait on a check that never runs.
         Add the workflow, or drop "docs" from the profile's python-service requiredChecks.
+  - .github/PULL_REQUEST_TEMPLATE.md is missing required heading(s): "## AI reviewer"
+        Copy references/pr-template.md from the profile's plugin root over the repo's template.
 
 Couldn't verify (1): rulesets — the token lacks admin, so the merge queue is unchecked.
 Not checked here: protection.requiredReviews.countsBotApproval — GitHub has no setting behind it.

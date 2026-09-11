@@ -30,6 +30,8 @@
     "requireIssueForDeferredWork": true,
     "files": {
       "prTemplate": true,
+      "prTemplateHeadings": ["## Human overview", "## AI reviewer"],
+      "prTemplateSource": "references/pr-template.md",
       "codeowners": "* @a-maintainer",
       "greptileRules": false,
       "claudeMd": true

@@ -169,6 +169,37 @@ run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/app --language no-such-languag
 expect_status "an unknown language is an error, never a fallback to defaults" 1
 expect_match  "and the message lists the keys that do exist" "python-service, typescript-web, shell, none"
 
+echo "profile-resolve.sh — files.prTemplateHeadings / files.prTemplateSource are opaque values"
+
+# Neither key is one of the four resolvable keys, so they live only in `defaults` and pass
+# straight through the merge untouched — maintainerd learns that the keys exist, never what
+# a fleet put in them. The shipped example carries both; these assertions are the only place
+# that would notice a resolver that started interpreting, dropping, or defaulting them.
+run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/worker --language typescript-web
+expect_status "a repo resolves fine with both optional keys present in the profile" 0
+expect_jq "prTemplateHeadings passes through as the array the profile wrote" \
+  '.effective.files.prTemplateHeadings == ["## Human overview", "## AI reviewer"]'
+expect_jq "prTemplateSource passes through as the exact string, unresolved and unmodified" \
+  '.effective.files.prTemplateSource == "references/pr-template.md"'
+
+# A profile that doesn't set them must not have them invented — an absent key means "today's
+# existence-only check", not "empty list" or "null", either of which a consumer could read as
+# an explicit (and different) instruction.
+jq 'del(.defaults.files.prTemplateHeadings, .defaults.files.prTemplateSource)' "$EXAMPLE" > "$d/noheadings.json"
+run "$RESOLVE" --profile "$d/noheadings.json" --repo my-org/worker --language typescript-web
+expect_status "and a profile that omits them resolves too" 0
+expect_jq "prTemplateHeadings stays absent rather than defaulting to something" \
+  '(.effective.files | has("prTemplateHeadings")) | not'
+expect_jq "so does prTemplateSource" '(.effective.files | has("prTemplateSource")) | not'
+
+# A `languages` or `repoOverrides` block is not allowed to carry `files` at all — the same
+# mechanism the `private` case above exercises, just naming the block these two keys
+# actually live in, since that's the one a real profile edit is most likely to get wrong.
+jq '.languages["shell"].files = {"prTemplateHeadings": ["## x"]}' "$EXAMPLE" > "$d/filesinlang.json"
+run "$RESOLVE" --profile "$d/filesinlang.json" --validate
+expect_status "files is fixed org-wide too — a language block may not carry it" 1
+expect_match  "naming the key and the block" 'languages.shell carries "files"'
+
 # A profile carrying both a short-name and a full-slug key for one repo: the slug wins,
 # and the duplication is called out rather than silently resolved.
 jq '.repoOverrides["my-org/site"] = {"requiredChecks": ["ci","slug-only"]}' "$EXAMPLE" > "$d/dupe.json"

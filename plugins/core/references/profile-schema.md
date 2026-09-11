@@ -257,6 +257,8 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `files.greptileRules` | bool | `.greptile/rules.md` must exist. Existence only. |
 | `files.claudeMd` | bool, optional | `CLAUDE.md` must exist. Existence only. |
 | `files.codeowners` | string \| `null` | `.github/CODEOWNERS` must exist **and contain this line**. The one file whose content the profile owns, because an ownership rule that varies per repo isn't one. |
+| `files.prTemplateHeadings` | array of strings, optional | Headings the PR template must carry, checked as exact lines (e.g. `"## Human overview"`) — no markdown parsing. `doctor --profile` checks 14 runs `grep -qxF` per heading against `files.prTemplate`'s path and names whichever ones are missing. Absent → today's existence-only check, unchanged. See **The one content check** below. |
+| `files.prTemplateSource` | string, optional | Path to the canonical PR template, resolved against **the profile's own plugin root** — see **Resolving `prTemplateSource`** below. `bootstrap` copies this file verbatim when scaffolding a PR template, instead of its built-in minimal one, whenever it resolves. Named in `doctor`'s fix hint for a missing heading, since the fix is a copy, not free text. |
 | `claudeSettings.marketplaces` | array of strings, optional | Marketplaces `.claude/settings.json` must declare. |
 | `claudeSettings.plugins` | array of strings, optional | Plugins it must enable, as `<plugin>@<marketplace>`. |
 
@@ -265,6 +267,27 @@ what is in it. A PR template and a review-rules file are prose the repo's mainta
 profile that pinned their text would make every repo's improvement a profile edit, and `doctor` would
 report a better template as drift. `new-repo` scaffolds a starting version; the repo owns it after
 that.
+
+**The one content check** (`files.prTemplateHeadings`). A fleet can standardize the *shape* of a PR
+template — e.g. one section for a human reviewer and a denser one for an AI reviewer — while leaving
+its prose to each repo, the same way `files.codeowners` standardizes one line without pinning the
+rest of `CODEOWNERS`. `prTemplateHeadings` is how: a list of headings, matched as exact lines against
+the template `files.prTemplate` already requires exists. It is deliberately not markdown-aware —
+`grep -qxF`, not a parser — because a heading is either on its own line verbatim or it isn't, and
+that is all the check promises. Neither key names what the headings mean; maintainerd learns that a
+list of required lines exists, never what a fleet decided to put in them.
+
+**Resolving `prTemplateSource`**. A repo profile always lives at `<pluginRoot>/references/<name>.json`
+— that's what a plugin's own skills pass as `--profile <path>`, and it's how `${CLAUDE_PLUGIN_ROOT}`
+resolves it too. `prTemplateSource` is a path relative to that same `<pluginRoot>`, so
+`"references/pr-template.md"` in a profile loaded from `plugins/my-ops/references/repo-profile.json`
+resolves to `plugins/my-ops/references/pr-template.md` — two directories up from the profile file,
+then back down through the given path. This is what lets the canonical template resolve in a
+standalone clone that only has the profile-owning plugin installed, not only in an umbrella checkout
+that happens to have every repo cloned side by side. A source path that doesn't resolve (the profile
+names a file that doesn't exist) is reported, never silently swallowed — `bootstrap` falls through to
+its built-in template and says why; `doctor` reports it as its own finding, since a `prTemplateSource`
+nothing can copy is exactly as broken as a missing heading.
 
 ### `claudeSettings` is optional, and its absence is reported
 
