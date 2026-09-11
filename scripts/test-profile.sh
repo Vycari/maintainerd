@@ -142,6 +142,13 @@ run "$RESOLVE" --profile "$d/headings-scalar.json" --validate
 expect_status "prTemplateHeadings must be an array, not a bare string" 1
 expect_match "naming the key" "defaults.files.prTemplateHeadings must be an array"
 
+# A heading with an embedded newline would be read downstream as two headings (pr-template-check.sh
+# reads `jq -r` output line by line), so one element could be satisfied by two separate lines.
+jq '.defaults.files.prTemplateHeadings = ["## Human overview\n## AI reviewer"]' "$EXAMPLE" > "$d/headings-newline.json"
+run "$RESOLVE" --profile "$d/headings-newline.json" --validate
+expect_status "a heading containing a newline is rejected" 1
+expect_match "naming the key" "defaults.files.prTemplateHeadings must be an array"
+
 jq '.defaults.files.prTemplateHeadings = [1, 2]' "$EXAMPLE" > "$d/headings-numbers.json"
 run "$RESOLVE" --profile "$d/headings-numbers.json" --validate
 expect_status "an array of the wrong element type is still rejected" 1

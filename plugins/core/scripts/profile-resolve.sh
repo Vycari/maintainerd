@@ -82,7 +82,7 @@ jq -e 'type == "object"' "$profile" >/dev/null 2>&1 \
 # round rather than one error at a time.
 errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" '
   def is_str_array: type == "array" and (all(.[]; type == "string"));
-  def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0));
+  def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0 and (test("\\n") | not)));
 
   def block_errors($where):
     . as $b
@@ -128,7 +128,7 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
         then
           ( if (.defaults.files | has("prTemplateHeadings")) and (.defaults.files.prTemplateHeadings != null)
                 and ((.defaults.files.prTemplateHeadings | is_nonempty_str_array) | not)
-              then ["defaults.files.prTemplateHeadings must be an array of non-empty strings"] else [] end )
+              then ["defaults.files.prTemplateHeadings must be an array of non-empty single-line strings"] else [] end )
           + ( if (.defaults.files | has("prTemplateSource")) and (.defaults.files.prTemplateSource != null)
                 and (((.defaults.files.prTemplateSource | type) != "string") or (.defaults.files.prTemplateSource | length) == 0)
               then ["defaults.files.prTemplateSource must be a non-empty string"] else [] end )
