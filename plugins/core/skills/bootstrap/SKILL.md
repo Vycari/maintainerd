@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Generate the maintainerd config contract for a repo — write `.claude/maintainerd.json` and scaffold `.claude/guidelines/{coding,testing,invariants}.md` so the repo-ops, audits, research, and auto-dev skills can run here. Inspects the repo (language, GitHub slug, default branch, source/test dirs, lint/format/build/test commands), confirms anything ambiguous, seeds starter guidelines from existing CLAUDE.md/AGENTS.md, and adopts the coverage ratchet by measuring the default branch on a fresh worktree and recording `coverage.floor`. `--adopt` runs only that last part, for a repo that is already bootstrapped. Use when the user asks to "bootstrap this repo", "set up maintainerd", "create the maintainerd config", "configure the maintainer skills", "onboard this repo to maintainerd", or when any other maintainerd skill reports the config is missing. Idempotent — re-running re-confirms and only rewrites changed keys; never clobbers hand-edited guideline prose.
+description: Generate the maintainerd config contract for a repo — write `.claude/maintainerd.json` and scaffold `.claude/guidelines/{coding,testing,invariants}.md` so the repo-ops, audits, research, and auto-dev skills can run here. Inspects the repo (language, GitHub slug, default branch, source/test dirs, lint/format/build/test commands), confirms anything ambiguous, seeds starter guidelines from existing CLAUDE.md/AGENTS.md, and adopts the coverage ratchet by measuring the default branch on a fresh worktree and recording `coverage.floor`. `--adopt` runs only that last part, for a repo that is already bootstrapped. With `--profile <path> --language <key>`, the PR-template step copies the profile's canonical template (`files.prTemplateSource`) instead of the built-in one, when it resolves. Use when the user asks to "bootstrap this repo", "set up maintainerd", "create the maintainerd config", "configure the maintainer skills", "onboard this repo to maintainerd", or when any other maintainerd skill reports the config is missing. Idempotent — re-running re-confirms and only rewrites changed keys; never clobbers hand-edited guideline prose.
 ---
 
 # Bootstrap a repo for the Maintainerd toolkit
@@ -30,6 +30,16 @@ Every key you write must match it.
   config. This is what you run to put an already-bootstrapped repo under the ratchet, and what
   `doctor`'s check 13 names when it finds no floor. It requires an existing
   `.claude/maintainerd.json` — it never writes one.
+- `/bootstrap --profile <path> --language <key>` — same full pass (or the same `--adopt`), but step 7
+  additionally resolves `<path>` ([the repo-profile contract](../../references/profile-schema.md))
+  for this repo's `<key>` and, when `effective.files.prTemplateSource` resolves to a real file, copies
+  it as the PR template instead of the built-in one. This is the only thing `--profile` changes today
+  — every other command, path, and label bootstrap still detects and confirms exactly as it would
+  without one. (`new-repo` already seeds the rest of bootstrap's answers from a profile when it calls
+  this skill as its own step 6; a bare `/bootstrap --profile` is for bringing an *existing* repo's PR
+  template up to the fleet's canonical shape without running the whole `new-repo` flow on it.) An
+  unresolvable `--profile` path, or a `--language` absent from its `languages`, is reported and
+  treated as no profile — step 7 falls back to the built-in template rather than failing the run.
 
 ## Workflow
 
@@ -186,23 +196,54 @@ safe to edit freely.
 
 ### 7. Create the PR template (if agreed)
 
-If the user opted in during step 5, write the minimal template at the path you put in
-`paths.prTemplate` (conventionally `.github/PULL_REQUEST_TEMPLATE.md`):
+If the user opted in during step 5, scaffold the file at the path you put in `paths.prTemplate`
+(conventionally `.github/PULL_REQUEST_TEMPLATE.md`):
+
+**When `--profile <path> --language <key>` was passed** (or a caller such as `new-repo` handed down
+an already-resolved profile), resolve it first. Both scripts live in this plugin, at
+`${CLAUDE_PLUGIN_ROOT}/scripts/` — not at a path relative to the consuming repo's working
+directory, which is what's actually checked out when this step runs:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/profile-resolve.sh" --profile <path> --repo <config.repo> \
+  --language <key> > "$tmp/eff.json"
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" \
+  --resolve-source --profile <path>
+```
+
+If that prints a path, **copy it verbatim** as the PR template — it is the fleet's canonical shape
+(`effective.files.prTemplateSource`, resolved against the profile's own plugin root; the exact rule,
+and why, is in [`../../references/profile-schema.md`](../../references/profile-schema.md)'s
+**Resolving `prTemplateSource`**), and a generic scaffold here would only be replaced by hand later,
+one repo at a time. If it prints nothing, `prTemplateSource` isn't set — fall through to the built-in
+template below. If it exits non-zero, `prTemplateSource` **is** set but couldn't be resolved (stderr
+says why); say so and fall through to the built-in template rather than failing the run — a bad
+profile shouldn't block bootstrapping the rest of the config.
+
+**Otherwise** (no profile, or no `prTemplateSource`), write the built-in template. It carries the
+same two-audience shape the profile-driven copy does — a glanceable section for a human reviewer, a
+denser one for an AI reviewer or a future session reading the PR as history, and one slot that is the
+repo's own to fill in — so a profile-less adopter isn't starting from a different shape it will have
+to migrate away from later:
 
 ```markdown
-## Summary
+## Human overview
 
-<!-- What this PR does and why. Link the issue: Fixes #<number>. -->
+<!-- 2–4 sentences: what this PR does and why. Link the issue: Fixes #<number>. -->
 
-## Changes
+### Human required (optional)
 
--
+<!-- Only when a person must do or decide something before or after merge: a migration step, a
+settings/secrets change, a product call. One line each, imperative. Drop this section when empty. -->
 
-## Test plan
+- [ ]
 
-<!-- How the change was verified. -->
+## AI reviewer
 
-## Checklist
+<!-- Denser: what the diff does, by subsystem; anything a reviewer — bot or a future session — should
+look at hardest; what was verified and how. -->
+
+### Checklist (repo-specific)
 
 - [ ] Tests pass locally
 - [ ] Documentation updated (or N/A with a reason)

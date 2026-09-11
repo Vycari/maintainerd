@@ -91,6 +91,9 @@ jobs:
       - name: The repo-profile helpers resolve and diff correctly, and fail closed
         run: ./scripts/test-profile.sh
 
+      - name: The PR-template helper checks headings and resolves prTemplateSource correctly
+        run: ./scripts/test-pr-template-check.sh
+
       - name: Vendored reference docs are in sync with the canonical
         run: ./scripts/sync-references.sh --check
 

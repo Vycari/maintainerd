@@ -257,6 +257,8 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `files.greptileRules` | bool | `.greptile/rules.md` must exist. Existence only. |
 | `files.claudeMd` | bool, optional | `CLAUDE.md` must exist. Existence only. |
 | `files.codeowners` | string \| `null` | `.github/CODEOWNERS` must exist **and contain this line**. The one file whose content the profile owns, because an ownership rule that varies per repo isn't one. |
+| `files.prTemplateHeadings` | array of non-empty strings, optional | Headings the PR template must carry, checked as exact lines (e.g. `"## Human overview"`) — no markdown parsing. `doctor --profile` check 14 runs [`pr-template-check.sh`](../scripts/pr-template-check.sh) `--headings`, which names whichever ones are missing. Absent → today's existence-only check, unchanged. `profile-resolve.sh --validate` rejects the key if it's present but not an array, or contains a non-string or empty-string element — a malformed value here is read by *type*, not by presence, downstream, so it fails at the profile rather than being silently treated as no headings to check. See **The one content check** below. |
+| `files.prTemplateSource` | non-empty string, optional | Path to the canonical PR template, resolved against **the profile's own plugin root** — see **Resolving `prTemplateSource`** below. `bootstrap` copies this file verbatim when scaffolding a PR template, instead of its built-in minimal one, whenever it resolves. Named in `doctor`'s fix hint for a missing heading, since the fix is a copy, not free text. `profile-resolve.sh --validate` rejects a present-but-non-string or empty-string value — in particular `false`, which `.prTemplateSource // empty` would otherwise read exactly like an absent key. |
 | `claudeSettings.marketplaces` | array of strings, optional | Marketplaces `.claude/settings.json` must declare. |
 | `claudeSettings.plugins` | array of strings, optional | Plugins it must enable, as `<plugin>@<marketplace>`. |
 
@@ -265,6 +267,42 @@ what is in it. A PR template and a review-rules file are prose the repo's mainta
 profile that pinned their text would make every repo's improvement a profile edit, and `doctor` would
 report a better template as drift. `new-repo` scaffolds a starting version; the repo owns it after
 that.
+
+**The one content check** (`files.prTemplateHeadings`). A fleet can standardize the *shape* of a PR
+template — e.g. one section for a human reviewer and a denser one for an AI reviewer — while leaving
+its prose to each repo, the same way `files.codeowners` standardizes one line without pinning the
+rest of `CODEOWNERS`. `prTemplateHeadings` is how: a list of headings, matched as exact lines against
+the template `files.prTemplate` already requires exists. It is deliberately not markdown-aware —
+`grep -qxF`, not a parser — because a heading is either on its own line verbatim or it isn't, and
+that is all the check promises. Neither key names what the headings mean; maintainerd learns that a
+list of required lines exists, never what a fleet decided to put in them.
+
+**Resolving `prTemplateSource`**. `prTemplateSource` is always a *relative* path when the profile is
+also organized the way every current caller organizes it — a plugin's own skill loading its own
+profile with `--profile <path>`, where that path is `<pluginRoot>/references/<name>.json` (the same
+layout `${CLAUDE_PLUGIN_ROOT}` resolves) — because then `"references/pr-template.md"` means
+`<pluginRoot>/references/pr-template.md`: two directories up from the profile file, then back down
+through the given path. That is what lets the canonical template resolve in a standalone clone that
+only has the profile-owning plugin installed, not only in an umbrella checkout that happens to have
+every repo cloned side by side.
+
+That derivation is **conditional on the layout, not a fact about paths in general** — a profile
+loaded from anywhere else has no "two levels up" that means anything. So the rule checks its own
+precondition rather than assuming it: `prTemplateSource` resolves against the directory two levels
+above the profile file **only when the profile's immediate parent directory is literally named
+`references`**; otherwise resolution fails closed; naming the fix (an absolute path, or moving the
+profile to that layout) rather than silently deriving a directory nothing guarantees is meaningful.
+An absolute `prTemplateSource` (leading `/`) skips derivation entirely and is used as given — the
+one shape that works regardless of where the profile lives, and the fix a profile outside the
+`references/` layout should reach for.
+
+Both `doctor` and `bootstrap` call the same script for this rather than each carrying its own copy
+of the rule — [`../scripts/pr-template-check.sh`](../scripts/pr-template-check.sh) `--resolve-source`
+— for the reason `profile-resolve.sh` exists at all: two prose copies of a resolution rule are two
+resolution rules. A source path that doesn't resolve (wrong layout, or the profile names a file that
+doesn't exist) is reported, never silently swallowed — `bootstrap` falls through to its built-in
+template and says why; `doctor` reports it as its own finding, since a `prTemplateSource` nothing can
+copy is exactly as broken as a missing heading.
 
 ### `claudeSettings` is optional, and its absence is reported
 
@@ -405,12 +443,13 @@ with `mode: "ratchet"`; `requiredChecks` is an array of strings.
 
 ## The helpers
 
-Both are bash 3.2 + `jq`, no other dependency, and both fail closed.
+All three are bash 3.2 + `jq`, no other dependency, and all fail closed.
 
 | Script | What it does |
 | --- | --- |
 | [`../scripts/profile-resolve.sh`](../scripts/profile-resolve.sh) | Validates the profile's shape, then prints one repo's effective settings as JSON. `--validate` checks the file alone. Every rule above lives here rather than in prose the two skills would drift on. |
 | [`../scripts/settings-diff.sh`](../scripts/settings-diff.sh) | Diffs the effective settings against `gh api` output the caller has already captured, and prints each difference with the exact call that fixes it. It reads files, never the network, so the same diff can be dry-run, tested, and reviewed before anything is applied. |
+| [`../scripts/pr-template-check.sh`](../scripts/pr-template-check.sh) | `--headings`: checks `effective.files.prTemplateHeadings` against a template file, naming whichever headings are missing. `--resolve-source`: resolves `effective.files.prTemplateSource` per **Resolving `prTemplateSource`** above, or fails closed with the reason. Both `doctor` and `bootstrap` call it rather than carrying their own copy of either rule. |
 
 Unlike the coverage scripts, these are **not vendored into consuming repos**: they run inside a
 skill, where the plugin is installed, and never in the consuming repo's CI.

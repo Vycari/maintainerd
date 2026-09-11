@@ -393,7 +393,7 @@ Then, against `effective`:
 
 | Condition | Checked | Missing → |
 | --- | --- | --- |
-| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` exists | **FAIL** |
+| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` exists, **and**, when `files.prTemplateHeadings` is also set, contains every listed heading as an exact line | **FAIL** |
 | `files.codeowners` non-null | `.github/CODEOWNERS` exists **and contains that line** | **FAIL** |
 | `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
 | `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
@@ -407,10 +407,48 @@ not built here — has an empty `requiredChecks` and no `commands`, so there is 
 and its absence is not a finding. Check 16 has nothing to verify there either, and says so rather
 than reporting a clean run it didn't perform.
 
-**Existence, not content** — for every file but `CODEOWNERS`. A PR template and a review-rules file
-are the repo's prose; the profile says they exist, and a check that diffed their text would report
-every improvement as drift. `CODEOWNERS` is the exception because an ownership rule that varies per
-repo isn't one.
+**Existence, not content** — for every file but `CODEOWNERS` and the one content check below. A PR
+template and a review-rules file are the repo's prose; the profile says they exist, and a check that
+diffed their text would report every improvement as drift. `CODEOWNERS` is the exception because an
+ownership rule that varies per repo isn't one.
+
+**`files.prTemplateHeadings`, when the profile sets it, checks the template's shape without checking
+its prose.** After confirming `files.prTemplate`'s path exists (above), confirm each listed heading
+is present as a literal line — no markdown parsing. Call the helper rather than re-deriving this in
+shell here: a heading like `"## Human overview"` is one array element with a space in it, and an
+unquoted `for h in $(jq -r ...)` splits it into three separately meaningless grep targets before the
+loop body ever runs — a bug worth fixing once, not retyping correctly every time this check runs:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" --headings \
+  --template .github/PULL_REQUEST_TEMPLATE.md
+```
+
+Any line printed (`missing: <heading>`) → **FAIL**, naming every one that's missing (not just the
+first — a template missing both sections should say so once, not report the first FAIL and hide the
+second behind it). The fix is a copy-paste, not free text to write from scratch: when
+`effective.files.prTemplateSource` is also set, name it — "copy `<prTemplateSource>` over
+`.github/PULL_REQUEST_TEMPLATE.md`" — rather than asking the maintainer to reconstruct the missing
+section by hand. Without `prTemplateSource`, the fix is exactly the missing-heading list above.
+
+Exit `0` with nothing printed covers two cases the report should tell apart: every heading present,
+or `prTemplateHeadings` absent from `effective.files` — the latter is today's existence-only check,
+unchanged. Don't report a content finding for a profile that has no opinion on content.
+
+**`files.prTemplateSource` set but unresolvable is its own finding.** The same helper resolves it:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-template-check.sh" --effective "$tmp/eff.json" --resolve-source \
+  --profile <path>
+```
+
+No output and exit `0` covers both "not set" and "resolved, and the file exists" — nothing to
+report either way. A non-zero exit means it's set but couldn't be resolved (stderr says why — see
+[`../../references/profile-schema.md`](../../references/profile-schema.md)'s **Resolving
+`prTemplateSource`**) or resolved to a path that doesn't exist: **FAIL** — "the profile points
+`bootstrap` at `<prTemplateSource>`, which is unresolvable or missing (stderr has the exact reason);
+a repo bootstrapped against it right now would silently fall back to the built-in template" —
+independent of whether this repo's own template currently passes the heading check.
 
 **A `files.*` key the profile doesn't carry is not a requirement.** Report it as not specified, never
 as a pass and never as a missing file. Same for an absent `claudeSettings`: maintainerd cannot know
@@ -570,13 +608,15 @@ call under each difference** — that is the deliverable, not a footnote:
 ```text
 Profile: repo-profile.json (v1) — language python-service, override "app"
 
-FAIL (3) — this repo is off the standard:
+FAIL (4) — this repo is off the standard:
   - repos/my-org/app allow_merge_commit is true, profile wants false
         gh api --method PATCH "repos/my-org/app" -F allow_merge_commit=false
   - main does not require the check "docker-smoke"
         (see the single protection PUT below — it replaces the whole object)
   - `docs` is required but nothing produces it — every PR will wait on a check that never runs.
         Add the workflow, or drop "docs" from the profile's python-service requiredChecks.
+  - .github/PULL_REQUEST_TEMPLATE.md is missing required heading(s): "## AI reviewer"
+        Copy references/pr-template.md from the profile's plugin root over the repo's template.
 
 Couldn't verify (1): rulesets — the token lacks admin, so the merge queue is unchecked.
 Not checked here: protection.requiredReviews.countsBotApproval — GitHub has no setting behind it.

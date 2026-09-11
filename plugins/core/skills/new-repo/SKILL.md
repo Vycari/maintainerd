@@ -118,7 +118,7 @@ with a stub is a scaffolder people turn off.
 
 | Written when | Path | Content |
 | --- | --- | --- |
-| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` | The minimal template from `bootstrap` step 7. |
+| `files.prTemplate` | `.github/PULL_REQUEST_TEMPLATE.md` | `bootstrap` step 7's output — the profile's `files.prTemplateSource`, verbatim, when it resolves; otherwise the built-in two-audience template. This skill always has an `effective` profile in hand, so pass it straight through to the `bootstrap` call in step 6 rather than re-deciding here. |
 | `files.codeowners` non-null | `.github/CODEOWNERS` | The profile's line, verbatim. This is the one file whose *content* the profile owns. |
 | `files.greptileRules` | `.greptile/rules.md` | A stub with a header naming the repo. Content is the repo's to write. |
 | `files.claudeMd` | `CLAUDE.md` | A stub: what the repo is, its architecture in a paragraph, and a pointer to the fleet's house rules. |
@@ -195,8 +195,9 @@ contents live. Step 7 is where an unproduced check is caught, and it is a stop, 
 ### 6. Run `bootstrap`
 
 `.claude/maintainerd.json` is `bootstrap`'s file, not this skill's — writing it here would be a
-second generator of the same contract, drifting from the first. Run `/bootstrap` and seed its answers
-from the effective profile:
+second generator of the same contract, drifting from the first. Run `/bootstrap --profile <path>
+--language <key>` (the same `<path>`/`<key>` this run resolved against) and seed its remaining
+answers from the effective profile:
 
 - `defaultBranch`, `commands.*` — from the effective values, not from detection.
 - `review` and `createPr.requireIssueForDeferredWork` — from the profile's `defaults`.
@@ -204,6 +205,8 @@ from the effective profile:
 - Coverage: when `effective.coverage` is non-null, let `bootstrap` step 10 vendor the scripts and
   measure the floor on a fresh worktree of the default branch. When it is `null`, `commands.coverage`
   is `null` too (the resolver guarantees that), so step 10 skips itself and the repo is exempt.
+- PR template: passing `--profile`/`--language` through is what makes step 7's canonical-template copy
+  fire (see `bootstrap`'s own docs) — this skill doesn't reimplement that choice.
 
 On a brand-new empty repo the measurement has nothing to measure: `bootstrap` writes no floor and
 says so, which is the honest "not yet adopted" state. Adopt the floor on the first real commit.

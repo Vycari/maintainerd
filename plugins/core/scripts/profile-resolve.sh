@@ -82,6 +82,7 @@ jq -e 'type == "object"' "$profile" >/dev/null 2>&1 \
 # round rather than one error at a time.
 errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" '
   def is_str_array: type == "array" and (all(.[]; type == "string"));
+  def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0 and (test("\\n") | not)));
 
   def block_errors($where):
     . as $b
@@ -118,6 +119,20 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
       else [] end )
   , ( if (.org | type) != "string" or (.org | length) == 0 then ["org must be a non-empty string"] else [] end )
   , ( if (.defaults | type) != "object" then ["defaults must be an object"] else [] end )
+  # `files.prTemplateHeadings`/`files.prTemplateSource` are the two keys pr-template-check.sh
+  # reads by value type rather than by presence, so a malformed one cannot pass silently
+  # through resolution and be read as "not set" downstream (jq treats `false` the same as
+  # absent through the `//` operator — the exact bug this validates against, one layer up
+  # from where the helper script also has to guard the same case).
+  , ( if (.defaults | type) == "object" and (.defaults.files? | type) == "object"
+        then
+          ( if (.defaults.files | has("prTemplateHeadings")) and (.defaults.files.prTemplateHeadings != null)
+                and ((.defaults.files.prTemplateHeadings | is_nonempty_str_array) | not)
+              then ["defaults.files.prTemplateHeadings must be an array of non-empty single-line strings"] else [] end )
+          + ( if (.defaults.files | has("prTemplateSource")) and (.defaults.files.prTemplateSource != null)
+                and (((.defaults.files.prTemplateSource | type) != "string") or (.defaults.files.prTemplateSource | length) == 0)
+              then ["defaults.files.prTemplateSource must be a non-empty string"] else [] end )
+        else [] end )
   , ( if (.languages | type) != "object" then ["languages must be an object"]
       elif (.languages | length) == 0 then ["languages is empty — nothing can resolve against this profile"]
       else [] end )
