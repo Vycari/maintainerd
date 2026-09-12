@@ -48,7 +48,10 @@ with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/
 4. **Flags are read from argv words, not from the raw text.** The same quote-aware splitting turns
    one invocation into words, so `--body "reviewer asked: please use --draft next time"` is a body
    and not a `--draft` flag, `--body "pass --label skip"` applies no label, and a `--title "fix
-   --body-file parsing"` doesn't hijack body extraction. Only a word that *is* the flag counts.
+   --body-file parsing"` doesn't hijack body extraction. Only a word that *is* the flag counts —
+   in every spelling gh accepts: long, `--flag=value`, the shorthands (`-b`, `-F`, `-d`, `-l`),
+   and short-option bundles, where the value-taking flag is the last character (`-dl skip` is a
+   draft plus a label).
 
 Every matching invocation is then checked **on its own** — a compound command that opens two PRs
 is two checks, each against its own flags, and a bodyless or non-PR command is never backfilled

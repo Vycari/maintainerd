@@ -540,6 +540,35 @@ expect "$SKIP_GUARD" warn "an assignment with a quoted, spaced value before gh" 
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'GH_PAGER="less -R" gh pr create --label greptile:skip --title x'
 
 echo
+echo "== gh's own short flags count too (-b, -F, -d, -l, and bundles) =="
+expect "$TEMPLATE_GUARD" deny "-b shorthand for --body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -t x -b "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "-b shorthand carrying a complete body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -t x -b "## Human overview
+a
+
+## AI reviewer
+b"'
+d=$(repo "$TEMPLATE" "$CONFIG_PLAIN")
+printf '## Human overview\nonly this one\n' > "$d/body.md"
+expect "$TEMPLATE_GUARD" deny "-F shorthand for --body-file" "$d" 'gh pr create -t x -F body.md'
+expect "$TEMPLATE_GUARD" deny "a short-option bundle whose last flag is -b" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -db "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "time -p gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'time -p gh pr create --body "## Human overview
+only"'
+expect "$SKIP_GUARD" none "-d shorthand for --draft suppresses the warning" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -d --label greptile:skip --title x'
+expect "$SKIP_GUARD" none "a -dl bundle is both a draft and a label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -dl greptile:skip --title x'
+expect "$SKIP_GUARD" warn "a -l bundle without d still warns" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -tl greptile:skip'
+expect "$SKIP_GUARD" warn "time -p gh pr create with the skip label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'time -p gh pr create --label greptile:skip --title x'
+
+echo
 echo "== both guards fail LOUDLY, not silently, if the shared scanner is missing =="
 NOLIB=$(mktemp -d)
 cp "$TEMPLATE_GUARD" "$SKIP_GUARD" "$NOLIB/"

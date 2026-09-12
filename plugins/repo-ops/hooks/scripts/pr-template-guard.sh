@@ -115,11 +115,18 @@ ARGV
     case "$raw" in
       --body=*) BODY_FLAG="body"; BODY_REST="${seg:$(( ${offs[$i]} + 7 ))}"; return 0 ;;
       --body-file=*) BODY_FLAG="body-file"; BODY_REST="${seg:$(( ${offs[$i]} + 12 ))}"; return 0 ;;
+      -b=*) BODY_FLAG="body"; BODY_REST="${seg:$(( ${offs[$i]} + 3 ))}"; return 0 ;;
+      -F=*) BODY_FLAG="body-file"; BODY_REST="${seg:$(( ${offs[$i]} + 3 ))}"; return 0 ;;
     esac
     uq=$(unquote_word "$raw")
     case "$uq" in
-      --body) BODY_FLAG="body" ;;
-      --body-file) BODY_FLAG="body-file" ;;
+      # gh's own shorthands: -b for --body, -F for --body-file. A short-option BUNDLE (`-db`)
+      # carries its value-taking flag last, which is the one that owns the next word.
+      --body|-b) BODY_FLAG="body" ;;
+      --body-file|-F) BODY_FLAG="body-file" ;;
+      --*) i=$((i + 1)); continue ;;
+      -*b) BODY_FLAG="body" ;;
+      -*F) BODY_FLAG="body-file" ;;
       *) i=$((i + 1)); continue ;;
     esac
     if [ $((i + 1)) -lt "$n" ]; then

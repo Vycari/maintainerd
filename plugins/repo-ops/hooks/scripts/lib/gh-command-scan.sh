@@ -186,12 +186,18 @@ ARGV
     case "$w" in
       # Shell keywords and grouping that PRECEDE a command without being it: `if gh pr create;
       # then …`, `! gh pr create`, `while gh pr create …`, `{ gh pr create …; }`, `time gh …`.
-      if|then|else|elif|while|until|do|'!'|'{'|'('|time) prev="keyword"; i=$((i + 1)); continue ;;
+      if|then|else|elif|while|until|do|'!'|'{'|'(') prev="keyword"; i=$((i + 1)); continue ;;
+      # `time` is a keyword that takes its own `-p` (POSIX output format) before the command.
+      time) prev="time"; i=$((i + 1)); continue ;;
       # A leading VAR=value assignment. Quote-aware word splitting means `FOO="a b" gh …` is ONE
       # assignment word, so the `gh` after it is still found.
       [a-zA-Z_]*=*) prev="assign"; i=$((i + 1)); continue ;;
       command|exec|env) prev="$w"; i=$((i + 1)); continue ;;
-      -p) if [ "$prev" = "command" ]; then i=$((i + 1)); continue; fi; break ;;
+      -p)
+        case "$prev" in
+          command|time) i=$((i + 1)); continue ;;
+        esac
+        break ;;
       -i) if [ "$prev" = "env" ]; then i=$((i + 1)); continue; fi; break ;;
       *) break ;;
     esac
