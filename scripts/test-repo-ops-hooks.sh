@@ -119,6 +119,7 @@ TEMPLATE=$'## Human overview\n\nsome text\n\n### Human required (optional)\n\n- 
 CONFIG_PLAIN='{}'
 CONFIG_CUSTOM_PATH='{"paths": {"prTemplate": "docs/custom-template.md"}}'
 CONFIG_SKIP_LABEL='{"review": {"skipLabel": "greptile:skip"}}'
+CONFIG_SKIP_LABEL_SPACED='{"review": {"skipLabel": "skip review"}}'
 
 echo "== every hook script emits valid JSON or nothing, on an unrelated command =="
 for s in "$TEMPLATE_GUARD" "$SKIP_GUARD"; do
@@ -280,6 +281,41 @@ expect "$TEMPLATE_GUARD" none "a gh issue create --body that only mentions gh pr
   "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh issue create --body "saw a bad PR: gh pr create --body \"only one heading\""'
 
 echo
+echo "== pr-template-guard: a compound command validates the RIGHT invocation's body =="
+expect "$TEMPLATE_GUARD" none "a preceding, unrelated gh issue create's incomplete body is not read as the PR's" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh issue create --body "no headings here" && gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y"'
+expect "$TEMPLATE_GUARD" deny "the PR's own incomplete body is still caught even with a complete body earlier on the line" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh issue create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr create --body "## Human overview
+just this"'
+expect_match "$TEMPLATE_GUARD" "## AI reviewer" "and names only the heading actually missing from the PR's own body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh issue create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr create --body "## Human overview
+just this"'
+
+echo
+echo "== pr-template-guard: wrapped/invoked-by-path gh still triggers the check =="
+expect "$TEMPLATE_GUARD" deny "command gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'command gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "env gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'env gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "an absolute path to gh" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" '/usr/bin/gh pr create --title x --body "## Human overview
+only"'
+
+echo
 echo "== pr-template-guard: unresolved shell content warns instead of guessing =="
 expect "$TEMPLATE_GUARD" warn "a --body built from a bare variable is not denied on a guess" \
   "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --title x --body "$BODY"'
@@ -333,6 +369,27 @@ expect "$SKIP_GUARD" none "gh pr edit is not gh pr create — no opened-webhook 
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr edit 5 --add-label greptile:skip'
 expect "$SKIP_GUARD" none "an unrelated command" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr list'
+
+echo
+echo "== skip-label-race-guard: only THIS invocation is read, not the whole payload =="
+expect "$SKIP_GUARD" none "an echo that only mentions the label as text" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'echo "run: gh pr create --label greptile:skip"'
+expect "$SKIP_GUARD" none "gh pr create written inside a heredoc that builds another script" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" "cat > deploy.sh <<'EOF'
+gh pr create --label greptile:skip --body x
+EOF
+chmod +x deploy.sh"
+expect "$SKIP_GUARD" warn "a --draft mentioned only in a PRECEDING, unrelated command's --body does not suppress a real warning" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr comment 1 --body "please use --draft next time" && gh pr create --title x --label greptile:skip --body y'
+expect "$SKIP_GUARD" warn "wrapped: command gh pr create" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'command gh pr create --title x --label greptile:skip --body y'
+
+echo
+echo "== skip-label-race-guard: a quoted, space-containing label is matched in full =="
+expect "$SKIP_GUARD" warn "a configured label containing a space is not truncated at the space" \
+  "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip review" --body y'
+expect "$SKIP_GUARD" none "a label that only partially matches (truncated form) is not a false positive either" \
+  "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip" --body y'
 
 echo
 printf '%s\n' "----------------------------------------"

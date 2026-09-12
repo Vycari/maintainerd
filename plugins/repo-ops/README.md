@@ -47,13 +47,24 @@ down belongs in a hook, not another sentence.
   shape, or a `$`/backtick expansion whose real value is decided by the shell at runtime, not by
   this text scan — the hook **warns instead of denying**: a heuristic that fails closed on its
   own parse errors would block legitimate work it never actually read.
-- The `gh pr create`/`gh pr edit` trigger itself must sit in command position (line start, or
-  right after a shell operator) so that `gh issue create --body "saw this: gh pr create ..."` or
-  a `gh pr create` line written into a heredoc that only builds another script (`cat > deploy.sh
-  <<'EOF' ... EOF`) does not fire the hook on text that merely mentions the command.
+- The `gh pr create`/`gh pr edit` trigger itself must sit in command position (line start, right
+  after a shell operator, or past a `command`/`env`/absolute-path wrapper) so that `gh issue
+  create --body "saw this: gh pr create ..."` or a `gh pr create` line written into a heredoc
+  that only builds another script (`cat > deploy.sh <<'EOF' ... EOF`) does not fire the hook on
+  text that merely mentions the command.
+- In a compound command (`gh issue create --body <A> && gh pr create --body <B>`), the body
+  validated is the one that actually belongs to the matched `gh pr create`/`gh pr edit` — not
+  whichever `--body`/`--body-file` happens to appear first in the whole command string.
 
 Like every hook in the Vycari fleet, this **only ever denies or warns** — it never returns
 `allow`, so it cannot widen anything a command it says nothing about would otherwise need.
+
+Known heuristic limit: the command-position wrapper allowance covers `command`, `command -p`,
+`env [VAR=val...]`, and a `gh` invoked by absolute/relative path — not every interpreter that can
+also run `gh` (`sh -c "gh pr create ..."`, `xargs`, `nohup`, …). A `gh pr create` reached only
+through one of those is not checked; per the split rule the rest of this plugin family follows,
+that is a design change (tokenize, or enumerate more wrappers) to weigh later, not a patch to
+chase indefinitely.
 
 ### `skip-label-race-guard`
 
@@ -68,6 +79,17 @@ fires no `opened` event to race.
 from this hook, ever. Which label (if any) means "skip review", and when it's appropriate to
 apply, is entirely a house-rule decision for the consuming repo/organization; this hook only
 knows the mechanism, not the policy.
+
+Like `pr-template-guard`, the trigger is command-position anchored and heredoc bodies are
+redacted first, so this only reads the matched `gh pr create` invocation — an echo, a
+script-building heredoc, or a different chained command's `--body` text mentioning the label or
+`--draft` does not affect the check. Label values are extracted quote-aware, so a label
+containing a space (`--label "skip review"`) is matched in full, not truncated at the space.
+Known heuristic limit: the far end of "this invocation" is bounded at the next `;`/`&`/`|`
+character wherever it occurs, including inside this invocation's own quoted `--body` text — so a
+`--draft`/`--label` placed *after* a `--body` whose content happens to contain one of those
+characters can be missed. Placing `--draft`/`--label` before `--body` (as the warning's own
+suggested fix already does) avoids this entirely.
 
 ## Note on code review
 

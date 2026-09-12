@@ -86,15 +86,18 @@ esac
 # ------------------------------------------------------------------------ mask heredoc payloads
 # A heredoc's body is data, not the command being run: `cat > deploy.sh <<'EOF'` followed by a
 # line that reads `gh pr create --body "..."` writes that text into a file, it does not invoke
-# gh. Blank out every heredoc body (keep the operator + delimiter lines so nothing downstream
-# desyncs) before deciding whether this command is a real "gh pr create"/"gh pr edit" trigger.
-# The *extraction* step below still reads the ORIGINAL, unmasked command, because a legitimate
-# `--body "$(cat <<'EOF' ... EOF)"` needs exactly the heredoc body this step would blank.
+# gh. Redact every heredoc body IN PLACE — same length, same newlines, every other character
+# replaced with `x` — before deciding whether this command is a real "gh pr create"/"gh pr edit"
+# trigger. Redacting rather than deleting keeps MASKED byte-for-byte the same length as the
+# original $COMMAND outside heredoc bodies, which is what lets the trigger-position lookup below
+# slice the ORIGINAL command at the right offset instead of re-deriving it. The *extraction* step
+# further down reads that ORIGINAL, unmasked slice, because a legitimate
+# `--body "$(cat <<'EOF' ... EOF)"` needs exactly the heredoc body redaction would destroy.
 mask_all_heredocs() {
   # Two `local` statements, not one: `local a=$1 b="$a"` expands every word on the line before
   # any of them is assigned, so under `set -u` the second `$a` is read before `a` exists.
   local s="$1"
-  local out="" rest="$s" prefix after tag strip line_rest body_start remaining hl trimmed nextrest
+  local out="" rest="$s" prefix after tag strip line_rest body_start remaining hl trimmed nextrest redacted filler
   while :; do
     case "$rest" in
       *'<<'*) : ;;
@@ -132,6 +135,7 @@ mask_all_heredocs() {
       *) out="$out$prefix<<$tag$after"; printf '%s' "$out"; return ;;
     esac
     remaining="$body_start"
+    redacted=""
     while :; do
       case "$remaining" in
         *$'\n'*) hl="${remaining%%$'\n'*}"; nextrest="${remaining#*$'\n'}" ;;
@@ -150,6 +154,10 @@ mask_all_heredocs() {
         remaining="$nextrest"
         break
       fi
+      # Redact this line to same-length filler so total command length (and every offset past
+      # this heredoc) is unaffected by what the line actually said.
+      filler=$(printf '%*s' "${#hl}" '' | tr ' ' 'x')
+      redacted="$redacted$filler"$'\n'
       if [ "$nextrest" = "__EOF__" ]; then
         remaining=""
         break
@@ -157,7 +165,7 @@ mask_all_heredocs() {
       remaining="$nextrest"
     done
     [ "$remaining" = "__EOF__" ] && remaining=""
-    out="$out$prefix<<$tag$line_rest"$'\n'"$tag"$'\n'
+    out="$out$prefix<<$tag$line_rest"$'\n'"$redacted$tag"$'\n'
     rest="$remaining"
   done
 }
@@ -165,16 +173,29 @@ mask_all_heredocs() {
 MASKED=$(mask_all_heredocs "$COMMAND")
 
 # The trigger must sit in COMMAND POSITION — the start of a line, or right after a shell
-# operator (optionally past an env-var prefix) — not merely appear as a substring anywhere.
+# operator (optionally past an env-var prefix, a `command`/`command -p`/`env [VAR=val...]`
+# wrapper, or a path prefix like `/usr/bin/gh`) — not merely appear as a substring anywhere.
 # Without this, `gh issue create --body "saw this: gh pr create --body ..."` would trigger on
 # text that only quotes another command, the same class of false positive vycari-ops's prod
 # guard had to rule out for the same reason. grep matches `^`/`$` per line by default, which is
 # exactly what's wanted here: a real `gh pr create` that starts a later line in a multi-line
 # command (common after a heredoc closes) still counts as command position.
-CMD_POS='(^|[;&|(])[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*'
-printf '%s' "$MASKED" | grep -Eq "${CMD_POS}gh[[:space:]]+pr[[:space:]]+(create|edit)([^a-zA-Z0-9_]|\$)" \
-  || exit 0
-case "$MASKED" in
+CMD_POS='(^|[;&|(])[[:space:]]*(command[[:space:]]+(-p[[:space:]]+)?|env[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)?([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+GH_EXEC='([a-zA-Z0-9_./-]*/)?gh'
+TRIGGER="${CMD_POS}${GH_EXEC}[[:space:]]+pr[[:space:]]+(create|edit)([^a-zA-Z0-9_]|\$)"
+printf '%s' "$MASKED" | grep -Eq "$TRIGGER" || exit 0
+
+# Extraction must start at the MATCHED invocation, not the top of the whole command: a preceding,
+# unrelated `gh issue create --body <complete>` on the same line as our real
+# `&& gh pr create --body <incomplete>` must not have ITS body read as if it were the PR's (or
+# vice versa on a legitimate PR). Redaction above kept MASKED the same length as $COMMAND, so the
+# byte offset of the match in MASKED is the same offset in the ORIGINAL, unmasked $COMMAND —
+# slice there instead of re-deriving position from scratch.
+MATCH=$(printf '%s' "$MASKED" | grep -Eo "$TRIGGER" | head -1)
+PREFIX="${MASKED%%"$MATCH"*}"
+INVOCATION="${COMMAND:${#PREFIX}}"
+
+case "$INVOCATION" in
   *'--body'*) ;;   # matches both --body and --body-file
   *) exit 0 ;;
 esac
@@ -248,8 +269,8 @@ BODY_OK=1
 BODY_TEXT=""
 BODY_FILE_PATH=""
 
-if printf '%s' "$COMMAND" | grep -Eq -- '--body-file([[:space:]]|=)'; then
-  REST="${COMMAND#*--body-file}"
+if printf '%s' "$INVOCATION" | grep -Eq -- '--body-file([[:space:]]|=)'; then
+  REST="${INVOCATION#*--body-file}"
   case "$REST" in
     '='*) REST="${REST#=}" ;;
     *) REST="${REST# }" ;;
@@ -273,8 +294,8 @@ if printf '%s' "$COMMAND" | grep -Eq -- '--body-file([[:space:]]|=)'; then
       BODY_OK=0
     fi
   fi
-elif printf '%s' "$COMMAND" | grep -Eq -- '--body([[:space:]]|=)'; then
-  REST="${COMMAND#*--body}"
+elif printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)'; then
+  REST="${INVOCATION#*--body}"
   case "$REST" in
     '='*) REST="${REST#=}" ;;
     *) REST="${REST# }" ;;
