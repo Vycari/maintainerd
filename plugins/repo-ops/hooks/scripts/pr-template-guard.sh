@@ -41,8 +41,6 @@ set -uo pipefail
 # a normal, expected outcome, not a failure the script should abort on.)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/gh-command-scan.sh
-. "$SCRIPT_DIR/lib/gh-command-scan.sh"
 
 deny() {
   # $1: reason shown to Claude.
@@ -79,6 +77,21 @@ case "$COMMAND" in
   *gh*) : ;;          # cheap pre-filter: no "gh" anywhere means nothing to scan
   *) exit 0 ;;
 esac
+
+SCAN_LIB="$SCRIPT_DIR/lib/gh-command-scan.sh"
+if [ ! -r "$SCAN_LIB" ]; then
+  # The scanner ships next to this script in every layout (source tree and installed plugin
+  # alike). If it is somehow missing, say so rather than failing silently — but only once a
+  # command has already passed the `gh` pre-filter, so a broken install is not announced on
+  # every unrelated Bash call.
+  jq -n --arg msg "repo-ops pr-template-guard: its command scanner (lib/gh-command-scan.sh) is missing from this install, so this \`gh\` command was NOT checked. Reinstall/update the repo-ops plugin." '{
+    systemMessage: $msg,
+    hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: $msg }
+  }'
+  exit 0
+fi
+# shellcheck source=lib/gh-command-scan.sh
+. "$SCAN_LIB"
 
 MASKED=$(mask_all_heredocs "$COMMAND")
 

@@ -50,6 +50,9 @@ from a neighbour's `--body`. This structural split is deliberately *not* a growi
 alternatives: per the rule this plugin family follows, a guard that needs a fifth pattern is a
 design change, and tokenizing once is that change.
 
+Both guards source that scanner from `hooks/scripts/lib/`; if it is ever missing from an
+install, they say so in a warning rather than silently passing the command through unchecked.
+
 Known limits of the scanner, all of which fail in the direction of checking *less*, never of a
 false denial:
 

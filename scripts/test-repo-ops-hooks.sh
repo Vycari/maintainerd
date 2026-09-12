@@ -499,6 +499,18 @@ expect "$TEMPLATE_GUARD" none "an echo whose quoted text contains operators and 
   "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "run: git push && gh pr create --body \"only one heading\"; done"'
 
 echo
+echo "== both guards fail LOUDLY, not silently, if the shared scanner is missing =="
+NOLIB=$(mktemp -d)
+cp "$TEMPLATE_GUARD" "$SKIP_GUARD" "$NOLIB/"
+expect "$NOLIB/pr-template-guard.sh" warn "pr-template-guard warns rather than silently skipping the check" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --title x --body "no headings here"'
+expect "$NOLIB/skip-label-race-guard.sh" warn "skip-label-race-guard warns rather than silently skipping the check" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label greptile:skip --body y'
+expect "$NOLIB/pr-template-guard.sh" none "...and still says nothing at all on a command with no gh in it" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo hello'
+rm -rf "$NOLIB"
+
+echo
 echo "== skip-label-race-guard: every gh pr create is checked, and labels parse in full =="
 expect "$SKIP_GUARD" warn "a SECOND, undrafted gh pr create is caught even when the first is a draft" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --draft --label greptile:skip --title a && gh pr create --label greptile:skip --title b'

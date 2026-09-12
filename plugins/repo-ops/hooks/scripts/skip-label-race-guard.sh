@@ -30,8 +30,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/gh-command-scan.sh
-. "$SCRIPT_DIR/lib/gh-command-scan.sh"
 
 warn() {
   # $1: message for both the user and Claude. No permissionDecision, so the normal permission
@@ -61,6 +59,21 @@ case "$COMMAND" in
   *gh*) : ;;          # cheap pre-filter: no "gh" anywhere means nothing to scan
   *) exit 0 ;;
 esac
+
+SCAN_LIB="$SCRIPT_DIR/lib/gh-command-scan.sh"
+if [ ! -r "$SCAN_LIB" ]; then
+  # The scanner ships next to this script in every layout (source tree and installed plugin
+  # alike). If it is somehow missing, say so rather than failing silently — but only once a
+  # command has already passed the `gh` pre-filter, so a broken install is not announced on
+  # every unrelated Bash call.
+  jq -n --arg msg "repo-ops skip-label-race-guard: its command scanner (lib/gh-command-scan.sh) is missing from this install, so this \`gh\` command was NOT checked. Reinstall/update the repo-ops plugin." '{
+    systemMessage: $msg,
+    hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: $msg }
+  }'
+  exit 0
+fi
+# shellcheck source=lib/gh-command-scan.sh
+. "$SCAN_LIB"
 
 # ------------------------------------------------------------------------------ label extraction
 # Every --label/-l value in one invocation, one per line, in order. Quote-aware (a quoted label
