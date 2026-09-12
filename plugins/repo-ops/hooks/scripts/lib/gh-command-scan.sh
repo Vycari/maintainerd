@@ -269,3 +269,44 @@ unquote_word() {
   w="${w//\'/}"
   printf '%s' "$w"
 }
+
+# ------------------------------------------------------------------ short-option (-abc) parsing
+# Parses ONE raw argv word that is a short-option cluster (`-d`, `-dl`, `-b"text"`, `-Fbody.md`,
+# `-b=text`) the way gh's flag library actually reads it, and prints one line per flag found:
+#
+#   bool <char>                 a boolean shorthand (gh pr create/edit: -d draft, -f fill, -w web)
+#   value <char> <offset>       a value-taking shorthand; <offset> is where its value starts
+#                               INSIDE this word, or -1 when the value is the next argv word
+#
+# The key rule — and the one a naive "does the word end in b?" or "does the word contain d?" test
+# gets wrong — is that a value-taking shorthand CONSUMES THE REST OF THE WORD. In `-tDraftTitle`
+# the `d` belongs to the title, not to `--draft`; in `-db"…"` the `d` is a real boolean and `b`
+# takes the quoted remainder. So parsing stops at the first value-taking character.
+short_opt_parse() {
+  # Two `local` statements, not one: every word on a `local` line is expanded before any of them
+  # is assigned, so `local w="$1" len=${#w}` would measure the OLD w (the same trap noted above).
+  local w="$1"
+  local len=${#w} j=1 c rest
+  case "$w" in
+    -[!-]*) : ;;
+    *) return 0 ;;      # not a short cluster (a long --flag, a bare "-", or not a flag at all)
+  esac
+  while [ "$j" -lt "$len" ]; do
+    c="${w:$j:1}"
+    case "$c" in
+      [a-zA-Z]) : ;;
+      *) return 0 ;;    # a quote, `=` or punctuation where a flag letter was expected
+    esac
+    case "$c" in
+      d|f|w) printf 'bool %s\n' "$c"; j=$((j + 1)); continue ;;
+    esac
+    rest="${w:$((j + 1))}"
+    case "$rest" in
+      '') printf 'value %s -1\n' "$c" ;;
+      '='*) printf 'value %s %s\n' "$c" "$((j + 2))" ;;
+      *) printf 'value %s %s\n' "$c" "$((j + 1))" ;;
+    esac
+    return 0
+  done
+  return 0
+}

@@ -104,8 +104,8 @@ ARGV
     uq=$(unquote_word "$raw")
     val=""
     case "$uq" in
-      --draft|-d) INVOCATION_DRAFT=1; i=$((i + 1)); continue ;;
-      --label|-l)
+      --draft) INVOCATION_DRAFT=1; i=$((i + 1)); continue ;;
+      --label)
         if [ $((i + 1)) -lt "$n" ]; then
           val=$(unquote_word "${seg:${offs[$((i + 1))]}:${lens[$((i + 1))]}}")
           i=$((i + 2))
@@ -114,23 +114,30 @@ ARGV
         fi
         ;;
       --label=*) val="${uq#--label=}"; i=$((i + 1)) ;;
-      -l=*) val="${uq#-l=}"; i=$((i + 1)) ;;
       --*) i=$((i + 1)); continue ;;
-      -*)
-        # A short-option BUNDLE, e.g. `-dl greptile:skip`: every boolean shorthand in it applies,
-        # and a value-taking shorthand can only be the last character, owning the next word.
-        case "$uq" in *d*) INVOCATION_DRAFT=1 ;; esac
-        case "$uq" in
-          -*l)
-            if [ $((i + 1)) -lt "$n" ]; then
-              val=$(unquote_word "${seg:${offs[$((i + 1))]}:${lens[$((i + 1))]}}")
-              i=$((i + 2))
-            else
-              i=$((i + 1))
-            fi
-            ;;
-          *) i=$((i + 1)); continue ;;
-        esac
+      -[!-]*)
+        # A short-option cluster. short_opt_parse applies gh's own rule — a value-taking
+        # shorthand consumes the rest of the word — so `-dl skip` is a draft plus a label,
+        # `-lskip` is a label, and `-tDraftTitle` is a TITLE whose `d` is not `--draft`.
+        i=$((i + 1))
+        while read -r kind ch voff; do
+          case "$kind" in
+            bool) [ "$ch" = "d" ] && INVOCATION_DRAFT=1 ;;
+            value)
+              [ "$ch" = "l" ] || continue
+              if [ "$voff" = "-1" ]; then
+                if [ "$i" -lt "$n" ]; then
+                  val=$(unquote_word "${seg:${offs[$i]}:${lens[$i]}}")
+                  i=$((i + 1))
+                fi
+              else
+                val=$(unquote_word "${raw:$voff}")
+              fi
+              ;;
+          esac
+        done <<SHORT
+$(short_opt_parse "$raw")
+SHORT
         ;;
       *) i=$((i + 1)); continue ;;
     esac

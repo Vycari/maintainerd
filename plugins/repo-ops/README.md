@@ -50,8 +50,9 @@ with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/
    and not a `--draft` flag, `--body "pass --label skip"` applies no label, and a `--title "fix
    --body-file parsing"` doesn't hijack body extraction. Only a word that *is* the flag counts —
    in every spelling gh accepts: long, `--flag=value`, the shorthands (`-b`, `-F`, `-d`, `-l`),
-   and short-option bundles, where the value-taking flag is the last character (`-dl skip` is a
-   draft plus a label).
+   and short-option clusters read by gh's own rule — a value-taking shorthand consumes the rest
+   of the word. So `-dl skip` is a draft plus a label, `-b"…"` and `-Fbody.md` carry attached
+   values, and `-tDraftTitle` is a *title* whose `d` is not `--draft`.
 
 Every matching invocation is then checked **on its own** — a compound command that opens two PRs
 is two checks, each against its own flags, and a bodyless or non-PR command is never backfilled

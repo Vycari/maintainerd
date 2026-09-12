@@ -97,7 +97,7 @@ fi
 # BODY_REST (the raw command text starting at that flag's VALUE). Works on argv words, so
 # `--body "mentions --body-file in prose"` has exactly one body flag, the real one.
 locate_body() {
-  local seg="$1" off len raw uq i n
+  local seg="$1" off len raw i n kind ch voff
   local offs=() lens=()
   BODY_FLAG=""
   BODY_REST=""
@@ -115,24 +115,41 @@ ARGV
     case "$raw" in
       --body=*) BODY_FLAG="body"; BODY_REST="${seg:$(( ${offs[$i]} + 7 ))}"; return 0 ;;
       --body-file=*) BODY_FLAG="body-file"; BODY_REST="${seg:$(( ${offs[$i]} + 12 ))}"; return 0 ;;
-      -b=*) BODY_FLAG="body"; BODY_REST="${seg:$(( ${offs[$i]} + 3 ))}"; return 0 ;;
-      -F=*) BODY_FLAG="body-file"; BODY_REST="${seg:$(( ${offs[$i]} + 3 ))}"; return 0 ;;
-    esac
-    uq=$(unquote_word "$raw")
-    case "$uq" in
-      # gh's own shorthands: -b for --body, -F for --body-file. A short-option BUNDLE (`-db`)
-      # carries its value-taking flag last, which is the one that owns the next word.
-      --body|-b) BODY_FLAG="body" ;;
-      --body-file|-F) BODY_FLAG="body-file" ;;
+      --body|--body-file)
+        case "$raw" in
+          --body) BODY_FLAG="body" ;;
+          *) BODY_FLAG="body-file" ;;
+        esac
+        if [ $((i + 1)) -lt "$n" ]; then
+          BODY_REST="${seg:${offs[$((i + 1))]}}"
+        fi
+        return 0 ;;
       --*) i=$((i + 1)); continue ;;
-      -*b) BODY_FLAG="body" ;;
-      -*F) BODY_FLAG="body-file" ;;
+      -[!-]*)
+        # A short-option cluster. short_opt_parse knows that a value-taking shorthand consumes
+        # the rest of the word, so `-b"…"`, `-Fbody.md`, `-b=…` and `-db"…"` all resolve, and a
+        # `-tDraftTitle` is a title (its `b`/`F` letters, if any, are part of the value).
+        while read -r kind ch voff; do
+          [ "$kind" = "value" ] || continue
+          case "$ch" in
+            b) BODY_FLAG="body" ;;
+            F) BODY_FLAG="body-file" ;;
+            *) continue ;;
+          esac
+          if [ "$voff" = "-1" ]; then
+            if [ $((i + 1)) -lt "$n" ]; then
+              BODY_REST="${seg:${offs[$((i + 1))]}}"
+            fi
+          else
+            BODY_REST="${seg:$(( ${offs[$i]} + voff ))}"
+          fi
+        done <<SHORT
+$(short_opt_parse "$raw")
+SHORT
+        [ -z "$BODY_FLAG" ] || return 0
+        i=$((i + 1)); continue ;;
       *) i=$((i + 1)); continue ;;
     esac
-    if [ $((i + 1)) -lt "$n" ]; then
-      BODY_REST="${seg:${offs[$((i + 1))]}}"
-    fi
-    return 0
   done
   return 0
 }

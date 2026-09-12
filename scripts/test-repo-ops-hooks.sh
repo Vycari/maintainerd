@@ -563,10 +563,38 @@ expect "$SKIP_GUARD" none "-d shorthand for --draft suppresses the warning" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -d --label greptile:skip --title x'
 expect "$SKIP_GUARD" none "a -dl bundle is both a draft and a label" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -dl greptile:skip --title x'
-expect "$SKIP_GUARD" warn "a -l bundle without d still warns" \
+expect "$SKIP_GUARD" warn "an ATTACHED short label value (-lvalue)" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -lgreptile:skip --title x'
+expect "$SKIP_GUARD" none "-tl VALUE is a --title of \"l\", not a label — gh's own rule" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -tl greptile:skip'
 expect "$SKIP_GUARD" warn "time -p gh pr create with the skip label" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'time -p gh pr create --label greptile:skip --title x'
+
+echo
+echo "== attached short-option values: the value eats the rest of the word (gh's own rule) =="
+expect "$TEMPLATE_GUARD" deny "-b with an ATTACHED quoted body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -t x -b"## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "-b with an attached COMPLETE body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -t x -b"## Human overview
+a
+
+## AI reviewer
+b"'
+d=$(repo "$TEMPLATE" "$CONFIG_PLAIN")
+printf '## Human overview\nonly this one\n' > "$d/body.md"
+expect "$TEMPLATE_GUARD" deny "-F with an attached path (-Fbody.md)" "$d" 'gh pr create -t x -Fbody.md'
+expect "$TEMPLATE_GUARD" deny "a -db bundle with an attached body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -db"## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "-tbTitle is a TITLE whose value happens to contain b, not a body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create -tbTitle --draft'
+expect "$SKIP_GUARD" warn "-tDraftTitle is a title, not a --draft, so the warning still fires" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -tDraftTitle --label greptile:skip'
+expect "$SKIP_GUARD" none "a real -d alongside an attached title value containing d" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -d -tDraftTitle --label greptile:skip'
+expect "$SKIP_GUARD" warn "-l=value form" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create -l=greptile:skip --title x'
 
 echo
 echo "== both guards fail LOUDLY, not silently, if the shared scanner is missing =="
