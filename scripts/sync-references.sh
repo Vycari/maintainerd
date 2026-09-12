@@ -27,7 +27,10 @@ CONSUMERS="audits auto-dev deps-flow journal repo-ops research"
 # Markdown, copied with a generated-file banner prepended.
 # model-tiers.md ships wherever config-schema.md does: the schema links it as a sibling,
 # so a plugin with only one of the two would carry a dead link.
-DOCS=(config-schema.md model-tiers.md untrusted-input.md)
+# build-record.md ships everywhere for the same sibling reason (it links untrusted-input.md)
+# and because the convention it documents is cross-plugin by nature: one plugin's skill writes
+# the record, another plugin's skill reads it.
+DOCS=(config-schema.md model-tiers.md untrusted-input.md build-record.md)
 
 # Verbatim copies — the schema links these as siblings, and JSON cannot carry a comment banner.
 ASSETS=(example-user.json example-pepper.json example-obsidian.json example-workspace.json)
