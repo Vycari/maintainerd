@@ -74,33 +74,28 @@ fixed file structure.
 
 ## PR template
 
-If `config.paths.prTemplate` exists, read it and **use it** — the PR body must follow that
-template's structure and fill in every section and checklist item. Do not drop sections the
-template requires; for items that don't apply, keep the line and mark it N/A with a brief reason.
+If `config.paths.prTemplate` exists, **read the file and take your headings from it, verbatim.**
+`gh pr create --body` replaces the template entirely — GitHub does not merge the two — so the only
+way the template reaches the PR is by you reproducing it. Concretely:
 
-A typical template asks for:
+1. `cat` the template. Every `##`/`###` heading it contains appears in your body, in the same
+   order, spelled the same way. Do not substitute headings you prefer or remember from another
+   repo; the example body later in this skill is an *illustration*, and the repo's file wins over
+   it every time.
+2. Replace each HTML comment (`<!-- … -->`) with the content it asks for; drop the comment.
+3. Fill every checklist item. Use `[x]` for done and `[ ]` for not-applicable items, adding a note
+   that explains why. Tick the CI-checks item only after the pre-flight gates above have actually
+   passed locally, and disclose AI assistance honestly where the template asks for it.
+4. Sections marked optional in the template may be dropped when they would be empty; everything
+   else stays.
 
-### Summary
+Templates differ by repo. One common shape is two sections for two readers — a short glanceable
+overview for a busy human, then a dense section for automated review and future sessions — and
+another is the older Summary / Changes / Checklist shape. Which one you write is decided by the
+file, not by this skill.
 
-A concise description of what the PR does and why. Link the related issue with `Fixes #<number>`
-when applicable.
-
-### Changes
-
-A bullet list of the key changes.
-
-### Screenshots / Screencast
-
-Required for UI changes. Omit only when the change is purely backend/internal.
-
-### Checklist
-
-Complete every item. Use `[x]` for done and `[ ]` for not-applicable items, adding a note that
-explains why. Tick the CI-checks item only after the pre-flight gates above have actually passed
-locally, and disclose AI assistance honestly where the template asks for it.
-
-If `config.paths.prTemplate` is `null`, the repo deliberately uses no template — fall back to the
-Summary / Changes / Checklist structure above without comment. If the key points at a file that
+If `config.paths.prTemplate` is `null`, the repo deliberately uses no template — use a plain
+Summary / Changes / Checklist structure without comment. If the key points at a file that
 **doesn't exist**, use the same fallback but flag the dangling path in your run report and suggest
 re-running `/bootstrap` (which offers to scaffold a template or set the key to `null`).
 
@@ -229,20 +224,14 @@ gh pr create \
   --base <config.defaultBranch> \
   --title "type: Short description" \
   --body "$(cat <<'EOF'
-## Summary
-
-...
-
-## Changes
-
-- ...
-
-## Checklist
-
-- [x] ...
+<the repo's template, headings verbatim, comments replaced with content>
 EOF
 )"
 ```
+
+The body's headings come from `config.paths.prTemplate` (see **PR template** above), never from
+memory. A quick self-check before running the command: `grep '^##' <template>` and your body
+should list the same headings in the same order.
 
 ### Labels
 
