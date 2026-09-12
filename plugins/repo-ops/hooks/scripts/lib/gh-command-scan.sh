@@ -172,19 +172,24 @@ split_simple_commands() {
 # `sh -c "gh pr create …"`, `xargs gh`, `find -exec gh` — still resolve to sh/xargs/find and are
 # not recognized.
 gh_pr_subcommand() {
-  local head="${1:0:512}"
-  local restore_glob=0
-  case "$-" in *f*) restore_glob=1 ;; esac
-  set -f
-  local words
-  # shellcheck disable=SC2206
-  words=($head)
-  [ "$restore_glob" -eq 1 ] || set +f
+  local head="${1:0:2048}"
+  local words=() off len
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    words[${#words[@]}]="${head:$off:$len}"
+  done <<ARGV
+$(argv_spans "$head")
+ARGV
   local n=${#words[@]} i=0 w exe prev=""
   while [ "$i" -lt "$n" ]; do
     w="${words[$i]}"
     case "$w" in
-      [a-zA-Z_]*=*) i=$((i + 1)); prev="assign"; continue ;;
+      # Shell keywords and grouping that PRECEDE a command without being it: `if gh pr create;
+      # then …`, `! gh pr create`, `while gh pr create …`, `{ gh pr create …; }`, `time gh …`.
+      if|then|else|elif|while|until|do|'!'|'{'|'('|time) prev="keyword"; i=$((i + 1)); continue ;;
+      # A leading VAR=value assignment. Quote-aware word splitting means `FOO="a b" gh …` is ONE
+      # assignment word, so the `gh` after it is still found.
+      [a-zA-Z_]*=*) prev="assign"; i=$((i + 1)); continue ;;
       command|exec|env) prev="$w"; i=$((i + 1)); continue ;;
       -p) if [ "$prev" = "command" ]; then i=$((i + 1)); continue; fi; break ;;
       -i) if [ "$prev" = "env" ]; then i=$((i + 1)); continue; fi; break ;;
@@ -192,20 +197,69 @@ gh_pr_subcommand() {
     esac
   done
   [ "$i" -lt "$n" ] || return 0
-  exe="${words[$i]}"
-  case "$exe" in
-    "'"*"'") exe="${exe#\'}"; exe="${exe%\'}" ;;
-    '"'*'"') exe="${exe#\"}"; exe="${exe%\"}" ;;
-  esac
+  exe=$(unquote_word "${words[$i]}")
   exe="${exe##*/}"
   [ "$exe" = "gh" ] || return 0
   [ $((i + 2)) -lt "$n" ] || return 0
-  local sub1="${words[$((i + 1))]}" sub2="${words[$((i + 2))]}"
-  sub1="${sub1//\"/}"; sub1="${sub1//\'/}"
-  sub2="${sub2//\"/}"; sub2="${sub2//\'/}"
+  local sub1 sub2
+  sub1=$(unquote_word "${words[$((i + 1))]}")
+  sub2=$(unquote_word "${words[$((i + 2))]}")
   [ "$sub1" = "pr" ] || return 0
   case "$sub2" in
     create|edit) printf '%s' "$sub2" ;;
   esac
   return 0
+}
+
+# ---------------------------------------------------------------------- split a command into argv
+# Emits one "<offset> <length>" line per WORD of a simple command, relative to the string passed
+# in. Words are separated by unquoted whitespace; single quotes, double quotes, backticks and
+# `$( … )` hold a word together, so `--body "use --draft here"` is two words, not four, and the
+# body's prose can never be read as a flag of its own.
+argv_spans() {
+  local s="$1"
+  local len=${#s}
+  local i=0 start c nc q depth out=""
+  while [ "$i" -lt "$len" ]; do
+    c="${s:$i:1}"
+    case "$c" in
+      ' '|$'\t'|$'\n'|$'\r') i=$((i + 1)); continue ;;
+    esac
+    start=$i
+    q=""
+    depth=0
+    while [ "$i" -lt "$len" ]; do
+      c="${s:$i:1}"
+      if [ -n "$q" ]; then
+        if [ "$q" = '"' ] && [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+        if [ "$c" = "$q" ]; then q=""; fi
+        i=$((i + 1)); continue
+      fi
+      case "$c" in
+        "'"|'"'|'`') q="$c"; i=$((i + 1)); continue ;;
+        '\') i=$((i + 2)); continue ;;
+        '$')
+          nc="${s:$((i + 1)):1}"
+          if [ "$nc" = '(' ]; then depth=$((depth + 1)); i=$((i + 2)); else i=$((i + 1)); fi
+          continue ;;
+        '(') if [ "$depth" -gt 0 ]; then depth=$((depth + 1)); fi; i=$((i + 1)); continue ;;
+        ')') if [ "$depth" -gt 0 ]; then depth=$((depth - 1)); fi; i=$((i + 1)); continue ;;
+        ' '|$'\t'|$'\n'|$'\r')
+          if [ "$depth" -gt 0 ]; then i=$((i + 1)); continue; fi
+          break ;;
+        *) i=$((i + 1)); continue ;;
+      esac
+    done
+    out="$out$start $((i - start))"$'\n'
+  done
+  printf '%s' "$out"
+}
+
+# unquote_word <raw word> -> the word with one layer of surrounding/inline quoting removed.
+# Enough for comparing a flag or a label value; not a general shell unquoter.
+unquote_word() {
+  local w="$1"
+  w="${w//\"/}"
+  w="${w//\'/}"
+  printf '%s' "$w"
 }

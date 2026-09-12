@@ -93,6 +93,44 @@ fi
 # shellcheck source=lib/gh-command-scan.sh
 . "$SCAN_LIB"
 
+# locate_body <one invocation's ORIGINAL text> -> sets BODY_FLAG ("body"|"body-file"|"") and
+# BODY_REST (the raw command text starting at that flag's VALUE). Works on argv words, so
+# `--body "mentions --body-file in prose"` has exactly one body flag, the real one.
+locate_body() {
+  local seg="$1" off len raw uq i n
+  local offs=() lens=()
+  BODY_FLAG=""
+  BODY_REST=""
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    offs[${#offs[@]}]=$off
+    lens[${#lens[@]}]=$len
+  done <<ARGV
+$(argv_spans "$seg")
+ARGV
+  n=${#offs[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    raw="${seg:${offs[$i]}:${lens[$i]}}"
+    case "$raw" in
+      --body=*) BODY_FLAG="body"; BODY_REST="${seg:$(( ${offs[$i]} + 7 ))}"; return 0 ;;
+      --body-file=*) BODY_FLAG="body-file"; BODY_REST="${seg:$(( ${offs[$i]} + 12 ))}"; return 0 ;;
+    esac
+    uq=$(unquote_word "$raw")
+    case "$uq" in
+      --body) BODY_FLAG="body" ;;
+      --body-file) BODY_FLAG="body-file" ;;
+      *) i=$((i + 1)); continue ;;
+    esac
+    if [ $((i + 1)) -lt "$n" ]; then
+      BODY_REST="${seg:${offs[$((i + 1))]}}"
+    fi
+    return 0
+  done
+  return 0
+}
+
+
 MASKED=$(mask_all_heredocs "$COMMAND")
 
 # Collect every gh pr create/edit invocation that carries a body, as "<offset> <length>" into
@@ -103,10 +141,11 @@ while IFS=' ' read -r OFF LEN; do
   SEG_MASKED="${MASKED:$OFF:$LEN}"
   SUB=$(gh_pr_subcommand "$SEG_MASKED")
   [ -n "$SUB" ] || continue
-  case "$SEG_MASKED" in
-    *'--body'*) ;;    # matches both --body and --body-file
-    *) continue ;;
-  esac
+  # A `--body`/`--body-file` FLAG of this invocation — not the string "--body" appearing inside
+  # its own prose. locate_body reads argv words, so a title or body that merely mentions the flag
+  # is one quoted word and is never mistaken for it.
+  locate_body "${COMMAND:$OFF:$LEN}"
+  [ -n "$BODY_FLAG" ] || continue
   INVOCATIONS="$INVOCATIONS$OFF $LEN"$'\n'
 done <<SEGMENTS
 $(split_simple_commands "$MASKED")
@@ -178,29 +217,19 @@ scan_double_quoted() {
   return 1
 }
 
-# extract_body <one invocation's ORIGINAL text> -> sets BODY_OK (0 = text is trustworthy) and
-# BODY_TEXT. The text passed in is this invocation's alone, so the first --body/--body-file in
-# it is by construction the one belonging to this `gh pr create`/`edit`.
+# extract_body <flag: body|body-file> <raw text starting at the flag's value> -> sets BODY_OK
+# (0 = text is trustworthy) and BODY_TEXT. Both come from locate_body, so what is read is this
+# invocation's own body flag and nothing else.
 extract_body() {
-  local INVOCATION="$1"
-  local REST VAL AFTER BODY_FILE_PATH
+  local FLAG="$1"
+  local REST="$2"
+  local VAL AFTER BODY_FILE_PATH
   local HAFTER HSTRIP HQUOTED HTAG HBODY_START HREMAINING HCONTENT HFOUND HLINE HNEXT HTRIMMED
   BODY_OK=1
   BODY_TEXT=""
+  [ -n "$REST" ] || return 0
 
-  if printf '%s' "$INVOCATION" | grep -Eq -- '--body-file([[:space:]]|=)'; then
-    REST="${INVOCATION#*--body-file}"
-    case "$REST" in
-      '='*) REST="${REST#=}" ;;
-      *) REST="${REST# }" ;;
-    esac
-    while :; do
-      case "$REST" in
-        ' '*) REST="${REST# }" ;;
-        $'\t'*) REST="${REST#$'\t'}" ;;
-        *) break ;;
-      esac
-    done
+  if [ "$FLAG" = "body-file" ]; then
     case "$REST" in
       "'"*) VAL="${REST#\'}"; VAL="${VAL%%\'*}" ;;
       '"'*) VAL="${REST#\"}"; VAL="${VAL%%\"*}" ;;
@@ -216,19 +245,6 @@ extract_body() {
     return 0
   fi
 
-  printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)' || return 0
-  REST="${INVOCATION#*--body}"
-  case "$REST" in
-    '='*) REST="${REST#=}" ;;
-    *) REST="${REST# }" ;;
-  esac
-  while :; do
-    case "$REST" in
-      ' '*) REST="${REST# }" ;;
-      $'\t'*) REST="${REST#$'\t'}" ;;
-      *) break ;;
-    esac
-  done
   case "$REST" in
     '"$(cat'*|'$(cat'*)
       # --body "$(cat <<'EOF' ... EOF)" / --body $(cat <<EOF ... EOF) — read the heredoc that
@@ -372,7 +388,8 @@ DENY_REASON=""
 UNRESOLVED=0
 while IFS=' ' read -r OFF LEN; do
   [ -n "$OFF" ] || continue
-  extract_body "${COMMAND:$OFF:$LEN}"
+  locate_body "${COMMAND:$OFF:$LEN}"
+  extract_body "$BODY_FLAG" "$BODY_REST"
   if [ "$BODY_OK" -ne 0 ]; then
     UNRESOLVED=1
     continue

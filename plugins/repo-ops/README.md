@@ -41,8 +41,14 @@ with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/
    operator characters or newlines its prose contains.
 3. **Each simple command's executable is resolved by basename**, after dropping the prefix words
    that don't change which program runs: leading `VAR=value` assignments, `command [-p]`,
-   `env [-i] [VAR=value…]`, and `exec`. `gh`, `command gh`, `env GH_HOST=… gh`, `exec gh` and
-   `/usr/bin/gh` all resolve alike; `mygh` does not.
+   `env [-i] [VAR=value…]`, `exec`, and the shell keywords that can precede a command (`if`,
+   `while`, `until`, `!`, `{`, `time`, …). `gh`, `command gh`, `env GH_HOST=… gh`, `exec gh`,
+   `/usr/bin/gh`, `if gh pr create …; then`, `! gh pr create …` and `GH_PAGER="less -R" gh` all
+   resolve alike; `mygh` does not.
+4. **Flags are read from argv words, not from the raw text.** The same quote-aware splitting turns
+   one invocation into words, so `--body "reviewer asked: please use --draft next time"` is a body
+   and not a `--draft` flag, `--body "pass --label skip"` applies no label, and a `--title "fix
+   --body-file parsing"` doesn't hijack body extraction. Only a word that *is* the flag counts.
 
 Every matching invocation is then checked **on its own** — a compound command that opens two PRs
 is two checks, each against its own flags, and a bodyless or non-PR command is never backfilled

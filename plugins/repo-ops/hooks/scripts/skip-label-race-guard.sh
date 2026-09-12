@@ -75,51 +75,64 @@ fi
 # shellcheck source=lib/gh-command-scan.sh
 . "$SCAN_LIB"
 
-# ------------------------------------------------------------------------------ label extraction
-# Every --label/-l value in one invocation, one per line, in order. Quote-aware (a quoted label
-# containing spaces is read in full rather than truncated at its first space), repeat-aware (gh
-# accepts --label more than once), and comma-aware (gh splits `--label a,b` into two labels, so
-# both the whole value and each comma-separated part are candidates).
-labels_in() {
-  local scan="$1"
-  local marker rest t val part remainder out=""
-  while :; do
-    marker=$(printf '%s' "$scan" | grep -Eo -- '(^|[[:space:]])(--label|-l)([[:space:]]+|=)' | head -1 || true)
-    [ -n "$marker" ] || break
-    rest="${scan#*"$marker"}"
-    while :; do
-      case "$rest" in
-        ' '*) rest="${rest# }" ;;
-        $'\t'*) rest="${rest#$'\t'}" ;;
-        *) break ;;
-      esac
-    done
-    case "$rest" in
-      "'"*) t="${rest#\'}"; val="${t%%\'*}"; rest="${t#*\'}" ;;
-      '"'*) t="${rest#\"}"; val="${t%%\"*}"; rest="${t#*\"}" ;;
-      *) val=$(printf '%s' "$rest" | grep -Eo '^[^[:space:]]+' || true); rest="${rest#"$val"}" ;;
+# --------------------------------------------------------------------- flags of one invocation
+# Reads ONE `gh pr create`'s argv words (quote-aware, via the shared scanner) and reports what it
+# applies. Working on words rather than on the raw text is what keeps a body from voting: in
+# `--body "please use --draft next time"` the body is a single word, so it is neither a --draft
+# flag nor a --label flag, and in `--body "pass --label skip"` no label is applied.
+#
+# Sets INVOCATION_DRAFT (1 when a real --draft flag is present) and INVOCATION_LABELS (one label
+# per line). Label values are read the way gh accepts them: `--label x`, `--label=x`, `-l x`,
+# repeated flags, quoted values with spaces, and comma-separated lists (gh splits `a,b` into two
+# labels, so both the whole value and each part are emitted).
+scan_invocation_flags() {
+  local seg="$1" off len raw uq i n val part remainder
+  local offs=() lens=()
+  INVOCATION_DRAFT=0
+  INVOCATION_LABELS=""
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    offs[${#offs[@]}]=$off
+    lens[${#lens[@]}]=$len
+  done <<ARGV
+$(argv_spans "$seg")
+ARGV
+  n=${#offs[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    raw="${seg:${offs[$i]}:${lens[$i]}}"
+    uq=$(unquote_word "$raw")
+    val=""
+    case "$uq" in
+      --draft) INVOCATION_DRAFT=1; i=$((i + 1)); continue ;;
+      --label|-l)
+        if [ $((i + 1)) -lt "$n" ]; then
+          val=$(unquote_word "${seg:${offs[$((i + 1))]}:${lens[$((i + 1))]}}")
+          i=$((i + 2))
+        else
+          i=$((i + 1))
+        fi
+        ;;
+      --label=*) val="${uq#--label=}"; i=$((i + 1)) ;;
+      -l=*) val="${uq#-l=}"; i=$((i + 1)) ;;
+      *) i=$((i + 1)); continue ;;
     esac
-    if [ -n "$val" ]; then
-      out="$out$val"$'\n'
-      case "$val" in
-        *,*)
-          remainder="$val"
-          while :; do
-            case "$remainder" in
-              *,*) part="${remainder%%,*}"; remainder="${remainder#*,}" ;;
-              *) part="$remainder"; remainder="" ;;
-            esac
-            [ -n "$part" ] && out="$out$part"$'\n'
-            [ -n "$remainder" ] || break
-          done
-          ;;
-      esac
-    fi
-    # Advance past what was just consumed so a repeated --label further along is still found,
-    # without re-matching the marker/value just processed.
-    scan="$rest"
+    [ -n "$val" ] || continue
+    INVOCATION_LABELS="$INVOCATION_LABELS$val"$'\n'
+    case "$val" in
+      *,*)
+        remainder="$val"
+        while :; do
+          case "$remainder" in
+            *,*) part="${remainder%%,*}"; remainder="${remainder#*,}" ;;
+            *) part="$remainder"; remainder="" ;;
+          esac
+          [ -n "$part" ] && INVOCATION_LABELS="$INVOCATION_LABELS$part"$'\n'
+          [ -n "$remainder" ] || break
+        done
+        ;;
+    esac
   done
-  printf '%s' "$out"
 }
 
 MASKED=$(mask_all_heredocs "$COMMAND")
@@ -130,6 +143,8 @@ while IFS=' ' read -r OFF LEN; do
   [ "$(gh_pr_subcommand "$SEG_MASKED")" = "create" ] || continue
   INVOCATION="${COMMAND:$OFF:$LEN}"
 
+  scan_invocation_flags "$INVOCATION"
+
   MATCHED_LABEL=0
   while IFS= read -r val; do
     [ -n "$val" ] || continue
@@ -138,13 +153,13 @@ while IFS=' ' read -r OFF LEN; do
       break
     fi
   done <<LABELS
-$(labels_in "$INVOCATION")
+$INVOCATION_LABELS
 LABELS
   [ "$MATCHED_LABEL" -eq 1 ] || continue
 
-  # --draft anywhere in THIS invocation means this PR never fires an `opened` webhook while
+  # A real --draft flag on THIS invocation means the PR never fires an `opened` webhook while
   # unlabeled — the race this hook exists to catch cannot happen.
-  printf '%s' "$INVOCATION" | grep -Eq -- '(^|[[:space:]])--draft([[:space:]]|$)' && continue
+  [ "$INVOCATION_DRAFT" -eq 0 ] || continue
 
   warn "repo-ops skip-label-race-guard: this \`gh pr create\` applies \"$SKIP_LABEL\" without \`--draft\`. Most review bots schedule their run on the PR's \`opened\` webhook, which fires before a label from the same command has landed — so the label may not suppress the review it's meant to skip. Prefer: \`gh pr create --draft --label \"$SKIP_LABEL\" ...\` followed by \`gh pr ready\`, which fires no \`opened\` event for the bot to race. Proceeding anyway is your call; nothing is blocked."
 done <<SEGMENTS

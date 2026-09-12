@@ -499,6 +499,47 @@ expect "$TEMPLATE_GUARD" none "an echo whose quoted text contains operators and 
   "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "run: git push && gh pr create --body \"only one heading\"; done"'
 
 echo
+echo "== pr-template-guard: shell keywords and quoted assignments don't hide the invocation =="
+expect "$TEMPLATE_GUARD" deny "if gh pr create ...; then" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'if gh pr create --body "## Human overview
+only"; then echo opened; fi'
+expect "$TEMPLATE_GUARD" deny "! gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" '! gh pr create --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "while gh pr create ...; do" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'while gh pr create --body "## Human overview
+only"; do break; done'
+expect "$TEMPLATE_GUARD" deny "time gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'time gh pr create --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "an assignment whose QUOTED value contains a space" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'GH_PAGER="less -R" gh pr create --body "## Human overview
+only"'
+
+echo
+echo "== pr-template-guard: flag-shaped text in the invocation's own prose is not a flag =="
+expect "$TEMPLATE_GUARD" deny "a --title that merely mentions --body-file does not hijack extraction" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --title "fix --body-file parsing" --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "a COMPLETE body that mentions --body-file in its prose is still fine" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --title x --body "## Human overview
+we now parse --body-file too
+
+## AI reviewer
+yes"'
+
+echo
+echo "== skip-label-race-guard: body prose is prose, not flags =="
+expect "$SKIP_GUARD" warn "a --draft mentioned inside this invocation's own body does not suppress the warning" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label greptile:skip --body "reviewer asked: please use --draft next time"'
+expect "$SKIP_GUARD" none "a --label mentioned inside the body applies no label, so there is nothing to warn about" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --body "next time pass --label greptile:skip"'
+expect "$SKIP_GUARD" warn "if gh pr create ...; then, with the skip label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'if gh pr create --label greptile:skip --title x; then echo ok; fi'
+expect "$SKIP_GUARD" warn "an assignment with a quoted, spaced value before gh" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'GH_PAGER="less -R" gh pr create --label greptile:skip --title x'
+
+echo
 echo "== both guards fail LOUDLY, not silently, if the shared scanner is missing =="
 NOLIB=$(mktemp -d)
 cp "$TEMPLATE_GUARD" "$SKIP_GUARD" "$NOLIB/"
