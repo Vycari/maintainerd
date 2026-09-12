@@ -24,6 +24,45 @@ org. See [`hooks/hooks.json`](hooks/hooks.json) for the manifest and
 resolve in an installed marketplace layout, so this is named rather than linked — see
 "Repository layout" in the top-level README).
 
+### How both guards read a command
+
+Both hooks ask the same question of a Bash payload — *which `gh pr create`/`gh pr edit`
+invocations does this command actually run, and what does each one say?* — and both answer it
+with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/lib/gh-command-scan.sh):
+
+1. **Heredoc bodies are redacted in place.** `cat > deploy.sh <<'EOF'` followed by a line reading
+   `gh pr create --body "..."` writes that text to a file; it does not run gh. Redaction replaces
+   only body characters, one-for-one, so the redacted text is byte-for-byte the same length as
+   the original and an offset into one addresses the other.
+2. **The payload is split into simple commands** on `;`, `&&`, `||`, `|`, newlines and subshell
+   parentheses — but only where those are *not* inside single quotes, double quotes, backticks or
+   a `$( … )` substitution. So an `echo "run: gh pr create --label x && …"` is one simple command
+   whose executable is `echo`, and a `--body "$(cat <<'EOF' … EOF)"` stays whole no matter what
+   operator characters or newlines its prose contains.
+3. **Each simple command's executable is resolved by basename**, after dropping the prefix words
+   that don't change which program runs: leading `VAR=value` assignments, `command [-p]`,
+   `env [-i] [VAR=value…]`, and `exec`. `gh`, `command gh`, `env GH_HOST=… gh`, `exec gh` and
+   `/usr/bin/gh` all resolve alike; `mygh` does not.
+
+Every matching invocation is then checked **on its own** — a compound command that opens two PRs
+is two checks, each against its own flags, and a bodyless or non-PR command is never backfilled
+from a neighbour's `--body`. This structural split is deliberately *not* a growing list of regex
+alternatives: per the rule this plugin family follows, a guard that needs a fifth pattern is a
+design change, and tokenizing once is that change.
+
+Known limits of the scanner, all of which fail in the direction of checking *less*, never of a
+false denial:
+
+- Heredoc openers are found by scanning each command line for `<<[-]TAG` without tracking
+  quoting, so a literal `<<TAG` inside a quoted string is misread as an opener and the lines
+  after it are treated as an inert body. A heredoc body that itself contains a nested `gh pr
+  create` is data either way and is never checked — that is the intended behaviour, not a gap.
+- `gh` reached as another program's *data* rather than as its own `argv[0]` —
+  `sh -c "gh pr create …"`, `xargs gh`, `find -exec gh`, `nohup` — resolves to `sh`/`xargs`/`find`
+  and is not recognized.
+- A `gh pr create` written inside a `$( … )` command substitution belongs to the enclosing simple
+  command and is only checked if that enclosing command is itself a `gh pr create`/`edit`.
+
 ### `pr-template-guard`
 
 **Denies** a `gh pr create` or `gh pr edit ... --body ...` whose body is missing a heading the
@@ -42,29 +81,18 @@ down belongs in a hook, not another sentence.
 - Fenced code blocks (` ``` `/`~~~`) are stripped from both the template and the body before
   scanning, so an example `##` inside a code fence never reads as a real heading.
 - The body is read out of `--body "..."`, `--body '...'`, `--body-file <path>`, and the
-  `--body "$(cat <<'EOF' ... EOF)"` heredoc form. If the command is a create/edit that clearly
-  carries a body, but that body's text can't be reliably resolved — an unrecognized quoting
-  shape, or a `$`/backtick expansion whose real value is decided by the shell at runtime, not by
-  this text scan — the hook **warns instead of denying**: a heuristic that fails closed on its
-  own parse errors would block legitimate work it never actually read.
-- The `gh pr create`/`gh pr edit` trigger itself must sit in command position (line start, right
-  after a shell operator, or past a `command`/`env`/absolute-path wrapper) so that `gh issue
-  create --body "saw this: gh pr create ..."` or a `gh pr create` line written into a heredoc
-  that only builds another script (`cat > deploy.sh <<'EOF' ... EOF`) does not fire the hook on
-  text that merely mentions the command.
-- In a compound command (`gh issue create --body <A> && gh pr create --body <B>`), the body
-  validated is the one that actually belongs to the matched `gh pr create`/`gh pr edit` — not
-  whichever `--body`/`--body-file` happens to appear first in the whole command string.
+  `--body "$(cat <<'EOF' ... EOF)"` heredoc form — always from within the invocation it belongs
+  to, so `gh issue create --body <A> && gh pr create --body <B>` checks *B* against the template
+  and never *A*. If the command is a create/edit that clearly carries a body, but that body's
+  text can't be reliably resolved — an unrecognized quoting shape, or a `$`/backtick expansion
+  whose real value is decided by the shell at runtime, not by this text scan — the hook **warns
+  instead of denying**: a heuristic that fails closed on its own parse errors would block
+  legitimate work it never actually read.
+- A command carrying more than one `gh pr create`/`gh pr edit` has every one of them checked
+  against its own body, and the denial names the missing headings of each offender.
 
 Like every hook in the Vycari fleet, this **only ever denies or warns** — it never returns
 `allow`, so it cannot widen anything a command it says nothing about would otherwise need.
-
-Known heuristic limit: the command-position wrapper allowance covers `command`, `command -p`,
-`env [VAR=val...]`, and a `gh` invoked by absolute/relative path — not every interpreter that can
-also run `gh` (`sh -c "gh pr create ..."`, `xargs`, `nohup`, …). A `gh pr create` reached only
-through one of those is not checked; per the split rule the rest of this plugin family follows,
-that is a design change (tokenize, or enumerate more wrappers) to weigh later, not a patch to
-chase indefinitely.
 
 ### `skip-label-race-guard`
 
@@ -80,16 +108,12 @@ from this hook, ever. Which label (if any) means "skip review", and when it's ap
 apply, is entirely a house-rule decision for the consuming repo/organization; this hook only
 knows the mechanism, not the policy.
 
-Like `pr-template-guard`, the trigger is command-position anchored and heredoc bodies are
-redacted first, so this only reads the matched `gh pr create` invocation — an echo, a
-script-building heredoc, or a different chained command's `--body` text mentioning the label or
-`--draft` does not affect the check. Label values are extracted quote-aware, so a label
-containing a space (`--label "skip review"`) is matched in full, not truncated at the space.
-Known heuristic limit: the far end of "this invocation" is bounded at the next `;`/`&`/`|`
-character wherever it occurs, including inside this invocation's own quoted `--body` text — so a
-`--draft`/`--label` placed *after* a `--body` whose content happens to contain one of those
-characters can be missed. Placing `--draft`/`--label` before `--body` (as the warning's own
-suggested fix already does) avoids this entirely.
+Because it uses the same scanner, only a real `gh pr create`'s own flags are read: an echo, a
+script-building heredoc, or a different chained command's `--draft`/`--label` text does not
+affect the check, and each `gh pr create` in a compound command is judged on its own `--draft`.
+Label values are parsed the way gh accepts them — quoted (`--label "skip review"`, matched in
+full rather than truncated at the space), repeated (`--label a --label b`), `--label=value`, the
+`-l` shorthand, and comma-separated (`--label a,b`, which gh splits into two labels).
 
 ## Note on code review
 

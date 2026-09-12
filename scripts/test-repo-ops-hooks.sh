@@ -304,6 +304,36 @@ y" && gh pr create --body "## Human overview
 just this"'
 
 echo
+echo "== pr-template-guard: each gh pr create in a compound command is checked on its OWN body =="
+expect "$TEMPLATE_GUARD" deny "first complete, second incomplete -> denies on the second" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr create --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "first incomplete, second complete -> still denies (the first is not silently skipped)" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+only" && gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y"'
+expect "$TEMPLATE_GUARD" none "both complete -> silent" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr create --body "## Human overview
+a
+
+## AI reviewer
+b"'
+expect "$TEMPLATE_GUARD" none "a bodyless gh pr create is not backfilled with a LATER, unrelated gh command's --body" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --title x --draft && gh pr comment 1 --body "## Human overview
+only"'
+
+echo
 echo "== pr-template-guard: wrapped/invoked-by-path gh still triggers the check =="
 expect "$TEMPLATE_GUARD" deny "command gh pr create" \
   "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'command gh pr create --title x --body "## Human overview
@@ -390,6 +420,104 @@ expect "$SKIP_GUARD" warn "a configured label containing a space is not truncate
   "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip review" --body y'
 expect "$SKIP_GUARD" none "a label that only partially matches (truncated form) is not a false positive either" \
   "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip" --body y'
+
+echo
+echo "== pr-template-guard: EVERY gh pr create/edit in a compound command is checked =="
+expect "$TEMPLATE_GUARD" deny "a SECOND gh pr create with an incomplete body is caught, not just the first" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr create --body "## Human overview
+just this"'
+expect "$TEMPLATE_GUARD" deny "a FIRST incomplete body is still caught when a later one is complete" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+just this" && gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y"'
+expect_match "$TEMPLATE_GUARD" "and another" "two bad bodies in one command are both reported" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+just this" ; gh pr edit 4 --body "nothing at all"'
+expect "$TEMPLATE_GUARD" none "two complete bodies in one command are both fine" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh pr edit 4 --body "## Human overview
+x
+
+## AI reviewer
+y"'
+expect "$TEMPLATE_GUARD" none "a LATER non-PR command's incomplete body is not attributed to the PR" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+x
+
+## AI reviewer
+y" && gh issue create --body "no headings here"'
+expect "$TEMPLATE_GUARD" deny "commands separated by a newline are separate invocations" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'git push
+gh pr create --body "## Human overview
+just this"'
+expect "$TEMPLATE_GUARD" deny "a piped gh pr create is still checked" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'gh pr create --body "## Human overview
+just this" | tee /dev/null'
+expect "$TEMPLATE_GUARD" deny "a gh pr create inside a subshell is still checked" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" '(gh pr create --body "## Human overview
+just this")'
+
+expect "$TEMPLATE_GUARD" deny "a heredoc EARLIER in the command does not shift a later gh pr create out of alignment" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "cat > notes.md <<'EOF'
+## Human overview
+## AI reviewer
+EOF
+gh pr create --body \"## Human overview
+just this\""
+
+echo
+echo "== pr-template-guard: more wrapper forms resolve to the same executable =="
+expect "$TEMPLATE_GUARD" deny "exec gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'exec gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "command -p gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'command -p gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "env with an assignment before gh" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'env GH_HOST=github.com gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "a bare VAR=value assignment before gh" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'GH_HOST=github.com gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" deny "a relative path to gh" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" './bin/gh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "a DIFFERENT executable whose name merely ends in gh is not gh" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'mygh pr create --title x --body "## Human overview
+only"'
+expect "$TEMPLATE_GUARD" none "an echo whose quoted text contains operators and a gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "run: git push && gh pr create --body \"only one heading\"; done"'
+
+echo
+echo "== skip-label-race-guard: every gh pr create is checked, and labels parse in full =="
+expect "$SKIP_GUARD" warn "a SECOND, undrafted gh pr create is caught even when the first is a draft" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --draft --label greptile:skip --title a && gh pr create --label greptile:skip --title b'
+expect "$SKIP_GUARD" none "both gh pr creates are drafts — nothing to warn about" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --draft --label greptile:skip --title a && gh pr create --draft --label greptile:skip --title b'
+expect "$SKIP_GUARD" warn "a comma-separated --label list containing the skip label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label bug,greptile:skip --body y'
+expect "$SKIP_GUARD" warn "a quoted comma-separated list containing the skip label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label "bug,greptile:skip" --body y'
+expect "$SKIP_GUARD" warn "the skip label in the SECOND of two repeated --label flags" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label bug --label greptile:skip --body y'
+expect "$SKIP_GUARD" warn "--label=value form" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'gh pr create --title x --label=greptile:skip --body y'
+expect "$SKIP_GUARD" warn "a spaced label repeated after another label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label bug --label "skip review" --body y'
+expect "$SKIP_GUARD" none "a comma list that only contains a prefix of the skip label" \
+  "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip,review" --body y'
+expect "$SKIP_GUARD" none "an echo mentioning the label, next to a real DRAFTED create" \
+  "$(repo "" "$CONFIG_SKIP_LABEL")" 'echo "gh pr create --label greptile:skip" && gh pr create --draft --label greptile:skip --title a'
 
 echo
 printf '%s\n' "----------------------------------------"

@@ -10,13 +10,22 @@
 # This hook only ever DENIES or WARNS. It never returns "allow", so it cannot widen anything: a
 # command it says nothing about still goes through the normal permission flow.
 #
-#   - DENY only when the body was actually read and a required heading is provably missing.
-#   - WARN (not deny) when the command is a create/edit-with-body but the body's text could not
-#     be resolved from the command string — a heuristic that fails closed on its own parse
+#   - DENY only when a body was actually read and a required heading is provably missing.
+#   - WARN (not deny) when the command runs a create/edit-with-body but that body's text could
+#     not be resolved from the command string — a heuristic that fails closed on its own parse
 #     errors would block legitimate work it never actually looked at.
-#   - Say nothing (exit 0, no output) when: the repo has no template, the command is not a
-#     create/edit carrying a body at all, or the leading command is inert text that only
-#     mentions "gh pr create" (an echo, a heredoc writing another script) rather than running it.
+#   - Say nothing (exit 0, no output) when: the repo has no template, no `gh pr create`/`edit`
+#     is actually RUN by this command, or none of the ones that are carries a body.
+#
+# EVERY `gh pr create`/`gh pr edit` the command runs is checked, each against its own body:
+# the payload is split into simple commands by lib/gh-command-scan.sh (heredoc bodies redacted,
+# split on `;`/`&&`/`||`/`|`/newline/subshell outside quotes), and each simple command whose
+# executable resolves to gh — bare, wrapped in `command`/`env`/`exec`, or reached by path — is
+# scanned on its own. A `gh pr create` that is merely quoted inside an `echo`, a heredoc, or
+# another command's `--body` is not a simple command of its own and is never scanned. The
+# scanner's residual limits (heredoc openers found without quote tracking; gh reached as a
+# wrapper's data, e.g. `sh -c "gh pr create …"`; a `gh pr create` inside `$( … )`) are documented
+# on the functions there and in the plugin README.
 #
 # Generic mechanism only: this script never names a specific repo, label, or org. The one
 # config key it reads — .claude/maintainerd.json's paths.prTemplate — is part of the existing
@@ -30,6 +39,10 @@
 set -uo pipefail
 # (not `set -e`: this script relies on parameter-expansion / case tests whose "no match" arm is
 # a normal, expected outcome, not a failure the script should abort on.)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/gh-command-scan.sh
+. "$SCRIPT_DIR/lib/gh-command-scan.sh"
 
 deny() {
   # $1: reason shown to Claude.
@@ -62,143 +75,30 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 [ -n "$COMMAND" ] || exit 0
 CWD="${CWD:-.}"
 
-# --------------------------------------------------------------- inert-leading-command exemption
-# Mirrors vycari-ops's prod guard: a command whose own leading executable does not execute its
-# arguments (echo, printf, cat, jq) and that carries no shell operator/substitution anywhere is
-# just quoting or describing "gh pr create ..." as inert text (an issue body, a log line), not
-# running it. Any operator/substitution character anywhere forfeits the exemption — the safe
-# direction, since that only ever costs an occasional false positive, never a missed check.
-INERT_LEADING=' echo printf cat jq '
-LEADING=$(printf '%s' "$COMMAND" \
-  | grep -Eo '^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*[a-zA-Z0-9_./-]+' \
-  | grep -Eo '[a-zA-Z0-9_./-]+$' || true)
-LEADING="${LEADING##*/}"
-LEADING_LOWER=$(printf '%s' "$LEADING" | tr '[:upper:]' '[:lower:]')
-case "$INERT_LEADING" in
-  *" $LEADING_LOWER "*)
-    case "$COMMAND" in
-      *';'*|*'&'*|*'|'*|*'`'*|*'$('*|*'('*|*$'\n'*) ;;
-      *) exit 0 ;;
-    esac
-    ;;
+case "$COMMAND" in
+  *gh*) : ;;          # cheap pre-filter: no "gh" anywhere means nothing to scan
+  *) exit 0 ;;
 esac
-
-# ------------------------------------------------------------------------ mask heredoc payloads
-# A heredoc's body is data, not the command being run: `cat > deploy.sh <<'EOF'` followed by a
-# line that reads `gh pr create --body "..."` writes that text into a file, it does not invoke
-# gh. Redact every heredoc body IN PLACE — same length, same newlines, every other character
-# replaced with `x` — before deciding whether this command is a real "gh pr create"/"gh pr edit"
-# trigger. Redacting rather than deleting keeps MASKED byte-for-byte the same length as the
-# original $COMMAND outside heredoc bodies, which is what lets the trigger-position lookup below
-# slice the ORIGINAL command at the right offset instead of re-deriving it. The *extraction* step
-# further down reads that ORIGINAL, unmasked slice, because a legitimate
-# `--body "$(cat <<'EOF' ... EOF)"` needs exactly the heredoc body redaction would destroy.
-mask_all_heredocs() {
-  # Two `local` statements, not one: `local a=$1 b="$a"` expands every word on the line before
-  # any of them is assigned, so under `set -u` the second `$a` is read before `a` exists.
-  local s="$1"
-  local out="" rest="$s" prefix after tag strip line_rest body_start remaining hl trimmed nextrest redacted filler
-  while :; do
-    case "$rest" in
-      *'<<'*) : ;;
-      *) out="$out$rest"; printf '%s' "$out"; return ;;
-    esac
-    prefix="${rest%%<<*}"
-    after="${rest#*<<}"
-    case "$after" in
-      '<'*) out="$out$prefix<<"; rest="$after"; continue ;;  # a here-string "<<<", not a heredoc
-    esac
-    strip=0
-    case "$after" in '-'*) strip=1; after="${after#-}" ;; esac
-    while :; do
-      case "$after" in
-        ' '*) after="${after# }" ;;
-        $'\t'*) after="${after#$'\t'}" ;;
-        *) break ;;
-      esac
-    done
-    case "$after" in
-      "'"*) after="${after#\'}"; tag="${after%%\'*}"; after="${after#*\'}" ;;
-      '"'*) after="${after#\"}"; tag="${after%%\"*}"; after="${after#*\"}" ;;
-      *)
-        tag=$(printf '%s' "$after" | grep -Eo '^[A-Za-z_][A-Za-z0-9_]*' || true)
-        after="${after#"$tag"}"
-        ;;
-    esac
-    if [ -z "$tag" ]; then
-      out="$out$prefix<<$after"
-      printf '%s' "$out"
-      return
-    fi
-    case "$after" in
-      *$'\n'*) line_rest="${after%%$'\n'*}"; body_start="${after#*$'\n'}" ;;
-      *) out="$out$prefix<<$tag$after"; printf '%s' "$out"; return ;;
-    esac
-    remaining="$body_start"
-    redacted=""
-    while :; do
-      case "$remaining" in
-        *$'\n'*) hl="${remaining%%$'\n'*}"; nextrest="${remaining#*$'\n'}" ;;
-        *) hl="$remaining"; nextrest="__EOF__" ;;
-      esac
-      trimmed="$hl"
-      if [ "$strip" -eq 1 ]; then
-        while :; do
-          case "$trimmed" in
-            $'\t'*) trimmed="${trimmed#$'\t'}" ;;
-            *) break ;;
-          esac
-        done
-      fi
-      if [ "$trimmed" = "$tag" ]; then
-        remaining="$nextrest"
-        break
-      fi
-      # Redact this line to same-length filler so total command length (and every offset past
-      # this heredoc) is unaffected by what the line actually said.
-      filler=$(printf '%*s' "${#hl}" '' | tr ' ' 'x')
-      redacted="$redacted$filler"$'\n'
-      if [ "$nextrest" = "__EOF__" ]; then
-        remaining=""
-        break
-      fi
-      remaining="$nextrest"
-    done
-    [ "$remaining" = "__EOF__" ] && remaining=""
-    out="$out$prefix<<$tag$line_rest"$'\n'"$redacted$tag"$'\n'
-    rest="$remaining"
-  done
-}
 
 MASKED=$(mask_all_heredocs "$COMMAND")
 
-# The trigger must sit in COMMAND POSITION — the start of a line, or right after a shell
-# operator (optionally past an env-var prefix, a `command`/`command -p`/`env [VAR=val...]`
-# wrapper, or a path prefix like `/usr/bin/gh`) — not merely appear as a substring anywhere.
-# Without this, `gh issue create --body "saw this: gh pr create --body ..."` would trigger on
-# text that only quotes another command, the same class of false positive vycari-ops's prod
-# guard had to rule out for the same reason. grep matches `^`/`$` per line by default, which is
-# exactly what's wanted here: a real `gh pr create` that starts a later line in a multi-line
-# command (common after a heredoc closes) still counts as command position.
-CMD_POS='(^|[;&|(])[[:space:]]*(command[[:space:]]+(-p[[:space:]]+)?|env[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*)?([a-zA-Z_][a-zA-Z0-9_]*=[^[:space:]]*[[:space:]]+)*'
-GH_EXEC='([a-zA-Z0-9_./-]*/)?gh'
-TRIGGER="${CMD_POS}${GH_EXEC}[[:space:]]+pr[[:space:]]+(create|edit)([^a-zA-Z0-9_]|\$)"
-printf '%s' "$MASKED" | grep -Eq "$TRIGGER" || exit 0
-
-# Extraction must start at the MATCHED invocation, not the top of the whole command: a preceding,
-# unrelated `gh issue create --body <complete>` on the same line as our real
-# `&& gh pr create --body <incomplete>` must not have ITS body read as if it were the PR's (or
-# vice versa on a legitimate PR). Redaction above kept MASKED the same length as $COMMAND, so the
-# byte offset of the match in MASKED is the same offset in the ORIGINAL, unmasked $COMMAND —
-# slice there instead of re-deriving position from scratch.
-MATCH=$(printf '%s' "$MASKED" | grep -Eo "$TRIGGER" | head -1)
-PREFIX="${MASKED%%"$MATCH"*}"
-INVOCATION="${COMMAND:${#PREFIX}}"
-
-case "$INVOCATION" in
-  *'--body'*) ;;   # matches both --body and --body-file
-  *) exit 0 ;;
-esac
+# Collect every gh pr create/edit invocation that carries a body, as "<offset> <length>" into
+# both $MASKED and $COMMAND (masking is length-preserving, so one offset addresses both).
+INVOCATIONS=""
+while IFS=' ' read -r OFF LEN; do
+  [ -n "$OFF" ] || continue
+  SEG_MASKED="${MASKED:$OFF:$LEN}"
+  SUB=$(gh_pr_subcommand "$SEG_MASKED")
+  [ -n "$SUB" ] || continue
+  case "$SEG_MASKED" in
+    *'--body'*) ;;    # matches both --body and --body-file
+    *) continue ;;
+  esac
+  INVOCATIONS="$INVOCATIONS$OFF $LEN"$'\n'
+done <<SEGMENTS
+$(split_simple_commands "$MASKED")
+SEGMENTS
+[ -n "$INVOCATIONS" ] || exit 0
 
 # ---------------------------------------------------------------------------- resolve the template
 resolve_path() {
@@ -265,36 +165,45 @@ scan_double_quoted() {
   return 1
 }
 
-BODY_OK=1
-BODY_TEXT=""
-BODY_FILE_PATH=""
+# extract_body <one invocation's ORIGINAL text> -> sets BODY_OK (0 = text is trustworthy) and
+# BODY_TEXT. The text passed in is this invocation's alone, so the first --body/--body-file in
+# it is by construction the one belonging to this `gh pr create`/`edit`.
+extract_body() {
+  local INVOCATION="$1"
+  local REST VAL AFTER BODY_FILE_PATH
+  local HAFTER HSTRIP HQUOTED HTAG HBODY_START HREMAINING HCONTENT HFOUND HLINE HNEXT HTRIMMED
+  BODY_OK=1
+  BODY_TEXT=""
 
-if printf '%s' "$INVOCATION" | grep -Eq -- '--body-file([[:space:]]|=)'; then
-  REST="${INVOCATION#*--body-file}"
-  case "$REST" in
-    '='*) REST="${REST#=}" ;;
-    *) REST="${REST# }" ;;
-  esac
-  while :; do
+  if printf '%s' "$INVOCATION" | grep -Eq -- '--body-file([[:space:]]|=)'; then
+    REST="${INVOCATION#*--body-file}"
     case "$REST" in
-      ' '*) REST="${REST# }" ;;
-      $'\t'*) REST="${REST#$'\t'}" ;;
-      *) break ;;
+      '='*) REST="${REST#=}" ;;
+      *) REST="${REST# }" ;;
     esac
-  done
-  case "$REST" in
-    "'"*) VAL="${REST#\'}"; VAL="${VAL%%\'*}" ;;
-    '"'*) VAL="${REST#\"}"; VAL="${VAL%%\"*}" ;;
-    *) VAL=$(printf '%s' "$REST" | grep -Eo '^[^[:space:]]+' || true) ;;
-  esac
-  if [ -n "$VAL" ]; then
-    BODY_FILE_PATH=$(resolve_path "$VAL")
-    if [ -f "$BODY_FILE_PATH" ]; then
-      BODY_TEXT=$(cat "$BODY_FILE_PATH")
-      BODY_OK=0
+    while :; do
+      case "$REST" in
+        ' '*) REST="${REST# }" ;;
+        $'\t'*) REST="${REST#$'\t'}" ;;
+        *) break ;;
+      esac
+    done
+    case "$REST" in
+      "'"*) VAL="${REST#\'}"; VAL="${VAL%%\'*}" ;;
+      '"'*) VAL="${REST#\"}"; VAL="${VAL%%\"*}" ;;
+      *) VAL=$(printf '%s' "$REST" | grep -Eo '^[^[:space:]]+' || true) ;;
+    esac
+    if [ -n "$VAL" ]; then
+      BODY_FILE_PATH=$(resolve_path "$VAL")
+      if [ -f "$BODY_FILE_PATH" ]; then
+        BODY_TEXT=$(cat "$BODY_FILE_PATH")
+        BODY_OK=0
+      fi
     fi
+    return 0
   fi
-elif printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)'; then
+
+  printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)' || return 0
   REST="${INVOCATION#*--body}"
   case "$REST" in
     '='*) REST="${REST#=}" ;;
@@ -310,7 +219,8 @@ elif printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)'; then
   case "$REST" in
     '"$(cat'*|'$(cat'*)
       # --body "$(cat <<'EOF' ... EOF)" / --body $(cat <<EOF ... EOF) — read the heredoc that
-      # feeds the command substitution, straight out of the ORIGINAL command text.
+      # feeds the command substitution, straight out of the ORIGINAL command text (the scanner's
+      # masking redacted it, which is exactly what must not be read here).
       case "$REST" in
         *'<<'*)
           HAFTER="${REST#*<<}"
@@ -362,10 +272,10 @@ elif printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)'; then
                   BODY_TEXT="$HCONTENT"
                   BODY_OK=0
                   # An unquoted heredoc delimiter (`<<EOF`, no quotes anywhere in the word) still
-                  # expands $vars/`` `cmd` ``/$(...) inside the body — the text bash hands to psql
-                  # (well, to gh) is decided at runtime, not the text scanned here. A quoted
-                  # delimiter (`<<'EOF'`/`<<"EOF"`) suppresses all of that, so its body is safe to
-                  # read literally regardless of what it contains.
+                  # expands $vars/`` `cmd` ``/$(...) inside the body — the text bash hands to gh
+                  # is decided at runtime, not the text scanned here. A quoted delimiter
+                  # (`<<'EOF'`/`<<"EOF"`) suppresses all of that, so its body is safe to read
+                  # literally regardless of what it contains.
                   if [ "$HQUOTED" -eq 0 ]; then
                     case "$BODY_TEXT" in
                       *'$'*|*'`'*) BODY_OK=1 ;;
@@ -399,11 +309,8 @@ elif printf '%s' "$INVOCATION" | grep -Eq -- '--body([[:space:]]|=)'; then
       fi
       ;;
   esac
-fi
-
-if [ "$BODY_OK" -ne 0 ]; then
-  warn "repo-ops pr-template-guard: this looks like \`gh pr create\`/\`gh pr edit\` with a body, but the body text could not be reliably read out of the command — either it isn't a plain \`--body \"...\"\`/\`--body '...'\`/heredoc/\`--body-file\` form this heuristic recognizes, or it contains a shell expansion (\`\$\` or a backtick) whose real value is decided at runtime, not by this text scan. Not denying on something it can't be sure about — double-check the body against $TEMPLATE_PATH yourself before opening the PR."
-fi
+  return 0
+}
 
 # --------------------------------------------------------------------------- heading comparison
 strip_fences() {
@@ -423,31 +330,63 @@ extract_headings() {
 
 TEMPLATE_CONTENT=$(cat "$TEMPLATE_PATH")
 TEMPLATE_HEADINGS=$(extract_headings "$TEMPLATE_CONTENT")
-BODY_HEADINGS=$(extract_headings "$BODY_TEXT")
 
-MISSING=""
-while IFS= read -r heading; do
-  [ -n "$heading" ] || continue
-  case "$heading" in
-    *'(optional)'*) continue ;;   # a heading marked optional is never required
-  esac
-  if ! printf '%s\n' "$BODY_HEADINGS" | grep -qxF "$heading"; then
-    if [ -z "$MISSING" ]; then
-      MISSING="$heading"
-    else
-      MISSING="$MISSING
+# missing_headings <body text> -> the required headings that body lacks, one per line
+missing_headings() {
+  local body_headings missing="" heading
+  body_headings=$(extract_headings "$1")
+  while IFS= read -r heading; do
+    [ -n "$heading" ] || continue
+    case "$heading" in
+      *'(optional)'*) continue ;;   # a heading marked optional is never required
+    esac
+    if ! printf '%s\n' "$body_headings" | grep -qxF "$heading"; then
+      if [ -z "$missing" ]; then
+        missing="$heading"
+      else
+        missing="$missing
 $heading"
+      fi
     fi
-  fi
-done <<HEADINGS
+  done <<HEADINGS
 $TEMPLATE_HEADINGS
 HEADINGS
+  printf '%s' "$missing"
+}
 
-if [ -n "$MISSING" ]; then
+# ------------------------------------------------------------- check every invocation, in order
+DENY_REASON=""
+UNRESOLVED=0
+while IFS=' ' read -r OFF LEN; do
+  [ -n "$OFF" ] || continue
+  extract_body "${COMMAND:$OFF:$LEN}"
+  if [ "$BODY_OK" -ne 0 ]; then
+    UNRESOLVED=1
+    continue
+  fi
+  MISSING=$(missing_headings "$BODY_TEXT")
+  [ -n "$MISSING" ] || continue
   LIST=$(printf '%s' "$MISSING" | sed 's/^/  - /')
-  deny "repo-ops pr-template-guard: this PR body is missing heading(s) required by $TEMPLATE_PATH:
-$LIST
+  if [ -z "$DENY_REASON" ]; then
+    DENY_REASON="repo-ops pr-template-guard: this PR body is missing heading(s) required by $TEMPLATE_PATH:
+$LIST"
+  else
+    DENY_REASON="$DENY_REASON
+
+…and another \`gh pr create\`/\`gh pr edit\` in the same command is missing:
+$LIST"
+  fi
+done <<INVOCATIONS
+$INVOCATIONS
+INVOCATIONS
+
+if [ -n "$DENY_REASON" ]; then
+  deny "$DENY_REASON
 Add each one verbatim (matching '##'/'###' level and text exactly), or mark it optional in the template itself if it no longer applies. Extra headings beyond the template are fine."
+fi
+
+if [ "$UNRESOLVED" -ne 0 ]; then
+  warn "repo-ops pr-template-guard: this looks like \`gh pr create\`/\`gh pr edit\` with a body, but the body text could not be reliably read out of the command — either it isn't a plain \`--body \"...\"\`/\`--body '...'\`/heredoc/\`--body-file\` form this heuristic recognizes, or it contains a shell expansion (\`\$\` or a backtick) whose real value is decided at runtime, not by this text scan. Not denying on something it can't be sure about — double-check the body against $TEMPLATE_PATH yourself before opening the PR."
 fi
 
 exit 0
