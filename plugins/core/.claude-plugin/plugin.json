@@ -1,6 +1,6 @@
 {
   "name": "maintainerd-core",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Foundation for the maintainerd maintainer toolkit. Ships bootstrap (generates a repo's .claude/maintainerd.json config contract and starter guidelines), doctor (validates that setup — config, paths, commands, labels, guidelines, rosters, the coverage ratchet — and, with --profile, reports a repo's drift from a fleet's repo standard), and new-repo (creates or adopts a repo against that standard), plus the canonical config and profile schema references that every other maintainerd plugin reads.",
   "author": {
     "name": "Allen Hutchison",
