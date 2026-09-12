@@ -53,7 +53,7 @@ Before anything else, load the repo config (see
 | `marker` | `<!-- deps-flow -->` | HTML comment stamped on every comment/issue this skill posts, so later runs recognize their own output. |
 | `autoMergeSemver` | `["patch", "minor"]` | Bump levels eligible for auto-merge. Anything outside this list is **held for the human**. |
 | `holdPackages` | `[]` | Package names (exact or `*`-globbed) never auto-merged at any level. |
-| `mergeMethod` | `"squash"` | `squash` \| `merge` \| `rebase` — must be enabled in the repo's settings, and on a merge-queue branch must equal the queue's own `merge_method` (a mismatch merges nothing — [`references/merge-queue.md`](references/merge-queue.md)). |
+| `mergeMethod` | `"squash"` | `squash` \| `merge` \| `rebase` — must be enabled in the repo's settings, and on a merge-queue branch must name the queue's own `merge_method` (compared case-insensitively; a mismatch merges nothing — [`references/merge-queue.md`](references/merge-queue.md)). |
 | `requireApproval` | `false` | When `true`, also require `reviewDecision == "APPROVED"` (not just "nothing blocking"). |
 | `maxMergesPerRun` | `5` | Hard cap on merges per invocation, drain mode included. |
 | `rebaseNudgeMinutes` | `30` | How long a stale PR may sit before nudging with `@dependabot rebase`. |
@@ -387,8 +387,10 @@ enqueued PR counts against that cap exactly like a merged one. Then, **one at a 
    ```
 
    **The base branch requires a merge queue** — a direct merge is refused there, so arming the queue
-   is the merge (invariant 2). First assert `config.depsFlow.mergeMethod` equals the queue's
-   `merge_method`; on a mismatch, merge nothing on this branch this pass and report both values.
+   is the merge (invariant 2). First assert `config.depsFlow.mergeMethod` names the same method as
+   the queue's `merge_method` — compare case-insensitively, since the config value is lowercase and
+   the API's is uppercase; on a real mismatch, merge nothing on this branch this pass and report both
+   values.
    Then, same gate, same validated SHA:
 
    ```bash

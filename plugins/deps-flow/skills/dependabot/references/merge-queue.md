@@ -41,9 +41,11 @@ a stale "no queue" would turn into an unexplained refusal every pass (or worse, 
 
 ## Step B — The method must match
 
-The queue merges with **its own** `merge_method`, not the one passed on the command line. If
-`config.depsFlow.mergeMethod` (lowercase) does not equal `parameters.merge_method` (uppercase),
-**merge nothing on that branch this pass** and report the exact mismatch:
+The queue merges with **its own** `merge_method`, not the one passed on the command line. Compare
+`config.depsFlow.mergeMethod` with `parameters.merge_method` **case-insensitively** — the config
+value is lowercase (`"squash"`) and the API's is uppercase (`"SQUASH"`), and those two *agree*. If
+they name different methods, **merge nothing on that branch this pass** and report the exact
+mismatch, both values as they were read:
 
 ```text
 merge-queue method mismatch: depsFlow.mergeMethod "rebase" vs queue merge_method "SQUASH" — merging nothing

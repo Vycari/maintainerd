@@ -27,18 +27,42 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 def code_lines(text):
     """Yield (lineno, line) for lines inside fenced code blocks."""
-    fence = None
+    opener = None  # (char, length) of the fence currently open
     for lineno, line in enumerate(text.splitlines(), 1):
         match = FENCE.match(line)
-        if fence is None:
+        run = match.group(1) if match else ""
+        if opener is None:
             if match:
-                fence = match.group(1)[0] * 3
+                opener = (run[0], len(run))
             continue
-        # A closing fence is at least as long as the opener and carries no info string.
-        if match and match.group(1)[0] * 3 == fence and not line.strip()[len(match.group(1)):].strip():
-            fence = None
+        # A closing fence uses the same character, is AT LEAST as long as the opener, and
+        # carries no info string. A shorter run does not close a longer block — treating it
+        # as a closer would drop the rest of the block out of the scan unnoticed.
+        char, length = opener
+        if match and run[0] == char and len(run) >= length and not line.strip()[len(run):].strip():
+            opener = None
             continue
         yield lineno, line
+
+
+def strip_comment(line):
+    """Drop a trailing `#` comment, respecting quotes.
+
+    `gh pr merge 5 --auto  # --match-head-commit abc` runs unpinned: the pin is a comment.
+    A checker that tokenized the raw line would read it as pinned, which is the one way this
+    guard could bless the exact command it exists to catch.
+    """
+    quote = None
+    for i, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+        elif char == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
 
 
 def commands(text):
@@ -50,7 +74,7 @@ def commands(text):
     """
     buf, start = "", None
     for lineno, line in code_lines(text):
-        stripped = line.strip()
+        stripped = strip_comment(line).strip()
         if start is None:
             start = lineno
         if stripped.endswith("\\"):
@@ -94,6 +118,14 @@ CASES = [
     ("```bash\ngh auth status; gh pr merge 5 --auto\n```\n", 1),
     # Tildes fence too, and a longer fence closes.
     ("~~~bash\ngh pr merge 5 --auto\n~~~\n", 1),
+    # A shorter run does not close a longer fence: the command after it is still in the block.
+    ("````markdown\n```\ngh pr merge 5 --auto\n```\n````\n", 1),
+    # The pin must be a real argument, not a comment.
+    ("```bash\ngh pr merge 5 --auto  # --match-head-commit abc123\n```\n", 1),
+    # A `#` inside quotes is not a comment.
+    ("```bash\ngh pr merge 5 --auto --match-head-commit \"abc#123\"\n```\n", 0),
+    # A comment on a continued line does not swallow the rest of the command.
+    ("```bash\ngh pr merge 5 --auto \\\n  --match-head-commit abc123  # pin it\n```\n", 0),
     # A closed block does not leak into the prose that follows.
     ("```bash\necho hi\n```\nThen `gh pr merge --auto` is banned.\n", 0),
 ]
