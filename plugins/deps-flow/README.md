@@ -32,8 +32,10 @@ on arming GitHub auto-merge is narrowed rather than dropped: it stays absolute o
 queue, and where a queue is required the skill arms it **in the same call that would have merged
 directly, always with `--match-head-commit <the SHA the gate just validated>`**. That pin is the
 safety property — GitHub drops the request if Dependabot force-pushes afterwards, so the standing
-instruction can never merge a commit the skill did not look at. The skill detects the rule per pass
-and treats a detection it cannot complete as "no queue" (the stricter rule). On that path "done"
+instruction can never merge a commit the skill did not look at. The skill detects the queue per pass from both mechanisms that can impose one — the rules API for
+rulesets, and the GraphQL `mergeQueue(branch:)` field for a queue enabled through classic branch
+protection, which the rules API does not report — and treats a detection it cannot complete as "no
+queue" (the stricter rule). On that path "done"
 means *enqueued*: the skill does not wait for the queue, it counts the PR against
 `maxMergesPerRun`, it holds the PR's file group until the queue reports it merged, and it never ends
 a pass with a PR armed but not enqueued.

@@ -281,10 +281,20 @@ gh auth status
 gh repo view "$REPO" --json nameWithOwner        # $REPO = config.repo
 
 # Does the target branch require a merge queue? This decides the merge step (step 2) and is
-# read once per pass, never cached across passes — a ruleset can be added between ticks.
+# read once per pass, never cached across passes — a queue can be added between ticks.
 # $BASE = config.defaultBranch (URL-encode it if the branch name contains "/").
 gh api "repos/$REPO/rules/branches/$BASE" \
   --jq '[.[] | select(.type == "merge_queue") | .parameters]'
+
+# Empty is NOT proof: a queue enabled through classic branch protection rather than a
+# ruleset never appears above. Ask the branch itself before concluding "no queue".
+gh api graphql -f query='
+  query($owner:String!, $name:String!, $branch:String!) {
+    repository(owner:$owner, name:$name) {
+      mergeQueue(branch:$branch) { id configuration { mergeMethod mergingStrategy } }
+    }
+  }' -F owner=<owner> -F name=<name> -F branch="$BASE" \
+  --jq '.data.repository.mergeQueue'
 
 # Filter by author SERVER-side, so the limit applies to the bot's PRs and not to the first
 # page of everyone's. Build the query from config.depsFlow.botLogins — one author: qualifier
@@ -313,12 +323,15 @@ than "queue empty". Merging a subset is fine; *concluding there's nothing left* 
 what puts a stalled queue out of sight. Print "queue empty" only when a complete scan found no bot
 PRs at all.
 
-A **non-empty** result means the branch requires a merge queue: merging there is
-`--auto --match-head-commit` (invariant 2), the queue's `merge_method` must match
-`config.depsFlow.mergeMethod`, and serialization extends across passes. An **empty** result means no
-queue — the direct merge below, `--auto` banned. **Any error or unparseable output is "no queue"**:
-fail closed to the stricter rule and say so in the report, because a direct merge on a queued branch
-is a clean refusal while an unexplained arming is not. Read
+**Either source answering "queue" means queue; only both answering "no" means no.** A non-empty rules
+array (`parameters.merge_method`) or a non-null `mergeQueue` (`configuration.mergeMethod`) means
+merging there is `--auto --match-head-commit` (invariant 2), that method must match
+`config.depsFlow.mergeMethod`, and serialization extends across passes. Ask the second source
+whenever the first comes back empty — the two mechanisms are independent, and a queue set up through
+classic branch protection is invisible to the rules API while still refusing every direct merge.
+**Any error or unparseable output is "no queue" for that source**: fail closed to the stricter rule,
+say in the report which source failed and why, because a direct merge on a queued branch is a clean
+refusal while an unexplained arming is not. Read
 [`references/merge-queue.md`](references/merge-queue.md) before merging on a queued branch.
 
 If `gh` auth or repo resolution fails, print the failure and stop — do not attempt repairs. A failed

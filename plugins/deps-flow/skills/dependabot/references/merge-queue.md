@@ -17,9 +17,12 @@ never looked at, which is what invariant 2 is about.
 
 ## Step A — Detect the queue (once per pass, per base branch)
 
-Ask GitHub for the rules that are **in effect** on the PR's base branch. This endpoint evaluates
-every ruleset's conditions for you, which is why it is the right read rather than listing rulesets
-and matching branch patterns by hand:
+A merge queue reaches a branch by **two** mechanisms, and a branch that has one may well not have
+the other. Ask both, in this order, and stop at the first that answers "queue".
+
+**A1 — the rules API (rulesets).** Ask GitHub for the rules that are **in effect** on the PR's base
+branch. This endpoint evaluates every ruleset's conditions for you, which is why it is the right read
+rather than listing rulesets and matching branch patterns by hand:
 
 ```bash
 # $BASE is config.defaultBranch. A branch name containing "/" must be URL-encoded.
@@ -27,25 +30,57 @@ gh api "repos/$REPO/rules/branches/$BASE" \
   --jq '[.[] | select(.type == "merge_queue") | .parameters]'
 ```
 
-- A **non-empty** array → this branch requires a merge queue. Keep `parameters.merge_method`
-  (`"SQUASH"` \| `"MERGE"` \| `"REBASE"`) and, for the report, `grouping_strategy`.
-- An **empty** array → no queue. Merge directly, and `--auto` is banned as before.
-- **Anything else — a non-zero exit, a 403/404, output you cannot parse — is "no queue".** Fail
-  closed to the stricter rule: the worst case is a direct merge that GitHub refuses on a queued
-  branch, which is a clean recorded refusal and costs one pass. The opposite default would arm an
-  unattended merge because an API call was flaky, which is the failure this whole document exists to
-  prevent. Say in the exit report that detection failed and what the error was.
+A **non-empty** array → this branch requires a merge queue. Keep `parameters.merge_method`
+(`"SQUASH"` \| `"MERGE"` \| `"REBASE"`) as the method to assert in step B, and `grouping_strategy`
+for the report.
 
-Detect per pass. A ruleset can be added or removed between ticks, and a cached answer is exactly how
-a stale "no queue" would turn into an unexplained refusal every pass (or worse, the other way).
+**A2 — the GraphQL `mergeQueue` field (legacy branch protection).** An empty array from A1 is **not**
+proof there is no queue: a queue enabled through classic branch protection rather than a ruleset does
+not appear there at all — `rules/branches/<branch>` returns `[]` and the repo may list no rulesets —
+while the branch still refuses every direct merge. So when A1 comes back empty, ask the branch
+itself:
+
+```bash
+gh api graphql -f query='
+  query($owner:String!, $name:String!, $branch:String!) {
+    repository(owner:$owner, name:$name) {
+      mergeQueue(branch:$branch) {
+        id
+        configuration { mergeMethod mergingStrategy maximumEntriesToBuild }
+      }
+    }
+  }' -F owner=<owner> -F name=<name> -F branch="$BASE" \
+  --jq '.data.repository.mergeQueue'
+```
+
+A **non-null** `mergeQueue` → this branch has a queue. Here `configuration.mergeMethod` (same
+`SQUASH`/`MERGE`/`REBASE` vocabulary) is the method to assert in step B, and `mergingStrategy` is the
+grouping to report. A **null** result → no queue from this source either.
+
+**Resolving the two.** Either source saying "queue" means queue; only both saying "no" means no. They
+describe the same server-side gate, so they do not disagree about the method in practice — if they
+somehow did, treat it as the step-B mismatch case and merge nothing on that branch this pass rather
+than picking a winner.
+
+**Fail closed on error.** A non-zero exit, a 403/404, a GraphQL `errors` block, output you cannot
+parse — from *either* source — is "no queue" for that source, and "no queue" from both is the old
+outright ban on `--auto`. The worst case is a direct merge that GitHub refuses on a queued branch,
+which is a clean recorded refusal and costs one pass. The opposite default would arm an unattended
+merge because an API call was flaky, which is the failure this whole document exists to prevent. Say
+in the exit report that detection failed, which source failed, and what the error was.
+
+Detect per pass. A ruleset or a branch-protection setting can be added or removed between ticks, and
+a cached answer is exactly how a stale "no queue" would turn into an unexplained refusal every pass
+(or worse, the other way).
 
 ## Step B — The method must match
 
-The queue merges with **its own** `merge_method`, not the one passed on the command line. Compare
-`config.depsFlow.mergeMethod` with `parameters.merge_method` **case-insensitively** — the config
-value is lowercase (`"squash"`) and the API's is uppercase (`"SQUASH"`), and those two *agree*. If
-they name different methods, **merge nothing on that branch this pass** and report the exact
-mismatch, both values as they were read:
+The queue merges with **its own** method, not the one passed on the command line. Compare
+`config.depsFlow.mergeMethod` with whichever source answered in step A —
+`parameters.merge_method` (A1) or `configuration.mergeMethod` (A2) — **case-insensitively**: the
+config value is lowercase (`"squash"`) and both APIs' are uppercase (`"SQUASH"`), and those two
+*agree*. If they name different methods, **merge nothing on that branch this pass** and report the
+exact mismatch, both values as they were read:
 
 ```text
 merge-queue method mismatch: depsFlow.mergeMethod "rebase" vs queue merge_method "SQUASH" — merging nothing
