@@ -15,7 +15,7 @@ skill generates that contract for any repo.
 | Plugin | Skills | Install when |
 | --- | --- | --- |
 | **[maintainerd-core](plugins/core/README.md)** | `bootstrap`, `doctor`, `new-repo` | Always — `bootstrap` generates the config every other plugin needs; `doctor` validates it; `new-repo` brings a repo to a fleet's standard. |
-| **[repo-ops](plugins/repo-ops/README.md)** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` | You want the baseline PR + changelog dev flow. |
+| **[repo-ops](plugins/repo-ops/README.md)** | `create-pr`, `address-review`, `release`, `daily-changelog`, `daily-update` (plus two `PreToolUse` Bash hooks: `pr-template-guard`, `skip-label-race-guard`) | You want the baseline PR + changelog dev flow. |
 | **[audits](plugins/audits/README.md)** | `audit-architecture`, `audit-tests`, `audit-security`, `audit-deps`, `audit-design-docs`, `audit-product-docs` | You want scheduled tech-debt / test / security / dependency / doc sweeps. |
 | **[research](plugins/research/README.md)** | `research-radar` | You want proactive research surfaced — a periodic arXiv scan for papers relevant to this repo. |
 | **[journal](plugins/journal/README.md)** | `worklog` | You want a day's shipped work captured into your Obsidian vault (user-scoped — spans all your repos). |
@@ -140,7 +140,7 @@ maintainerd/
   scripts/test-coverage.sh
   plugins/
     core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor,new-repo}/  references/{config-schema,model-tiers,profile-schema}.md  scripts/{coverage-adapt,coverage-check,profile-resolve,settings-diff}.sh
-    repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/
+    repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/  hooks/{hooks.json,scripts/{pr-template-guard,skip-label-race-guard}.sh}
     audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
     journal/   .claude-plugin/plugin.json  plugin.json  skills/{worklog}/
