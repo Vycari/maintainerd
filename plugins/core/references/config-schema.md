@@ -155,7 +155,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "marker":          "<!-- deps-flow -->",   // HTML comment stamped on its own comments/issues
     "autoMergeSemver": ["patch", "minor"],     // bump levels eligible for auto-merge; anything else is held for the human
     "holdPackages":    [],                     // package names (exact or *-globbed) never auto-merged at any level
-    "mergeMethod":     "squash",               // "squash" | "merge" | "rebase" — must be allowed by the repo's settings
+    "mergeMethod":     "squash",               // "squash" | "merge" | "rebase" — must be allowed by the repo's settings, and must match the merge queue's own merge_method where the target branch has a merge-queue rule
     "requireApproval": false,                  // true = also require reviewDecision == APPROVED, not just "nothing blocking"
     "maxMergesPerRun": 5,                      // hard cap on merges per invocation (drain mode included)
     "rebaseNudgeMinutes": 30,                  // how long a stale PR sits before a single `@dependabot rebase` nudge
@@ -310,7 +310,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `autoMergeSemver` *(`["patch","minor"]`)* is the bump levels eligible for auto-merge, everything
   else (majors, and `0.x` minors, which the skill classifies as major) is **held for the human**;
   `holdPackages` *(`[]`)* never auto-merges regardless of level; `mergeMethod` *(`"squash"`)* must be
-  a method the repo allows; `requireApproval` *(`false`)* additionally demands an explicit approving
+  a method the repo allows — and where the target branch carries a merge-queue rule it must equal
+  that queue's own `merge_method`, since the queue merges with its method and not the one the skill
+  passes; a mismatch merges nothing and is reported rather than silently overridden; `requireApproval` *(`false`)* additionally demands an explicit approving
   review; `maxMergesPerRun` *(`5`)* caps merges per invocation including drain mode;
   `rebaseNudgeMinutes` *(`30`)* is how long a stale PR waits before one `@dependabot rebase` nudge
   (Dependabot usually rebases unprompted, so the default action is to wait); `blockedLabel`

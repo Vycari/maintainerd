@@ -53,7 +53,7 @@ Before anything else, load the repo config (see
 | `marker` | `<!-- deps-flow -->` | HTML comment stamped on every comment/issue this skill posts, so later runs recognize their own output. |
 | `autoMergeSemver` | `["patch", "minor"]` | Bump levels eligible for auto-merge. Anything outside this list is **held for the human**. |
 | `holdPackages` | `[]` | Package names (exact or `*`-globbed) never auto-merged at any level. |
-| `mergeMethod` | `"squash"` | `squash` \| `merge` \| `rebase` — must be enabled in the repo's settings. |
+| `mergeMethod` | `"squash"` | `squash` \| `merge` \| `rebase` — must be enabled in the repo's settings, and on a merge-queue branch must equal the queue's own `merge_method` (a mismatch merges nothing — [`references/merge-queue.md`](references/merge-queue.md)). |
 | `requireApproval` | `false` | When `true`, also require `reviewDecision == "APPROVED"` (not just "nothing blocking"). |
 | `maxMergesPerRun` | `5` | Hard cap on merges per invocation, drain mode included. |
 | `rebaseNudgeMinutes` | `30` | How long a stale PR may sit before nudging with `@dependabot rebase`. |
@@ -67,9 +67,20 @@ Before anything else, load the repo config (see
    branch protection, no re-running or disabling a failing check to get it green, no merging with a
    check still pending. If a merge is refused by GitHub, that refusal stands — report it, don't route
    around it.
-2. **Never enable GitHub auto-merge** (`gh pr merge --auto`). Auto-merge is a standing instruction
-   that outlives this run and would merge a PR later, under conditions this skill never evaluated.
-   Every merge happens in-run, immediately after its gate passed.
+2. **Never arm an unattended merge that outlives the gate.** `gh pr merge --auto` is a standing
+   instruction GitHub keeps after this run ends, and left to itself it merges a PR later under
+   conditions this skill never evaluated. On a branch with **no merge-queue rule** it is banned
+   outright: every merge there happens in-run, immediately after its gate passed. On a branch whose
+   ruleset **requires a merge queue** there is no direct merge to do instead — GitHub refuses
+   `gh pr merge` without `--auto` — so arming *is* merging, and it is permitted only in the same call
+   that would otherwise have merged directly and only with
+   **`--match-head-commit <the SHA the gate validated>`**. The head pin is what makes it safe, not
+   the queue: GitHub drops the request if Dependabot force-pushes afterwards, so nothing this skill
+   did not look at can be merged by the standing instruction. An `--auto` without a head pin stays
+   banned everywhere. **Detect the queue, never assume it** — a detection you cannot complete means
+   "no queue", i.e. the outright ban. And a pass never ends with a PR armed but not enqueued: it
+   disarms it (`gh pr merge --disable-auto`) and re-gates it next pass. Full procedure:
+   [`references/merge-queue.md`](references/merge-queue.md).
 3. **Only PRs authored by a login in `config.depsFlow.botLogins`.** Verify `author.login` exactly —
    never infer bot authorship from the branch name, the title, or a label, all of which a human can
    set. A human's PR is never this skill's business, even one that only bumps a dependency.
@@ -251,6 +262,14 @@ Group the gate-passing PRs into **disjoint file groups**, and take at most **one
 per pass — the oldest. Everything else in that group is expected to go `BEHIND`/`DIRTY` the moment its
 neighbour merges; that's the rebase pass's job, not a failure.
 
+**On a merge-queue branch the group stays occupied across passes.** Enqueuing a PR does not move the
+base — the queue does, when it reports that PR merged — so an overlapping neighbour still looks
+`CLEAN` against the old base, and arming it too would batch both lockfile bumps together, fail the
+batch, and evict both. So: **do not arm another PR in a file group that already has a PR enqueued and
+not yet merged.** Check with `gh pr view <N> --repo "$REPO" --json autoMergeRequest,mergeQueueEntry`
+(or the GraphQL `mergeQueueEntry { state }`); an entry in *any* state occupies the group, and a state
+you could not read occupies it too (invariant 8). Such a neighbour is `waiting`, not stale.
+
 ## The run algorithm
 
 One pass = steps 0–5. A scheduled tick runs one pass; drain mode repeats it.
@@ -260,6 +279,12 @@ One pass = steps 0–5. A scheduled tick runs one pass; drain mode repeats it.
 ```bash
 gh auth status
 gh repo view "$REPO" --json nameWithOwner        # $REPO = config.repo
+
+# Does the target branch require a merge queue? This decides the merge step (step 2) and is
+# read once per pass, never cached across passes — a ruleset can be added between ticks.
+# $BASE = config.defaultBranch (URL-encode it if the branch name contains "/").
+gh api "repos/$REPO/rules/branches/$BASE" \
+  --jq '[.[] | select(.type == "merge_queue") | .parameters]'
 
 # Filter by author SERVER-side, so the limit applies to the bot's PRs and not to the first
 # page of everyone's. Build the query from config.depsFlow.botLogins — one author: qualifier
@@ -288,7 +313,16 @@ than "queue empty". Merging a subset is fine; *concluding there's nothing left* 
 what puts a stalled queue out of sight. Print "queue empty" only when a complete scan found no bot
 PRs at all.
 
-If `gh` auth or repo resolution fails, print the failure and stop — do not attempt repairs.
+A **non-empty** result means the branch requires a merge queue: merging there is
+`--auto --match-head-commit` (invariant 2), the queue's `merge_method` must match
+`config.depsFlow.mergeMethod`, and serialization extends across passes. An **empty** result means no
+queue — the direct merge below, `--auto` banned. **Any error or unparseable output is "no queue"**:
+fail closed to the stricter rule and say so in the report, because a direct merge on a queued branch
+is a clean refusal while an unexplained arming is not. Read
+[`references/merge-queue.md`](references/merge-queue.md) before merging on a queued branch.
+
+If `gh` auth or repo resolution fails, print the failure and stop — do not attempt repairs. A failed
+*rules* read is not that: it degrades to "no queue" and the pass continues.
 
 For each candidate PR, pull its checks and reviews:
 
@@ -298,6 +332,12 @@ gh api "repos/$REPO/pulls/<N>/reviews" --jq '[.[] | {user: .user.login, state: .
 ```
 
 ### Step 1 — Classify
+
+**On a merge-queue branch, sweep for stray armings first.** Any candidate with `autoMergeRequest`
+set and no `mergeQueueEntry` was armed by a pass that never finished, or was **evicted** by the queue
+— and GitHub leaves auto-merge armed after an eviction, so it would re-enqueue itself later on a gate
+nobody ran. Disarm it (`gh pr merge <N> --repo "$REPO" --disable-auto`) and classify it from scratch,
+whoever armed it ([`references/merge-queue.md`](references/merge-queue.md), step E).
 
 Put every candidate in exactly one bucket:
 
@@ -314,14 +354,17 @@ Put every candidate in exactly one bucket:
 - **failing** — a concluded check failed, or `mergeStateStatus == "UNSTABLE"`.
 - **stale** — `BEHIND` or `DIRTY`.
 - **waiting** — checks still running, `HAS_HOOKS`/`UNKNOWN`, or `BLOCKED` with checks still reporting.
+  Also, on a merge-queue branch: the PR is itself enqueued (mid-flight, leave it alone), or its file
+  group holds a PR that is enqueued and not yet merged.
 - **blocked-on-human** — `BLOCKED` with all checks concluded green (a required review is missing), or
   a live `CHANGES_REQUESTED`.
 - **mergeable** — everything in the gate passes.
 
 ### Step 2 — Merge pass
 
-Group the **mergeable** bucket by file overlap; take the oldest PR from each disjoint group, up to
-`config.depsFlow.maxMergesPerRun` total. Then, **one at a time**:
+Group the **mergeable** bucket by file overlap; take the oldest PR from each disjoint group — skipping
+any group that already holds an enqueued PR — up to `config.depsFlow.maxMergesPerRun` total. An
+enqueued PR counts against that cap exactly like a merged one. Then, **one at a time**:
 
 1. **Re-run the whole gate immediately before merging** — every condition, not just mergeability.
    The previous merge in this same pass moved the base branch, and Dependabot force-pushes rebases
@@ -334,21 +377,43 @@ Group the **mergeable** bucket by file overlap; take the oldest PR from each dis
    that instant, which is not necessarily the SHA the gate passed on — a force-push landing between
    the two calls would merge an unvalidated commit. Pin it:
 
+   **No merge queue on the base branch** (step 0 found none, or could not tell) — merge directly,
+   and `--auto` is banned:
+
    ```bash
    gh pr merge <N> --repo "$REPO" --squash \
      --match-head-commit "<the headRefOid the gate validated>"
    # or --merge / --rebase per config.depsFlow.mergeMethod
    ```
 
-   `--match-head-commit` makes GitHub itself refuse the merge if the head moved, which turns the
-   race from a silent bad merge into a clean, recorded refusal. Treat a refusal as a normal outcome:
-   re-gate that PR next pass.
+   **The base branch requires a merge queue** — a direct merge is refused there, so arming the queue
+   is the merge (invariant 2). First assert `config.depsFlow.mergeMethod` equals the queue's
+   `merge_method`; on a mismatch, merge nothing on this branch this pass and report both values.
+   Then, same gate, same validated SHA:
 
-   No `--admin`, no `--auto`. Dependabot deletes its own branch on merge, so don't pass
+   ```bash
+   gh pr merge <N> --repo "$REPO" --squash --auto \
+     --match-head-commit "<the headRefOid the gate validated>"
+   ```
+
+   `--match-head-commit` makes GitHub itself refuse the merge if the head moved, which turns the
+   race from a silent bad merge into a clean, recorded refusal. On the queue path it is doing more
+   than that: it is what keeps the standing instruction from outliving the commit the gate looked at.
+   Treat a refusal as a normal outcome either way: re-gate that PR next pass.
+
+   **On the queue path, "done" is *enqueued*.** Record it as enqueued, don't wait for the queue,
+   don't poll it, and never report it as merged — the queue re-runs the required checks against the
+   batched base and can evict the entry. The pass that sees it merged is the one that says so.
+
+   No `--admin`. Dependabot deletes its own branch on merge, so don't pass
    `--delete-branch` unless the repo's own setting is off and the maintainer asked for it.
 3. If the merge is **refused** (branch protection, a method the repo doesn't allow, a race), record the
    refusal verbatim in the report and leave the PR alone. Never retry with a different method or a
    privilege flag.
+4. **Before leaving this step, leave nothing armed.** Re-read every PR this pass armed; any that has
+   no `mergeQueueEntry` did not take. Disarm it (`gh pr merge <N> --repo "$REPO" --disable-auto`) and
+   move it to the **stale** bucket for the ordinary rebase-nudge path. A PR armed and not enqueued is
+   the standing instruction invariant 2 forbids, so it is never left for the next pass to find.
 
 ### Step 3 — Rebase pass
 
@@ -419,18 +484,21 @@ for pass in 1..∞:
 ```
 
 The caps are per **invocation**, not per pass — a drain that merges five PRs stops at five, and says
-so. Never let a drain run past `drainMaxMinutes` because "one more rebase is nearly done".
+so; an enqueued PR counts as a merge for this purpose. Never let a drain run past `drainMaxMinutes`
+because "one more rebase is nearly done".
 
 ## Exit report
 
 ```text
 dependabot — <ISO timestamp>   (repo: <config.repo>, mode: tick | drain | dry-run)
-policy: auto-merge <config.depsFlow.autoMergeSemver joined> · cap <n>/<maxMergesPerRun> · method <mergeMethod>
+policy: auto-merge <config.depsFlow.autoMergeSemver joined> · cap <n>/<maxMergesPerRun> · method <mergeMethod> · merge queue: <yes (grouping <strategy>) | no | undetermined — treated as no>
 
 open dependency PRs: <n>
   merged (<n>):
     - #201 bump lodash 4.17.20 → 4.17.21 (patch, npm)
     - #204 bump actions/checkout v4.1.1 → v4.2.0 (minor, github-actions — disjoint from #201)
+  enqueued (<n>):                      [merge-queue branches only — counts against the cap]
+    - #210 bump ruff 0.6.2 → 0.6.4 (patch, uv) — queued at 1a2b3c4, not merged yet
   stale, awaiting rebase (<n>):
     - #202 (DIRTY since #201 merged — Dependabot rebasing, no nudge yet)
     - #203 (BEHIND 41m — nudged with @dependabot rebase)
@@ -440,6 +508,7 @@ open dependency PRs: <n>
   failing (<n>):
     - #207 bump pydantic 2.8 → 2.9 — filed #312 (type errors in 3 modules), labelled deps:blocked
   waiting on checks (<n>): #208
+  waiting on the queue (<n>): #211 (same lockfile as #210, which is still enqueued)
   blocked on you (<n>): #209 (required review missing)
   already diagnosed (<n>): #199
 
@@ -465,8 +534,14 @@ If the queue is empty: `dependabot — queue empty, nothing to do.` Don't pad it
   unredacted log output into a public issue.
 - **Don't report "queue empty" from a scan that may have been truncated** — say the scan was
   incomplete instead.
-- **Don't merge with `--admin`, don't enable auto-merge, don't re-run or disable a failing check** to
-  get a PR through.
+- **Don't merge with `--admin`, and don't re-run or disable a failing check** to get a PR through.
+- **Don't arm auto-merge on a branch with no merge-queue rule**, and never arm it anywhere without
+  `--match-head-commit`. Where a queue *is* required, arming with the pinned SHA is the merge path
+  (invariant 2) — but don't infer the queue from a refused merge, an error, or last pass: detect it,
+  and treat "couldn't tell" as no queue.
+- **Don't leave a PR armed and not enqueued**, and don't leave an evicted PR's auto-merge armed —
+  disarm it and re-gate from scratch.
+- **Don't call an enqueued PR merged**, and don't sit in the pass waiting for the queue.
 - **Don't touch a human-authored PR**, ever — not even a dependency bump a human opened.
 - **Don't fix a broken update.** No commits to bot branches, no pins, no workarounds. Diagnose, file,
   label, move on.
@@ -493,13 +568,15 @@ If the queue is empty: `dependabot — queue empty, nothing to do.` Don't pad it
 
 ## When integrated with scheduling
 
-Cadence, why this is not part of `daily-update`, how it pairs with `audit-deps`, and which model tier
-to run on: [`references/scheduling.md`](references/scheduling.md).
+Cadence, one pass per external tick versus `drain` mode, why this is not part of `daily-update`, how
+it pairs with `audit-deps`, and which model tier to run on:
+[`references/scheduling.md`](references/scheduling.md).
 
 ## Reference files
 
 - [`references/failure-pass.md`](references/failure-pass.md) — step 4 in full, plus the broken-update issue format. **Read before touching a failing PR.**
-- [`references/scheduling.md`](references/scheduling.md) — cadence and model tier, for whoever schedules the task.
+- [`references/merge-queue.md`](references/merge-queue.md) — merging where a ruleset requires a merge queue: detection, the `--auto --match-head-commit` path, cross-pass serialization, and disarming. **Read before merging on such a branch.**
+- [`references/scheduling.md`](references/scheduling.md) — cadence, one-pass-per-tick supervision, and model tier, for whoever schedules the task.
 
 ## Related skills
 

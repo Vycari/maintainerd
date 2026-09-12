@@ -94,6 +94,9 @@ jobs:
       - name: The PR-template helper checks headings and resolves prTemplateSource correctly
         run: ./scripts/test-pr-template-check.sh
 
+      - name: A documented `gh pr merge --auto` always pins the head commit
+        run: python3 scripts/check-merge-arming.py
+
       - name: Vendored reference docs are in sync with the canonical
         run: ./scripts/sync-references.sh --check
 
