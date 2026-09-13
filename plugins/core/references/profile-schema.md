@@ -251,7 +251,7 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `protection.requiredReviews.countsBotApproval` | bool | **No GitHub counterpart** — see **What the profile does not govern**. |
 | `protection.enforceAdmins` | bool | `enforce_admins`. |
 | `labels` | array of strings | Labels that must exist. Missing ones are a finding; **extra ones are not** — a repo's own labels are its business. |
-| `review` | object | Passed through to the repo config's `review` block by `bootstrap` (`bots`, `approvalThreshold`, `responderTier`, `impasseRounds`, `sameFileRoundCap` — the schema for them is in [`config-schema.md`](config-schema.md)). Not a GitHub setting. |
+| `review` | object | Passed through to the repo config's `review` block by `bootstrap` (`bots`, `approvalThreshold`, `scoreSource`, `responderTier`, `impasseRounds`, `sameFileRoundCap` — the schema for them is in [`config-schema.md`](config-schema.md)). Not a GitHub setting. |
 | `requireIssueForDeferredWork` | bool | Passed through to `createPr.requireIssueForDeferredWork`. Not a GitHub setting. |
 | `files.prTemplate` | bool | `.github/PULL_REQUEST_TEMPLATE.md` must exist. Existence only. |
 | `files.greptileRules` | bool | `.greptile/rules.md` must exist. Existence only. |

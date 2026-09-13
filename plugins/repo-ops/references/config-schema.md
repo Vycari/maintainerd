@@ -193,8 +193,14 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
     // Review policy. All optional; the defaults below are the pre-policy behavior.
     "approvalThreshold": "approved", // what "done" means. "approved" = reviewDecision == APPROVED.
-                                     // A "<n>/<m>" string (e.g. "5/5") additionally requires that
-                                     // score from every listed bot that publishes one.
+                                     // A "<n>/<m>" string (e.g. "5/5") makes the SCORE the gate
+                                     // instead: it must be found, be for the current head, and be
+                                     // at or above <n>. A score that can't be found is a halt,
+                                     // never a pass.
+    "scoreSource":       null,       // optional hint: "body" | "comment" | "review" — where the
+                                     // scoring bot publishes in this repo, which pins the rung
+                                     // address-review tries first. null/absent = search all three
+                                     // in that order.
     "responderTier":     null,       // models.* tier the response loop wants ("fast" | "capable" | ...);
                                      // null = inherit whatever model the session/routine already runs.
     "impasseRounds":     2,          // rounds on one disputed finding before the loop halts + escalates
@@ -337,14 +343,27 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   reviewer who isn't the PR author), so only bots go here.
 - `review.approvalThreshold` *(optional; default `"approved"`)* — what **done** means for
   `address-review`'s loop. `"approved"` is the GitHub answer: `reviewDecision == APPROVED`. A
-  `"<n>/<m>"` string — `"5/5"` is the common one — says the repo's bar is a **score**, not just an
-  approving review: every login in `review.bots` that publishes a score of that shape in its review
-  comment must be at or above `n`, *and* the `"approved"` conditions still apply. Scoring bots
-  (Greptile, for example) **update one comment in place** rather than posting a new one each round,
-  so the score to read is the current body of that same comment, never an earlier round's. A bot
-  that publishes no score of that shape — or publishes one with a different denominator, which isn't
-  comparable — falls back to `"approved"` semantics **and the skill says so in its round report**,
-  because a silently-skipped gate reads exactly like a met one.
+  `"<n>/<m>"` string — `"5/5"` is the common one — says the repo's bar is a **score**: every login
+  in `review.bots` that publishes a score of that shape must be at or above `n`, on the PR's
+  **current head**. It replaces `reviewDecision` as the gate rather than adding to it — a scoring
+  bot grades instead of approving, so a repo with no human reviewer would otherwise never reach
+  `APPROVED` at any score — but an outstanding human `CHANGES_REQUESTED` still blocks.
+  Scoring bots **revise one artifact in place** rather than publishing a new one each round, so the
+  score is re-read from its source every round; a cached one is stale by construction.
+  **A score that cannot be found is a halt, not a pass.** If none of the three places
+  `address-review` looks carries one — or the only one has a denominator that can't be compared to
+  the threshold — the gate was not evaluated, which is not the same as the gate being met: the
+  skill stops and names the three places it searched rather than falling back to `"approved"`
+  semantics (the fallback it used to do reported a 4/5 PR as done against a 5/5 bar).
+- `review.scoreSource` *(optional; default `null`)* — a hint telling `address-review` where the
+  scoring bot publishes in this repo, so it tries that rung first: `"body"` (the bot edits the PR
+  **description** and keeps its verdict in a marker block there — current Greptile), `"comment"` (a
+  bot-authored issue comment edited in place — older Greptile, CodeRabbit), or `"review"` (a review
+  body). `null`/absent searches all three in that order, which is the right default; the key exists
+  for a repo that knows its answer and doesn't want the other two rungs matching a stray `n/m`
+  token. It is a **hint, not a restriction** — if the named rung is empty the skill still walks the
+  others and reports that the hint didn't match, so a stale value degrades to the default instead
+  of manufacturing a "no score found" halt.
 - `review.responderTier` *(optional; default `null`)* — the `models.*` tier the review-response loop
   wants (see [`model-tiers.md`](model-tiers.md)). It exists because responding to review is
   judgment-heavy — adjudicating whether a finding is right — even when the PR it is responding on was
