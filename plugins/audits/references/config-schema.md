@@ -198,8 +198,14 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "responderTier":     null,       // models.* tier the response loop wants ("fast" | "capable" | ...);
                                      // null = inherit whatever model the session/routine already runs.
     "impasseRounds":     2,          // rounds on one disputed finding before the loop halts + escalates
-    "sameFileRoundCap":  3           // consecutive rounds rewriting the same file before the loop halts,
+    "sameFileRoundCap":  3,          // consecutive rounds rewriting the same file before the loop halts,
                                      // whether or not it agrees with each finding
+    "skipLabel":         null        // optional. A label that marks a PR as exempt from automated
+                                     // review (a prose/config-only change). null/absent = no such
+                                     // label in this repo. Read by the repo-ops `skip-label-race-guard`
+                                     // hook, which warns when `gh pr create` carries this label
+                                     // without `--draft` — the bot schedules its review on the open
+                                     // event, before a label applied in the same command lands.
   },
 
   // ── release (the `release` skill) — null/omitted = repo ships continuously, no versioned release ──
@@ -353,6 +359,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   rewrite the same file before the loop halts, regardless of whether it agreed with every finding
   along the way. This is the cap that catches the churn `impasseRounds` cannot see: agreeing with
   each individual finding is what disguises a file being rewritten in circles.
+- `review.skipLabel` *(optional; default `null`)* — the label a repo uses to mark a PR as exempt
+  from automated review (a prose/config-only change, say). Purely declarative here: maintainerd
+  never decides *when* a PR qualifies, and no maintainerd skill applies or removes it. It exists so
+  the `repo-ops` `skip-label-race-guard` hook (see that plugin's README) knows which label to watch
+  for on a `gh pr create` — many review bots schedule their run on the `opened` webhook, before a
+  label applied in the same command lands, so the label alone doesn't reliably suppress the review.
+  `null`/absent = this repo has no such label; the hook says nothing.
 
   Either breaker takes `null` to disable **that** breaker; the other keeps working. Neither takes
   `0` — a cap of zero would halt before the first round, which is not a policy anyone wants and is

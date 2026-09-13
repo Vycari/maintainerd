@@ -94,6 +94,9 @@ jobs:
       - name: The PR-template helper checks headings and resolves prTemplateSource correctly
         run: ./scripts/test-pr-template-check.sh
 
+      - name: The repo-ops pr-template-guard and skip-label-race-guard hooks behave, and fail closed
+        run: ./scripts/test-repo-ops-hooks.sh
+
       - name: A documented `gh pr merge --auto` always pins the head commit
         run: python3 scripts/check-merge-arming.py
 
