@@ -148,7 +148,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "prLabel":        "auto:pr",  // applied to every PR the pipeline opens, so external tooling (e.g. CodeRabbit) can treat automated PRs specially. Distinct from labels.automated (which the audits also use). Must already exist; bootstrap creates it.
     "fallbackReviewMinutes": 60,  // how long a ready, CI-green automated PR may sit with zero review activity before auto-dev posts a fallback self-review (CodeRabbit normally reviews within minutes; past this, assume it's rate-limited). Default 60 if absent.
     "maxPrsInFlight": 1,          // how many automated PRs may be open at once. 1 = classic single-PR pipeline (an open PR blocks new builds until it merges). >1 lets the queue drain into several built-but-unmerged PRs awaiting review. Never merges/closes anything. Default 1 if absent.
-    "orphanReclaimMinutes": 90    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
+    "orphanReclaimMinutes": 90,    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
+    "maintainers":         []      // OPTIONAL extra logins whose comments count as decisions/approvals. Default: a commenter is a maintainer iff their repo permission is admin/maintain/write (`gh api repos/<repo>/collaborators/<login>/permission`). List logins here only where the token can't read that (the call 403s/404s). Never a way to widen who decides beyond people you'd give write access.
   },
 
   // ── deps-flow (the `dependabot` skill) — the ONE skill that merges ─────────
@@ -318,7 +319,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   anything). `orphanReclaimMinutes` *(default `90`)* is the minimum age of a PR-less in-progress
   issue before a tick treats it as a crashed build to rebuild, rather than one running concurrently
   in an overlapping tick (which it leaves alone) — the guard against two ticks racing on the same
-  build. All optional; absent → the documented defaults.
+  build. `maintainers` *(default `[]`)* is an **optional** allowlist of logins whose comments count
+  as approvals, parks and decision answers; by default that test is the commenter's repo permission
+  (`admin`, `maintain` or `write`, read with
+  `gh api repos/<repo>/collaborators/<login>/permission`), and the list exists only for repos where
+  the token cannot read collaborator permissions. It widens who decides, never who may comment — on
+  a public repo everyone else's comments are still read, as information rather than as decisions.
+  All optional; absent → the documented defaults.
 - `depsFlow.*` *(the `dependabot` skill — the only maintainerd skill that merges)* — **the one block
   whose absence means "off", not "use the defaults".** A missing block, or `enabled` anything other
   than `true`, disables the skill entirely; merge authority is never acquired by omission. Once

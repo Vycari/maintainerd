@@ -44,6 +44,10 @@ The keys this skill needs:
 - `config.autoDev.stateLabels.*` — the `auto:*` label names this skill flips. The state → config-key
   mapping is below.
 - `config.autoDev.excludedLabels` — labels that exclude a new issue from auto-building.
+- `config.autoDev.maintainers` *(optional)* — extra logins whose comments count as decisions.
+  The default test is repo permission (`admin`/`maintain`/`write`, from
+  `gh api repos/<repo>/collaborators/<login>/permission`). It matters here because this console
+  reads *other people's* comments back — see "Whose comment is a decision" below.
 
 ### State → config-key table
 
@@ -61,6 +65,16 @@ mapping the **auto-dev** skill uses.)
 
 The bot comment marker is `config.autoDev.marker` (e.g. `<!-- auto-dev -->`). Branches the pipeline
 opens are prefixed with `config.autoDev.branchPrefix` (e.g. `auto/issue-`).
+
+### Whose comment is a decision
+
+Your own words in this session are always your decision — that is what the console is for. But when
+it *reads a thread back* (the stranded-approval scan below, "has this been answered?", "did someone
+say park"), only a **maintainer's** comment counts: a login with `admin`, `maintain` or `write` on
+the repo, or one listed in `config.autoDev.maintainers`. auto-dev applies the same rule (its
+invariant 3), so a console that counted anyone's "sounds good" would show you a queue the pipeline
+does not believe in. On a public repo the issue's author is usually **not** a maintainer: their
+replies are information you want to read, never an approval or a decision on the record.
 
 ## Workspace mode (`--workspace`)
 
@@ -183,13 +197,19 @@ the gather cheap).
 To keep the list signal-dense, note how long each item has waited (from `updatedAt` / the relevant
 comment time) so stale items stand out.
 
+**Say when the only reply came from a non-maintainer.** A needs-info issue whose decision question
+was answered by the reporter still waits on you — and it is the easiest item in the queue to
+misread, because the thread looks answered. Show it as still yours, with their preference attached:
+"reporter prefers A on both; your call". The same line is what stops you rubber-stamping a
+preference as a decision.
+
 **Also check the planned bucket for dropped transitions.** An issue you already approved should not
 still be sitting at planned — but it will be if a previous session posted the approval and never
 applied the label (see step 3), or if a tick read only the newest comment and missed an approval
 buried under later ones. These are the worst items in the queue precisely because they look
 finished: the approval is on the record, so nothing about the issue reads as blocked, and no tick
-will ever build it. Scan the planned issues' comments for a human approval, and bucket any hit
-separately — it needs one label flip, not another decision:
+will ever build it. Scan the planned issues' comments for an approval **from a maintainer**, and
+bucket any hit separately — it needs one label flip, not another decision:
 
 ```bash
 gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
@@ -201,8 +221,20 @@ gh api graphql -f query='query { repository(owner:"<owner>", name:"<name>") {
   | [$i.comments.nodes[]
      | select((.body | startswith($marker)) | not)
      | select(.body | test("(?i)\\b(approved?|lgtm|ship it|go ahead|yes,? do it|sounds good|let'"'"'s do it)\\b"))]
-  | select(length > 0) | "#\($i.number)  \(.[-1].createdAt[0:10])"'
+  | select(length > 0) | "#\($i.number)  @\(.[-1].author.login)  \(.[-1].createdAt[0:10])"'
 ```
+
+The query keeps each hit's `author.login` because **the login is half the answer**: check it against
+repo permission before treating a hit as an approval, and cache the lookups across the batch —
+
+```bash
+gh api "repos/$REPO/collaborators/<login>/permission" --jq .permission   # admin | maintain | write → maintainer
+```
+
+— or read `config.autoDev.maintainers` where the token can't. An approval-shaped comment from a
+non-maintainer (a reporter's "option A sounds good", a 👍 from a passer-by) is **not** a dropped
+transition: the issue is correctly at planned, still waiting on you. Surface it as a plan awaiting
+your approval with the reporter's preference attached, never as a label flip to confirm.
 
 **This regex is a net, not the contract, and it is not where the guarantee lives.** Nothing here
 _ensures_ a stranded approval is found — the scan is a best-effort sweep for issues stranded before
@@ -229,7 +261,9 @@ them rather than flipping them blind — read each thread before acting:
 - an approval the maintainer later **withdrew or reshaped** ("changing my mind on the split") — it
   is correctly at planned, awaiting a re-plan;
 - a **conditional** approval ("build this after #N lands") whose condition is still unmet — also
-  correctly held, and the pipeline re-checks it each tick.
+  correctly held, and the pipeline re-checks it each tick;
+- an approval-shaped comment from a **non-maintainer** — not an approval at all; the plan is still
+  waiting on you.
 
 Everything else is a dropped transition. Present it with the approval's date and wording so the
 maintainer can confirm it still stands, and, where the approval named a dependency, resolve that
@@ -253,6 +287,7 @@ Pipeline review — <date>
 🟡 Questions / park proposals awaiting you (needs-info)
   • #641  SVG support — 3 questions (rasterize now vs. block on #536)
   • #447  Gemini API capabilities — 3 questions, 2d unanswered
+  • #652  export formats — 2 decisions; reporter prefers A on both, your call
 
 🟢 Parked — revisit? (parked)
   • (none)
@@ -402,6 +437,11 @@ you later.
   over manually after adding the skip label.
 - Never change non-`auto:*` labels; never remove the skip label unless told.
 - Never post a decision you inferred rather than one the maintainer stated. When unsure, ask.
+- Never count a non-maintainer's comment as an approval, a park, or a decision when reading a thread
+  back — check repo permission (or `config.autoDev.maintainers`) first. Their words are input to
+  your decision, never the decision.
+- Never present a needs-info item the reporter answered as though it were resolved — if the question
+  was a decision, it is still blocked on you.
 - Never act on a bare `#N` in workspace mode when it matches more than one repo — ask which.
 - Never use one repo's label names, marker, or `--repo` slug against another repo.
 - Never drop a repo from the workspace report because it had nothing to show. Zero is a result;

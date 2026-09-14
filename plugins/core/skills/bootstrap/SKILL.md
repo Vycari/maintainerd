@@ -154,6 +154,10 @@ Defaults to apply without asking (state them in the report):
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
 - `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.fallbackReviewMinutes`: `60`.
 - `autoDev.maxPrsInFlight`: `1` (single-PR pipeline; raise it to let the queue drain into several open PRs); `autoDev.orphanReclaimMinutes`: `90`.
+- `autoDev.maintainers`: **omit it.** Who may approve, park, and decide defaults to repo
+  permission (`admin`/`maintain`/`write`), read per tick — which is right for every repo whose
+  token can read collaborators. Write the key only when the maintainer says that lookup is
+  unavailable to their token, and then list exactly the logins they name.
 - `depsFlow`: **`enabled: false`**, plus the rest of the block at its schema defaults
   (`botLogins: ["dependabot[bot]"]`, `autoMergeSemver: ["patch","minor"]`, `mergeMethod: "squash"`,
   `maxMergesPerRun: 5`, `rebaseNudgeMinutes: 30`, `blockedLabel: "deps:blocked"`).
