@@ -6,17 +6,33 @@ each state, and getting a branch wrong means mislabelling the maintainer's queue
 
 Comment templates referenced below are in `comment-formats.md`.
 
+**Every branch here turns on _who_ commented, not just _that_ someone did.** SKILL.md invariant 3
+defines a **maintainer** (repo permission `admin` / `maintain` / `write`, or a login in
+`config.autoDev.maintainers`) and is the authority on the test; resolve each commenter once per tick
+and cache it. Only a maintainer approves, parks, answers a *decision*, or triggers a re-triage. A
+non-maintainer human comment — on a public repo, usually the reporter's — is **information**: use
+its facts, never its verdicts.
+
 ## No state label
 
 Assess whether the issue contains enough to plan from (clear problem, scoped outcome, no unresolved
 design fork):
 
 - _Plannable_ → draft an implementation plan, post it as a comment, add the Planned label.
-- _Not plannable, and the gap is missing facts the maintainer can supply_ → post one comment asking
-  the specific missing questions (numbered, concrete — not "please clarify"), add the Needs-info
-  label. Frame each one as a decision the maintainer can make in a single read — area, user impact,
-  problem, options, recommendation — and keep it under 300 words; see the Question comment template
-  in `comment-formats.md`.
+- _Not plannable, and the gap is missing information_ → post one comment asking the specific
+  missing questions (numbered, concrete — not "please clarify"), add the Needs-info label. **Sort
+  each question into one of two kinds before writing it**, because they are answered by different
+  people:
+  - _Clarifying facts_ — which version, what the reporter meant, how it reproduces, what they
+    actually saw. Anyone who knows can answer, the reporter included, and the comment may be
+    addressed to them.
+  - _Decisions_ — a design fork, a scope or product call, anything with options and a
+    recommendation. These are the **maintainer's**, whoever filed the issue. Address them to the
+    maintainer explicitly and never ask an outside reporter to choose; where the reporter clearly
+    has a preference, invite it as *input* and say the call is the maintainer's.
+
+  Either kind keeps the five-part, under-300-words shape (area, user impact, problem, options,
+  recommendation); see the Question comment template in `comment-formats.md`.
 - _Not plannable because it needs a maintainer decision the skill can't make_ — a design fork that's
   theirs to resolve, a dependency on still-open work, or the issue body itself signals deferral
   ("not actionable yet", "revisit once X lands") → post a **park proposal**: name the blocker, offer
@@ -25,21 +41,33 @@ design fork):
 
 ## Needs-info
 
-Is there a _human_ comment (no marker, not a third-party bot) newer than the skill's last marker
-comment?
+Two questions, not one: is there a _human_ comment (no marker, not a third-party bot) newer than the
+skill's last marker comment — and **did a maintainer write it**?
 
-- _No_ → skip silently. This is the "already asked, no reply" rule.
-- _Yes, and it says to park_ ("park it", "hold", "not now", "park", or a 👍 on a park proposal) →
+- _No new human comment_ → skip silently. This is the "already asked, no reply" rule.
+- _A maintainer says to park_ ("park it", "hold", "not now", "park", or a 👍 on a park proposal) →
   swap label to Parked.
-- _Yes, and it resolves the questions_ → draft and post the plan, swap label to Planned.
-- _Yes, but it raises new ambiguity_ → ask the follow-up (stay Needs-info), in the same five-part,
+- _A maintainer resolves the open questions_ → draft and post the plan, swap label to Planned.
+- _A maintainer raises new ambiguity_ → ask the follow-up (stay Needs-info), in the same five-part,
   under-300-words shape as the first ask — but if this would be the third unanswered round-trip,
   stop asking and either propose parking or leave a final note that the issue needs maintainer
   attention.
+- _A non-maintainer replied_ (usually the reporter) → split it by what was asked:
+  - It supplies the **clarifying facts** that were outstanding, and no decision is left open → the
+    gap is closed. Plan and swap to Planned exactly as above — facts are facts whoever supplies
+    them.
+  - It answers a **decision** question — picks an option, says "go ahead", agrees with the
+    recommendation → the issue **stays Needs-info**. Record the preference as input for the plan
+    when the decision eventually lands; do **not** swap the label, and do **not** re-ask — the
+    question is already posted and unanswered by the person who owns it, so asking again is noise
+    in the reporter's inbox and in the maintainer's. Posting nothing is the correct action.
+  - It does both → use the facts, hold the decision: still Needs-info until a maintainer answers
+    the decision.
 
 ## Planned
 
-Is there a _human_ comment (not a third-party bot) newer than the plan?
+Is there a **maintainer** comment (no marker, not a third-party bot) newer than the plan? Approval is
+a maintainer's act; a non-maintainer's "looks good" is not one, however enthusiastic.
 
 - _Approval_ (e.g. "approved", "LGTM", "go ahead", "yes do it", a 👍-only reply) → swap label to
   Ready. "Approved, but change X" counts as approval: update the plan comment-thread with the
@@ -50,11 +78,16 @@ Is there a _human_ comment (not a third-party bot) newer than the plan?
 - _Substantive feedback / objections_ → revise, post the updated plan (marker), stay Planned.
 - _A request to park_ ("not now", "let's hold this") → swap label to Parked.
 - _No reply_ → skip silently.
-- The human adding the Ready label directly is always approval, reply or not.
+- _A non-maintainer comment_ (the reporter agreeing with the plan, a 👍, "+1", "yes please") → **not
+  approval.** Stay Planned. If it carries new facts that change the plan, fold them in and repost the
+  plan; otherwise skip silently. Never write it up as the decision.
+- The human adding the Ready label directly is always approval, reply or not — applying a label takes
+  write access, so the label itself is the permission check.
 
 **An approval is never consumed by a later comment.** The question above is a shorthand for the
-common case, not a scan limited to the newest comment: once a human has approved, that approval
-stands until a human withdraws or reshapes it. So when the newest human comment is neither an
+common case, not a scan limited to the newest comment: once a maintainer has approved, that approval
+stands until a maintainer withdraws or reshapes it (a non-maintainer cannot do either). So when the
+newest maintainer comment is neither an
 approval nor an objection — supporting evidence, a cross-reference, a new trajectory, a note "for
 whenever this is built" — look **back through the whole thread** for an earlier approval and honor
 it. Reading only the newest comment strands the issue at Planned forever: every later comment
@@ -104,12 +137,15 @@ gh api "repos/<config.repo>/issues/<N>/timeline" --paginate \
 
 Two unblock signals:
 
-- _A human comment (no marker, not a third-party bot) newer than the park time_ (the maintainer came
+- _A **maintainer** comment (no marker, not a third-party bot) newer than the park time_ (they came
   back with detail or direction) → unblocked: remove the Parked label and re-triage it this tick as
   if freshly labelled (plan if now plannable, otherwise ask / re-propose).
 - _The human removed the label_ → it reappears with no state label and re-enters triage through the
   no-label branch; nothing special to do.
-- _Otherwise_ (still parked, no human comment after the park) → skip silently. **Never re-propose
+- _A non-maintainer comment after the park_ (a reporter asking for an update, adding detail) → **does
+  not un-park.** The maintainer chose the hold and only they lift it. Read the comment for facts and
+  leave the label alone.
+- _Otherwise_ (still parked, no maintainer comment after the park) → skip silently. **Never re-propose
   parking, re-ask, or re-plan a parked issue.**
 
 ## Ready / In-progress
