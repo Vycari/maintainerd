@@ -45,6 +45,7 @@
     "securityIssueCap": 5,
     "depsPrCap": 3,
     "depsIssueCap": 5,
+    "oversizedLines": 500,
     "promoteThreshold": 3,
     "promoteLookbackDays": 90
   },
