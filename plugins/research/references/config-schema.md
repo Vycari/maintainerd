@@ -106,6 +106,13 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "depsPrCap":    3, // audit-deps: max PRs per run (a batched routine-bump PR counts as one)
     "depsIssueCap": 5, // audit-deps: max issues per run
 
+    // audit-architecture: oversized-file line-count threshold, shared across every language
+    // block (Python, TypeScript, and the language-generic fallback). Raise it on a repo with
+    // many large-but-legitimate files rather than let the category flag dozens of files and
+    // find nothing worth a PR. Per-file-type bumps (a models/router file, a main entry file)
+    // stay relative to this number — see references/language-detection.md in the audits plugin.
+    "oversizedLines": 500,
+
     // Pattern promotion (audit-architecture/-tests/-security): when the same specific
     // pattern has been fixed/filed this many times within the lookback window, the audit
     // files ONE human-gated issue proposing it become a guideline rule. See the audits
@@ -287,7 +294,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `audits.*` — per-run caps, plus the two pattern-promotion knobs. Cap defaults `3/5`
   (architecture), `2/2` (test), `3/5` (security), and `3/5` (deps) if absent. `audit-security` still
   *reports* Critical/High findings that exceed its cap;
-  `audit-deps` counts a batched routine-bump PR as a single PR. `promoteThreshold` (default `3`) and
+  `audit-deps` counts a batched routine-bump PR as a single PR. `oversizedLines` (default `500`) is
+  the line-count threshold `audit-architecture`'s oversized-files category flags against, shared by
+  every language block (Python, TypeScript, language-generic); absent means the default, not "no
+  threshold". `promoteThreshold` (default `3`) and
   `promoteLookbackDays` (default `90`) govern **pattern promotion** — when the guideline-checking
   audits (architecture/tests/security) have fixed the same specific pattern `promoteThreshold` times
   within the window, they file one human-gated issue proposing it become a guideline rule; if a rule

@@ -21,7 +21,7 @@
       "name": "audits",
       "source": "./plugins/audits",
       "description": "Scheduled findings that open PRs/issues, deliberately capped and conservative: audit-architecture, audit-tests, audit-security, audit-deps, audit-design-docs, audit-product-docs. Language and rules come from the repo config + guidelines files.",
-      "version": "0.2.16"
+      "version": "0.3.0"
     },
     {
       "name": "research",
