@@ -43,6 +43,20 @@ order** and fix any failures. Run each command from `config.commands.*`; **skip 
 4. **Tests** — run `config.commands.test`. All tests must pass with no warnings or unexpected
    console output.
 
+**A docs-only or config-only diff still runs Format and Lint.** "No source file changed" is not a
+reason to mark them N/A: formatters increasingly reach into prose — `ruff format` rewrites Python
+code blocks *inside Markdown*, Prettier formats fenced code and the Markdown itself — and CI runs
+the same command over the whole tree. A design doc with one mis-spaced code sample passes every
+docs check and then fails the format gate. Only Build, Type check and Tests may be skipped for a
+diff that touches no code, and the PR body says which were skipped and why.
+
+**A command that cannot start is a failure to fix, not a step to skip.** A fresh worktree or
+sandbox often has no environment yet (`Failed to spawn: ruff`, `command not found`). Install the
+repo's dev dependencies the way its docs or CI do (e.g. `uv sync` with the dev extra/group,
+`npm ci`) and re-run. If the tool genuinely cannot be installed, run the same tool at the repo's
+pinned version another way (`uvx ruff@<locked version>`, `npx <tool>@<pinned>`), and say so in the
+PR body — never report a gate as passed, or as N/A, because it would not run.
+
 Do NOT skip these steps. Do NOT push code that fails any of these checks. Do NOT use `--no-verify`
 to bypass git hooks. **Tests must pass before the PR opens** — never open a PR on a red suite and
 promise to fix it later.
