@@ -258,6 +258,12 @@ Compute it from the files, not from the ecosystem name in the branch:
 gh pr view <N> --repo "$REPO" --json files --jq '[.files[].path] | sort'
 ```
 
+**When GraphQL is blocked**, the file list is its own paginated REST endpoint —
+`repos/$REPO/pulls/<N>/files`, shown under **Read one PR's fields** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Paginate it: a PR
+with more changed files than one page would otherwise appear to touch fewer files than it does, and
+overlap computed from a short list is overlap missed.
+
 Group the gate-passing PRs into **disjoint file groups**, and take at most **one PR from each group**
 per pass — the oldest. Everything else in that group is expected to go `BEHIND`/`DIRTY` the moment its
 neighbour merges; that's the rebase pass's job, not a failure.
@@ -275,6 +281,27 @@ you could not read occupies it too (invariant 8). Such a neighbour is `waiting`,
 One pass = steps 0–5. A scheduled tick runs one pass; drain mode repeats it.
 
 ### Step 0 — Preflight and gather
+
+**Decide once whether GraphQL is reachable, before any other GitHub call.** Some sandboxes allow
+GitHub's REST API and refuse its GraphQL one; `gh repo view --json`, `gh pr list`,
+`gh pr view --json`, `gh pr checks`, `gh pr merge` and every `gh api graphql` below return 403 there
+while `gh auth status` stays green. The check goes first because `gh repo view --json` is one of
+them: run it later and the pass 403s in its own preflight, reports "repo resolution failed", and
+never reaches anything below.
+
+```bash
+# The scheduler's setup step may declare it; otherwise probe once and cache for the pass.
+[ -n "${GH_GRAPHQL_BLOCKED:-}" ] || gh api graphql -f query='{viewer{login}}' >/dev/null 2>&1
+```
+
+A non-zero probe means **blocked**. The reads below then use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) — **Confirm the
+repo resolves** (`gh api "repos/$REPO" --jq '.full_name'`) in place of the `gh repo view` line that
+follows, **List PRs by state** for the candidate scan, **Read one PR's fields** for the per-PR
+snapshot, **Check runs** in place of `gh pr checks`. `gh auth status` works in both modes. The merge
+step is the part that does *not* fully survive; see
+**When GraphQL is blocked, this pass does not merge** below. Say in the report which mode the pass
+ran in and how it decided.
 
 ```bash
 gh auth status
@@ -337,12 +364,60 @@ refusal while an unexplained arming is not. Read
 If `gh` auth or repo resolution fails, print the failure and stop — do not attempt repairs. A failed
 *rules* read is not that: it degrades to "no queue" and the pass continues.
 
+#### When GraphQL is blocked, this pass does not merge
+
+The candidate scan has a clean REST replacement: drop `--search` entirely, list all open PRs with
+**List PRs by state** (`--paginate`, `per_page=100`), and filter on `.user.login` against
+`config.depsFlow.botLogins` client-side — which the prose above already sanctions as the fallback
+when a login cannot be mapped to a search qualifier, and which is the only correct form here since
+`gh search prs` and the REST `search/issues` endpoint are both refused. "Never infer *queue empty*
+from a truncated scan" applies unchanged, and now also to a scan that could not be paginated at all.
+
+The merge step does not survive, for three separate reasons, and the pass must **stop rather than
+improvise** at each:
+
+- **Queue detection loses its second source.** `repos/$REPO/rules/branches/$BASE` is REST and still
+  works, but the `mergeQueue(branch:)` query that catches a queue configured through classic branch
+  protection is GraphQL-only. Per invariant 8 and the "either source answering queue means queue"
+  rule, an unreadable second source is **not** a "no". Treat the branch as queued and merge nothing
+  on it this pass, saying which source could not be read.
+- **Arming has no REST form.** `gh pr merge --auto` is the `enablePullRequestAutoMerge` mutation. On
+  a queued branch arming *is* merging (invariant 2), so with it unavailable there is simply no merge
+  to perform: report the mergeable PRs as un-armed and leave them.
+- **Enqueued-state reads are GraphQL-only.** `autoMergeRequest` and `mergeQueueEntry` do not appear
+  in the REST PR payload, so the "is this file group already occupied?" check and the stray-arming
+  sweep in step 1 cannot run. A state you could not read occupies the group (invariant 8), so every
+  group is occupied and nothing is eligible.
+
+On an **unqueued** branch a direct merge does have a REST form
+(`PUT /repos/{owner}/{repo}/pulls/{n}/merge` with `merge_method` and `sha`, where `sha` is exactly
+`--match-head-commit`). Use it **only** when queue detection came back conclusively "no queue" from
+the rules endpoint *and* the pass can state that classic branch protection was ruled out some other
+way — which, with the GraphQL source unavailable, it normally cannot. The honest default in blocked
+mode is therefore: classify, report, merge nothing, and say plainly that merging was unavailable
+this pass rather than reporting an empty merge list as a quiet day.
+
+Everything that is not merging still runs: classification, the rebase nudge
+(`@dependabot rebase` is a comment, and the comment-posting form is in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md)), the failure pass,
+and issue filing.
+
 For each candidate PR, pull its checks and reviews:
 
 ```bash
 gh pr checks <N> --repo "$REPO" --json name,state,link,bucket
 gh api "repos/$REPO/pulls/<N>/reviews" --jq '[.[] | {user: .user.login, state: .state, submittedAt: .submitted_at}]'
 ```
+
+The reviews call is already REST. **When GraphQL is blocked**, replace `gh pr checks` with
+`repos/$REPO/commits/<headRefOid>/check-runs` (**Check runs** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md)), and read the
+per-PR snapshot fields (`draft`, `mergeable`, `mergeable_state`, `head.sha`, labels) from
+`gh api "repos/$REPO/pulls/<N>"`. Note what that snapshot loses: `reviewDecision` becomes
+"derive it from the reviews list yourself", and `mergeStateStatus` has no REST equivalent at all —
+`mergeable_state` is close but not the same vocabulary, and it is `"unknown"` until GitHub computes
+it. Per invariant 8, a status you could not read is not green and not clean: such a PR classifies as
+**waiting**, never as **mergeable**.
 
 ### Step 1 — Classify
 

@@ -139,7 +139,7 @@ maintainerd/
   scripts/bump-version.py
   scripts/test-coverage.sh
   plugins/
-    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor,new-repo}/  references/{config-schema,model-tiers,profile-schema}.md  scripts/{coverage-adapt,coverage-check,profile-resolve,settings-diff}.sh
+    core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor,new-repo}/  references/{config-schema,model-tiers,profile-schema,gh-rest-fallbacks}.md  scripts/{coverage-adapt,coverage-check,profile-resolve,settings-diff}.sh
     repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/  hooks/{hooks.json,scripts/{pr-template-guard,skip-label-race-guard}.sh}
     audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
@@ -157,7 +157,8 @@ what the open spec expects. `bump-version.py` and `validate.yml` keep them in lo
 
 ### Shared reference docs
 
-`config-schema.md` and `model-tiers.md` are authored once in `plugins/core/references/` and
+`config-schema.md`, `model-tiers.md` and `gh-rest-fallbacks.md` are authored once in
+`plugins/core/references/` and
 **vendored into every plugin that links them**. A skill can only reach files inside its own
 plugin: a relative link that climbs out resolves in this source tree but not in an installed
 marketplace layout, which interposes a version segment and uses the plugin *name* rather than

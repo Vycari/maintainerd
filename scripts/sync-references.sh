@@ -30,7 +30,11 @@ CONSUMERS="audits auto-dev deps-flow journal repo-ops research"
 # build-record.md ships everywhere for the same sibling reason (it links untrusted-input.md)
 # and because the convention it documents is cross-plugin by nature: one plugin's skill writes
 # the record, another plugin's skill reads it.
-DOCS=(config-schema.md model-tiers.md untrusted-input.md build-record.md)
+# gh-rest-fallbacks.md ships everywhere for the same reason build-record.md does: nearly every
+# plugin has a skill that shells out to `gh`, and the REST fallbacks are identical in all of them.
+# A plugin whose skills do not link it yet still carries the copy, so adding the link later is a
+# one-line skill edit rather than a sync change.
+DOCS=(config-schema.md model-tiers.md untrusted-input.md build-record.md gh-rest-fallbacks.md)
 
 # Verbatim copies — the schema links these as siblings, and JSON cannot carry a comment banner.
 ASSETS=(example-user.json example-pepper.json example-obsidian.json example-workspace.json)

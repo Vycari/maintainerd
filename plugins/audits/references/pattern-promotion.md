@@ -82,6 +82,15 @@ gh issue list --repo <config.repo> --state closed --label <config.labels.archite
   --search "reason:completed" --json number,title,closedAt --limit 100
 ```
 
+**When GraphQL is blocked** both are 403 (and so is the search qualifier). Use the REST forms in
+[`gh-rest-fallbacks.md`](gh-rest-fallbacks.md): **List PRs by state** with
+`state=closed`, keeping the entries whose `merged_at` is non-null and inside the window; and **List
+issues by label and state** with `state=closed`, filtering client-side on
+`.state_reason == "completed"` in place of the `reason:completed` search qualifier. Recurrence is a
+count, so an incomplete read is a wrong count: if either list cannot be read or paginated to
+completion, **propose nothing this run** and say why. Under-counting silently turns a chronic
+pattern back into a one-off.
+
 Read titles/bodies to keep only the ones that are the **same specific pattern** from Step A, not just
 the same category label. If
 
@@ -129,6 +138,17 @@ gh issue list --repo <config.repo> --state closed --search "audit-promotion:<aud
 
 A promotion the maintainer closed not-planned is a durable decision — **never re-propose it**, no
 matter how many more instances accrue. (They've said "keep fixing it per instance"; respect that.)
+
+**When GraphQL is blocked there is no search at all** — `gh issue list --search` is 403, and so is
+the REST `search/issues` endpoint the proxies also refuse. Replace both queries with the
+repo-scoped list plus a client-side body match described under **Replacing search** in
+[`gh-rest-fallbacks.md`](gh-rest-fallbacks.md): list open, then closed, issues carrying this
+audit's category label, fetch each body, and match the
+`<!-- audit-promotion:<audit-name>:<pattern-slug> -->` marker locally; on the closed pass also
+require `.state_reason == "not_planned"`. State the bound in the report ("checked the marker across
+the N labelled issues"). This is a dedup check, so it **fails closed** like every other: if the
+candidate list cannot be read or walked to completion, file no proposal this run. Re-proposing
+something the maintainer already declined is worse than deferring it a day.
 
 ## Step E — File exactly one proposal (per run)
 

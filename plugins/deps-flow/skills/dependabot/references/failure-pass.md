@@ -134,6 +134,19 @@ For each PR in the **failing** bucket that does not already carry `config.depsFl
    Same discipline as the label check and invariant 8; the cost here is a duplicate issue rather
    than a stuck queue, but the rule is identical.
 
+   **When GraphQL is blocked** both calls are 403, and so is the `in:title` search — there is no
+   search at all, because the REST `search/issues` endpoint is refused by the same proxies. Use the
+   repo-scoped forms in
+   [`../../../references/gh-rest-fallbacks.md`](../../../references/gh-rest-fallbacks.md): **List
+   issues by label and state** (`state=open`, `labels=<config.labels.dependencies>`, `--paginate`,
+   `per_page=100`, with the `select(has("pull_request") | not)` filter) gives the candidate set, and
+   `gh api "repos/$REPO/issues/<N>" --jq '.body'` gives the body for the marker check. This is
+   strictly better than the search it replaces: pagination makes the candidate set complete rather
+   than limit-bounded, and the exact-package comparison below is no longer competing with GitHub's
+   hyphen tokenisation. The fail-closed rule is unchanged — if the list cannot be paginated to the
+   end, or a body cannot be read, stop this PR's failure pass and report "couldn't verify prior
+   issues".
+
    **Then confirm the package matches exactly.** GitHub search tokenizes on hyphens and dots, so a
    query for `react` returns issues titled for `react-dom`, and `@scope/pkg` matches its siblings.
    Combined with a marker check that only proves "this skill filed it", a near-miss reads as a hit:
