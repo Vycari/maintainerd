@@ -78,6 +78,13 @@ Skills that read text authored outside the repo follow the shared contract in
 [`references/untrusted-input.md`](references/untrusted-input.md); scheduled skills note which model
 tier they want in [`references/model-tiers.md`](references/model-tiers.md).
 
+Skills that shell out to `gh` in a sandbox whose egress proxy blocks GitHub's GraphQL API — where
+`gh issue list`, `gh pr list`, `gh pr create` and friends all 403 while repo-scoped REST works —
+take their fallback from [`references/gh-rest-fallbacks.md`](references/gh-rest-fallbacks.md). It
+carries the `GH_GRAPHQL_BLOCKED` switch and its probe, the REST form of every porcelain call the
+skills use, the three operations that have no REST path at all, and the rule that a read which
+cannot be completed is *unknown*, never *empty*.
+
 ## Install
 
 ```text

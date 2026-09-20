@@ -57,6 +57,14 @@ A **non-null** `mergeQueue` → this branch has a queue. Here `configuration.mer
 `SQUASH`/`MERGE`/`REBASE` vocabulary) is the method to assert in step B, and `mergingStrategy` is the
 grouping to report. A **null** result → no queue from this source either.
 
+**A2 has no REST equivalent.** In a sandbox where GitHub's GraphQL API is blocked (see
+[`../../../references/gh-rest-fallbacks.md`](../../../references/gh-rest-fallbacks.md)) this query
+is a 403, and so are the `mergeQueueEntry` / `autoMergeRequest` reads in step D and the
+`gh pr merge --auto` arming in step C. That is not an A1-says-no: an unaskable second source is a
+source that did not say "no". Treat the branch as queued, merge and arm nothing on it this pass,
+and name the unreadable source in the report. Everything else in this file — classification, the
+rules read, the report — still runs.
+
 **Resolving the two.** Either source saying "queue" means queue; only both saying "no" means no. They
 describe the same server-side gate, so they do not disagree about the method in practice — if they
 somehow did, treat it as the step-B mismatch case and merge nothing on that branch this pass rather

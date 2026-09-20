@@ -247,6 +247,24 @@ The body's headings come from `config.paths.prTemplate` (see **PR template** abo
 memory. A quick self-check before running the command: `grep '^##' <template>` and your body
 should list the same headings in the same order.
 
+### When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh pr create` is GraphQL
+underneath, so it returns 403 there while `gh auth status` stays green. Check once, before creating
+the PR, and reuse the answer:
+
+```bash
+# The caller's setup step may declare it; otherwise probe once.
+[ -n "${GH_GRAPHQL_BLOCKED:-}" ] || gh api graphql -f query='{viewer{login}}' >/dev/null 2>&1
+```
+
+A non-zero probe means blocked — fail closed rather than retrying the porcelain. When blocked, push
+the branch as usual and open the PR with `POST /repos/{owner}/{repo}/pulls`; the exact call, its
+parameters, and how to build the body safely from a file are under **Create a PR** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Everything above
+this section — pre-flight, the template, the deferred-work gate — is unchanged; only the last
+command differs. Say in your run report that the REST path was used, and how it was decided.
+
 ### Labels
 
 If the caller asked for labels on the PR — a human naming them, or another skill delegating here
@@ -255,6 +273,16 @@ recognize automated PRs) — apply them with `--label` **on the create call abov
 follow-up `gh pr edit`. Review bots react to the `opened` webhook within seconds, and a label added
 afterwards doesn't retract a review that already started. Labels must already exist; this skill
 never creates them. Left unasked, don't invent labels — an unlabeled PR is the normal outcome here.
+
+**On the REST path there is no `--label` to pass.** `POST /pulls` has no `labels` field, so labels
+are always a second call (`POST /issues/{n}/labels`) landing after the `opened` webhook. Which is
+tolerable depends on what the label is for, and
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) spells out the two
+branches under **Create a PR**: a routing label → create non-draft, label right after, note the
+ordering; a label that must be in place *before* a review bot starts → create as a draft, label it,
+then **stop and report**, because `gh pr ready` is a GraphQL-only mutation with no REST equivalent.
+Tell the caller the PR is a draft and name the command or click that finishes it — never hand back
+a draft as if it were open for review, and never drop the label to avoid the problem.
 
 ### Title conventions
 

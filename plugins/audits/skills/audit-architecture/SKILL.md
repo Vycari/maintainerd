@@ -22,6 +22,23 @@ Before doing anything else, load the repo config (see [`../../references/config-
 
 Throughout this skill, `config.<path>` refers to a value from that file. In the detection commands below, `config.paths.source` stands for your configured source root (e.g. `src/pepper/` or `src/`) and `config.paths.tests` your test root — substitute the literal value when you run them.
 
+## Check whether GitHub's GraphQL API is reachable
+
+Do this once, before step 3, and reuse the answer for the whole run. Some sandboxes allow GitHub's
+REST API and refuse its GraphQL one, and every `gh` porcelain this skill uses — `gh issue list`,
+`gh pr list`, `gh issue create`, `gh pr create` — is GraphQL underneath, so all of them return 403
+while `gh auth status` stays green.
+
+```bash
+# Set by the caller's setup step when it already knows, otherwise probe once:
+[ -n "${GH_GRAPHQL_BLOCKED:-}" ] || gh api graphql -f query='{viewer{login}}' >/dev/null 2>&1
+```
+
+A non-zero probe — 403, proxy error, timeout — means **blocked**; fail closed rather than retrying
+the porcelain. When blocked, every step below that names a `gh` porcelain call uses the REST form in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) instead. Say in the
+report which mode the run used and how it decided.
+
 Your linter/formatter already enforces the mechanical rules on every commit (CI + hooks) — see `config.commands.lint`/`config.commands.format`. **Don't re-file what the linter already catches**; those would already be red. This skill targets the structural issues the linter can't see: shape, cohesion, dead surfaces, and the repo's documented invariants.
 
 ## What it looks for
@@ -110,6 +127,24 @@ Skip a finding if any of:
   ```
   (Also check the `config.labels.automated` label if this repo applies it.)
 
+**When GraphQL is blocked**, all three of those are 403. Run the REST equivalents instead —
+**List issues by label and state**, **List PRs by state**, and the `state_reason == "not_planned"`
+filter, all in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Two details that
+file insists on and that matter here: the `/issues` endpoint returns pull requests too, so the
+`select(has("pull_request") | not)` filter is what keeps a PR from being de-duped against as an
+issue; and `--paginate` with `per_page=100` is what keeps the scan complete, because a truncated
+first page read as the whole list is indistinguishable from "nothing is tracked".
+
+**De-dup fails closed.** This step is the only thing standing between a nightly run and a pile of
+duplicate issues and re-opened PRs. So: if **neither** the porcelain nor the REST form can list
+existing open issues, or neither can list open PRs, this run **opens nothing** — no PRs (step 5),
+no issues (step 6), no promotion proposal (step 7). Report the findings it would have filed, name
+the call that failed and its error, and stop. An unreadable backlog is *unknown*, never *empty*; a
+skipped de-dup is the one failure mode that makes the audit worse than not running it. The same
+applies to a scan you could not complete: if the list came back truncated and pagination could not
+finish, treat it as an unreadable read, not as a short one.
+
 ### 4. Categorize each finding into a unit of work
 
 For each surviving finding, decide:
@@ -190,6 +225,17 @@ EOF
 
 Match the conventional prefix to the work (`refactor:`, `chore:`, `fix:`).
 
+**When GraphQL is blocked**, `gh pr create` is 403. Push the branch the same way, then open the PR
+with `POST /repos/{owner}/{repo}/pulls` — **Create a PR** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Labels are a
+separate `POST /issues/{n}/labels` call there, so `config.labels.architecture` and
+`config.labels.automated` land a moment after the `opened` webhook rather than with it. For these
+two labels that is fine — they are routing labels, not review-gating ones — so create the PR
+non-draft and apply them immediately after, and note the ordering in the report. If this repo's
+labels *do* gate a review bot, take the second branch that reference describes: leave the PR a
+draft, label it, and stop with the PR URL and the one action a human must take. `gh pr ready` is
+GraphQL-only and has no REST form.
+
 **Stop at `config.audits.prCap` PRs.** Remaining PR-routed findings get re-routed to issues for this run; the next nightly run will pick them up as PRs if they're still relevant. A flood of similar PRs trains reviewers to ignore them.
 
 ### 6. File issues (capped at `config.audits.issueCap` per run)
@@ -227,6 +273,13 @@ EOF
 )"
 ```
 
+**When GraphQL is blocked**, `gh issue create` is 403. Use
+`POST /repos/{owner}/{repo}/issues` — **Create an issue** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). That endpoint
+takes `labels` inline as an array, so unlike a PR there is no second call and no ordering caveat.
+Build the payload with `jq --rawfile` rather than a heredoc: an issue body quoting source code will
+otherwise be re-interpreted by the shell.
+
 **Stop at `config.audits.issueCap` issues.** Remaining findings are deferred to the next run. Capture them in the report so the human caller knows the backlog is growing.
 
 ### 7. Systemic escalation (recurring patterns)
@@ -252,6 +305,7 @@ Reply to the caller with a structured summary:
 Architecture audit — YYYY-MM-DD
 
 Sweep scope: <N> source files, <M> lines analyzed   (language: <config.language>)
+GitHub API: <graphql | REST fallback (GH_GRAPHQL_BLOCKED | probe)>
 Findings: <total>
   - Routed to PR: <count> (opened <opened>, skipped-as-duplicate <dupes>)
   - Routed to issue: <count> (filed <filed>, skipped-as-duplicate <dupes>)
@@ -311,6 +365,8 @@ Tune the per-run caps (`config.audits.prCap` / `config.audits.issueCap`) downwar
 - **Don't skip pre-flight.** No `--no-verify`, no skipping format/lint/build/test (whichever are non-null in `config.commands`). The audit's whole credibility rests on its PRs being mergeable on first read.
 - **Don't push to `config.defaultBranch`.** Always branch + PR.
 - **Don't operate on a dirty working tree.** A pre-existing diff in tracked source/test/doc paths means a human is mid-work; back off and report. Untracked skill scaffolding under `config.paths.skillsDir` is the one exception — see step 1.
+- **Don't treat an unreadable backlog as an empty one.** If de-dup (step 3) could not list existing open issues or open PRs by either path, the run opens nothing at all and reports why. "The list call failed, so nothing is tracked" is how a nightly sweep files the same issue seven times.
+- **Don't skip a step because its command is blocked.** Every `gh` porcelain this skill uses has a REST form in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md); the one operation with none (marking a draft PR ready) is a stop-and-report, not a shrug.
 - **Don't bypass the per-run caps** "just this once." The caps exist to keep the review burden sustainable; the next run will pick up the deferred findings.
 - **Don't auto-merge.** Even green CI doesn't mean a refactor is right. Every PR this skill opens waits for human review and merge.
 - **Don't auto-edit `invariants.md`/`coding.md`.** When a pattern recurs past the threshold, *propose* the rule as an issue (step 7); the maintainer edits the guideline. Never file more than one promotion per run, and never re-propose one closed Not planned.

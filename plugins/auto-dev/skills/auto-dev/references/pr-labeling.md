@@ -35,6 +35,16 @@ call — it accepts caller-supplied labels for exactly this reason. Only fall ba
 `gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` if a PR somehow got
 opened without it.
 
+**When GraphQL is blocked, the create call cannot carry the label at all.** `POST /pulls` has no
+`labels` field, so the label is always the separate `POST /issues/{n}/labels` call described under
+**Create a PR** in [`../../../references/gh-rest-fallbacks.md`](../../../references/gh-rest-fallbacks.md)
+— i.e. the "after the fact" path becomes the only path, and the race above is unavoidable rather
+than a mistake. That is acceptable for this label specifically: `config.autoDev.prLabel` is a
+marker external tooling reads when it handles the PR, not a switch that has to be set before the
+`opened` webhook fires. Apply it immediately after the create and record the ordering in the exit
+report. A label that genuinely must precede the first review is the other branch that reference
+describes, and it ends in a stop-and-report, because marking a draft ready has no REST form.
+
 ## If the label doesn't exist
 
 `gh pr create --label` fails — and on some `gh` versions it fails *after* pushing the branch,
