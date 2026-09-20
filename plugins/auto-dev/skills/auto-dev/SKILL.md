@@ -127,12 +127,33 @@ First establish the working baseline. **The skill owns this now that there is no
 
 - **Interactive checkout** — do NOT reset, clean, or stash. Just observe state with `git status --porcelain`; a dirty tree or a branch other than `config.defaultBranch` only blocks the working-tree steps (see Invocation modes).
 
+**Then check once whether GraphQL is reachable — before any other GitHub call.** Some sandboxes
+allow GitHub's REST API and refuse its GraphQL one; `gh repo view --json`, `gh issue list`,
+`gh pr list`, `gh pr view --json`, `gh pr create`, `gh pr edit`, `gh pr ready` and `gh search` are
+all GraphQL underneath and return 403 there while `gh auth status` stays green. This check goes
+first precisely because `gh repo view --json` is one of them: run it later and a blocked sandbox
+403s in its own preflight and the tick stops without ever reaching the REST forms.
+
+```bash
+# The scheduler's setup step may declare it; otherwise probe once and cache for the tick.
+[ -n "${GH_GRAPHQL_BLOCKED:-}" ] || gh api graphql -f query='{viewer{login}}' >/dev/null 2>&1
+```
+
+A non-zero probe — 403, proxy error, timeout — means **blocked**. When blocked, every `gh`
+porcelain named in this skill is replaced by the REST form in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Record in the exit
+report which mode the tick ran in and how it decided.
+
 Then confirm GitHub access and identity:
 
 ```bash
 gh auth status                      # must be authenticated (as the maintainer)
 gh repo view <config.repo> --json nameWithOwner   # confirm the repo
 ```
+
+`gh auth status` works in both modes. **When blocked**, confirm the repo with
+`gh api "repos/<config.repo>" --jq '.full_name'` instead — **Confirm the repo resolves** in the
+fallbacks reference.
 
 Gather the current state in parallel (the branch prefix is the identity signal for automated PRs):
 
@@ -150,25 +171,13 @@ gh pr list --repo <config.repo> --state closed --limit 10 --json number,headRefN
   | jq --arg p '<config.autoDev.branchPrefix>' '[.[] | select(.headRefName | startswith($p))]'
 ```
 
-**Check once whether GraphQL is reachable, before any of those three calls.** Some sandboxes allow
-GitHub's REST API and refuse its GraphQL one; `gh issue list`, `gh pr list`, `gh pr view --json`,
-`gh pr create`, `gh pr edit`, `gh pr ready` and `gh search` are all GraphQL underneath and return
-403 there while `gh auth status` stays green.
-
-```bash
-# The scheduler's setup step may declare it; otherwise probe once and cache for the tick.
-[ -n "${GH_GRAPHQL_BLOCKED:-}" ] || gh api graphql -f query='{viewer{login}}' >/dev/null 2>&1
-```
-
-A non-zero probe — 403, proxy error, timeout — means **blocked**. When blocked, every `gh`
-porcelain named in this skill is replaced by the REST form in
-[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): the three gather
-queries above become **List PRs by state** (filter `headRefName` by the branch prefix client-side
-exactly as the `jq` does now, and read `merged_at` for the closed pass) and **List issues by label
-and state** (with the `select(has("pull_request") | not)` filter, since `/issues` returns PRs too,
-and `sort=created&direction=asc` in place of `--search "sort:created-asc"`). The PR-label re-stamp
-below becomes `POST /issues/{n}/labels`. Record in the exit report which mode the tick ran in and
-how it decided.
+**When blocked**, those three gather queries become **List PRs by state** (filter `headRefName` by
+the branch prefix client-side exactly as the `jq` does now, and read `merged_at` for the closed
+pass) and **List issues by label and state** (with the `select(has("pull_request") | not)` filter,
+since `/issues` returns PRs too, and `sort=created&direction=asc` in place of
+`--search "sort:created-asc"`) — both in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). The PR-label
+re-stamp below becomes `POST /issues/{n}/labels`.
 
 Because these three reads feed the in-flight cap and the eligibility walk, they are exactly what
 invariant 7 governs: **a read that fails or truncates on both paths ends the tick**, with the failed

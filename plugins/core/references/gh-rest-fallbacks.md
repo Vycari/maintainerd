@@ -5,8 +5,12 @@ GraphQL one. `gh`'s porcelain is mostly GraphQL underneath, so in such an enviro
 return **403** even though the token is fine and `gh auth status` is green:
 
 `gh issue list` · `gh issue view --json` · `gh issue create` · `gh pr list` · `gh pr view --json` ·
-`gh pr create` · `gh pr ready` · `gh pr edit` · `gh pr checks` · `gh pr merge` · `gh search issues`
-· `gh search prs` · any `gh api graphql …`
+`gh pr create` · `gh pr ready` · `gh pr edit` · `gh pr checks` · `gh pr merge` ·
+`gh repo view --json` · `gh search issues` · `gh search prs` · any `gh api graphql …`
+
+The last one is easy to miss, because it usually sits in a *preflight* rather than in the work:
+a skill that confirms the repo resolves before doing anything will 403 there and stop, never
+reaching the fallbacks below.
 
 What still works is **repo-scoped REST** through `gh api`: `repos/{owner}/{repo}/issues`,
 `/pulls`, `/issues/{n}/comments`, `/issues/{n}/labels`, `/issues/{n}/timeline`,
@@ -63,6 +67,20 @@ save the round trip. Say in the run report which of the two decided it.
 Throughout: `$REPO` is `owner/name`, `$N` an issue or PR number. Everything uses
 `gh api -X GET … -f key=value` for reads rather than a hand-built query string — `gh` URL-encodes
 the values, which matters the moment a label is named `auto:in-progress` or a branch contains `/`.
+
+### Confirm the repo resolves (preflight)
+
+`gh auth status` is not GraphQL and works unchanged. `gh repo view --json nameWithOwner` **is**
+GraphQL, so a preflight that uses it fails before anything else runs. Use the repo endpoint:
+
+```bash
+gh api "repos/$REPO" --jq '.full_name'
+```
+
+This is the right preflight in both modes: it proves the token can see the repo, and its answer is
+the authoritative `owner/name` spelling (it follows renames, so a mismatch against `config.repo` is
+worth reporting). `.default_branch` comes back on the same call if the skill wants it. Treat a
+non-zero exit exactly as the porcelain failure was treated — stop and report, don't repair.
 
 ### Pagination, and the `--jq` trap
 
@@ -330,17 +348,33 @@ A body/comment sentinel search (`'sentinel:' --match body,comments`) becomes: li
 issues by label and state, then, for each, fetch the body and comments and match the sentinel
 locally.
 
+**Check the exit status of every call in the loop.** A `$( … )` that fails yields an empty string,
+and an empty body matches no sentinel — so an unchecked loop turns a read failure into a confident
+"not found", which is precisely rule 1's failure mode wearing a different hat. Abort the whole sweep
+on the first failure rather than continuing with a hole in it:
+
 ```bash
-gh api --paginate --slurp -X GET "repos/$REPO/issues" \
-  -f state=open -f labels="$L" -f per_page=100 \
+candidates=$(gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+               -f state=open -f labels="$L" -f per_page=100) \
+  || { echo "sweep aborted: could not list candidates" >&2; exit 1; }
+
+echo "$candidates" \
 | jq -r '.[][] | select(has("pull_request") | not) | .number' \
 | while read -r n; do
-    body=$(gh api "repos/$REPO/issues/$n" --jq '.body // ""')
+    body=$(gh api "repos/$REPO/issues/$n" --jq '.body // ""') \
+      || { echo "sweep aborted: could not read issue $n" >&2; exit 1; }
     comments=$(gh api --paginate -X GET "repos/$REPO/issues/$n/comments" -f per_page=100 \
-               --jq '.[].body' | tr '\n' ' ')
-    case "$body$comments" in *"$SENTINEL"*) echo "$n" ;; esac
+                 --jq '.[].body') \
+      || { echo "sweep aborted: could not read comments on issue $n" >&2; exit 1; }
+    case "$body $(printf '%s' "$comments" | tr '\n' ' ')" in
+      *"$SENTINEL"*) echo "$n" ;;
+    esac
   done
 ```
+
+(`while` runs in a subshell on the right of a pipe, so its `exit 1` ends that subshell; check the
+pipeline's status — `${PIPESTATUS[@]}` in bash, `$pipestatus` in zsh, or drop the pipe and read the
+numbers from a variable — and treat a non-zero as an aborted sweep, not an empty one.)
 
 This costs one call per candidate, which is why the label filter matters. **State the bound you
 used** in the report: "checked the sentinel across the 40 open issues carrying `<label>`" is an

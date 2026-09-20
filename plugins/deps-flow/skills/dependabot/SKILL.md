@@ -282,9 +282,12 @@ One pass = steps 0–5. A scheduled tick runs one pass; drain mode repeats it.
 
 ### Step 0 — Preflight and gather
 
-**Decide once whether GraphQL is reachable.** Some sandboxes allow GitHub's REST API and refuse its
-GraphQL one; `gh pr list`, `gh pr view --json`, `gh pr checks`, `gh pr merge` and every
-`gh api graphql` below return 403 there while `gh auth status` stays green.
+**Decide once whether GraphQL is reachable, before any other GitHub call.** Some sandboxes allow
+GitHub's REST API and refuse its GraphQL one; `gh repo view --json`, `gh pr list`,
+`gh pr view --json`, `gh pr checks`, `gh pr merge` and every `gh api graphql` below return 403 there
+while `gh auth status` stays green. The check goes first because `gh repo view --json` is one of
+them: run it later and the pass 403s in its own preflight, reports "repo resolution failed", and
+never reaches anything below.
 
 ```bash
 # The scheduler's setup step may declare it; otherwise probe once and cache for the pass.
@@ -292,9 +295,11 @@ GraphQL one; `gh pr list`, `gh pr view --json`, `gh pr checks`, `gh pr merge` an
 ```
 
 A non-zero probe means **blocked**. The reads below then use the REST forms in
-[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) — **List PRs by
-state** for the candidate scan, **Read one PR's fields** for the per-PR snapshot, **Check runs** in
-place of `gh pr checks`. The merge step is the part that does *not* fully survive; see
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) — **Confirm the
+repo resolves** (`gh api "repos/$REPO" --jq '.full_name'`) in place of the `gh repo view` line that
+follows, **List PRs by state** for the candidate scan, **Read one PR's fields** for the per-PR
+snapshot, **Check runs** in place of `gh pr checks`. `gh auth status` works in both modes. The merge
+step is the part that does *not* fully survive; see
 **When GraphQL is blocked, this pass does not merge** below. Say in the report which mode the pass
 ran in and how it decided.
 
