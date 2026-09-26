@@ -116,30 +116,133 @@ archive (`set`). So the shape of the work changes: **harvest the whole window fo
 then filter locally** (categories + keyword phrases from step 1, OR'd together) instead of building
 one query per theme.
 
-```bash
-mkdir -p /tmp/radar
-UA="<config.researchRadar.userAgent>"
-SET=cs                    # top-level arXiv archive matching this repo's domain
-FROM=<window start, YYYY-MM-DD>
-UNTIL=<today, YYYY-MM-DD>
-BASE="https://oaipmh.arxiv.org/oai"
+This one script fetches every page (with real retries, not a placeholder) and filters the result —
+run it as `python3 radar_fetch.py`. Note what each fix below is for: **(a)** the retry loop actually
+checks the HTTP code and body before deciding a page succeeded — a 503/429/5xx/curl-failure/unparsable
+response is retried, not silently treated as done; **(b)** it clears `/tmp/radar`'s page files before
+harvesting, so a rerun with fewer pages than last time can't pick up stale leftovers through a glob;
+**(c)** `resumptionToken` is read via namespace-qualified XML parsing, not a bare regex, and
+URL-encoded before it's reused as a query value, since it's an opaque token that may contain
+query-reserved characters.
 
-page=1
-url="$BASE?verb=ListRecords&metadataPrefix=arXiv&set=$SET&from=$FROM&until=$UNTIL"
-while :; do
-  out="/tmp/radar/page${page}.xml"
-  code=$(curl -sS -m 60 -A "$UA" -D "${out}.hdr" -o "$out" -w '%{http_code}' "$url")
-  echo "page $page: HTTP $code" >&2
-  # retry loop (see flow control below) goes here; on success:
-  token=$(python3 -c "
-import re,sys
-m=re.search(r'<resumptionToken[^>]*>([^<]*)</resumptionToken>', open('$out').read())
-print(m.group(1) if m and m.group(1) else '')")
-  [ -z "$token" ] && break
-  page=$((page+1))
-  url="$BASE?verb=ListRecords&resumptionToken=$token"
-  sleep 3   # courtesy spacing between pages
-done
+```python
+import os, re, sys, time, json, subprocess, datetime, urllib.parse, xml.etree.ElementTree as ET
+
+OAI, ARX = "{http://www.openarchives.org/OAI/2.0/}", "{http://arxiv.org/OAI/arXiv/}"
+UA = "<config.researchRadar.userAgent>"
+SET = "cs"                                    # top-level arXiv archive matching this repo's domain
+FROM = "<window start, YYYY-MM-DD>"
+UNTIL = "<today, YYYY-MM-DD>"
+CATS = {"cs.AI", "cs.CL", "cs.HC", "cs.MA"}    # this repo's categories (step 1)
+PHRASES = ["language model agent", "tool use", "agent memory", "multi-agent"]  # this repo's theme spine
+WINDOW_START, TODAY = datetime.date.fromisoformat(FROM), datetime.date.today()
+
+RADAR_DIR = "/tmp/radar"
+os.makedirs(RADAR_DIR, exist_ok=True)
+for f in os.listdir(RADAR_DIR):               # (b) clear stale pages from a prior run first
+    if re.fullmatch(r"page\d+\.xml(\.hdr)?", f):
+        os.remove(os.path.join(RADAR_DIR, f))
+
+def fetch(url, out_path, max_retries=4):
+    """(a) curl with bounded retries: a non-200 or an unparsable 200 body both count as
+    transient and get retried, never silently treated as 'no more pages'."""
+    backoffs = [15, 60, 180, 300]
+    for attempt in range(max_retries + 1):
+        hdr_path = out_path + ".hdr"
+        code = subprocess.run(
+            ["curl", "-sS", "-m", "60", "-A", UA, "-D", hdr_path, "-o", out_path,
+             "-w", "%{http_code}", url],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        print(f"  attempt {attempt + 1}: HTTP {code}", file=sys.stderr)
+        if code == "200":
+            try:
+                ET.parse(out_path)
+                return True
+            except ET.ParseError:
+                pass  # a 200 with an unparsable body is still transient -- fall through to retry
+        if attempt == max_retries:
+            return False
+        wait = backoffs[min(attempt, len(backoffs) - 1)]
+        if code == "503" and os.path.exists(hdr_path):
+            m = re.search(r"Retry-After:\s*(\d+)", open(hdr_path, errors="ignore").read(), re.I)
+            if m:
+                wait = max(wait, int(m.group(1)))   # honour arXiv's flow-control header
+        print(f"  transient failure, retrying in {wait}s", file=sys.stderr)
+        time.sleep(wait)
+    return False
+
+def harvest():
+    base = "https://oaipmh.arxiv.org/oai"
+    url = f"{base}?verb=ListRecords&metadataPrefix=arXiv&set={SET}&from={FROM}&until={UNTIL}"
+    page, pages = 1, []
+    while True:
+        out_path = os.path.join(RADAR_DIR, f"page{page}.xml")
+        print(f"page {page}: {url[:100]}", file=sys.stderr)
+        if not fetch(url, out_path):
+            print(f"FETCH FAILURE on page {page} after retries -- stop, do not open a PR",
+                  file=sys.stderr)
+            return None
+        root = ET.parse(out_path).getroot()
+        error = root.find(f"{OAI}error")
+        if error is not None:
+            print(f"OAI error on page {page}: {error.get('code')} {error.text}", file=sys.stderr)
+            return None
+        pages.append(out_path)
+        # (c) namespace-qualified lookup, not a literal-tag regex over the raw file text
+        rt = root.find(f".//{OAI}resumptionToken")
+        token = rt.text.strip() if (rt is not None and rt.text) else None
+        if not token:
+            break
+        page += 1
+        # (c) the token is opaque and may contain query-reserved characters -- encode it
+        url = f"{base}?verb=ListRecords&resumptionToken={urllib.parse.quote(token, safe='')}"
+        time.sleep(3)  # courtesy spacing between pages
+    return pages
+
+def parse_and_filter(pages):
+    seen, out = set(), []
+    for path in pages:
+        for r in ET.parse(path).getroot().findall(f".//{OAI}record"):
+            header = r.find(f"{OAI}header")
+            if header is not None and header.get("status") == "deleted":
+                continue
+            md = r.find(f"{OAI}metadata/{ARX}arXiv")
+            if md is None:
+                continue
+            arxid = (md.findtext(f"{ARX}id") or "").strip()
+            created = (md.findtext(f"{ARX}created") or "")[:10]
+            if not arxid or arxid in seen or not created:
+                continue
+            if not (WINDOW_START <= datetime.date.fromisoformat(created) <= TODAY):
+                continue                  # see "Window semantics" -- filter by created, not datestamp
+            cats = (md.findtext(f"{ARX}categories") or "").split()
+            if not (set(cats) & CATS):
+                continue
+            title = " ".join((md.findtext(f"{ARX}title") or "").split())
+            abstract = " ".join((md.findtext(f"{ARX}abstract") or "").split())
+            if not any(p in f"{title} {abstract}".lower() for p in PHRASES):
+                continue
+            seen.add(arxid)
+            authors = [f"{a.findtext(f'{ARX}forenames') or ''} {a.findtext(f'{ARX}keyname') or ''}".strip()
+                       for a in md.findall(f"{ARX}authors/{ARX}author")]
+            out.append({
+                "url": f"https://arxiv.org/abs/{arxid}",
+                "title": title,
+                "abstract": abstract,
+                "submitted": created,
+                "primary": cats[0] if cats else "",
+                "authors": [a for a in authors if a][:6],
+            })
+    return out
+
+if __name__ == "__main__":
+    pages = harvest()
+    if pages is None:
+        sys.exit(1)                       # fetch failure -- never label this a quiet week
+    filtered = parse_and_filter(pages)
+    print(json.dumps(filtered, indent=2))
+    print(f"\n# {len(filtered)} papers in window", file=sys.stderr)
 ```
 
 **`https://` and the `-A` User-Agent are both load-bearing**, same as before. **Pagination**: each
@@ -156,58 +259,11 @@ before, just against a different failure surface: if every attempt on any page f
 open a PR** and report the failure (see "What not to do"). Keep the fetch in `curl -w '%{http_code}'`
 form so status is visible rather than inferred from an empty body.
 
-Parse each page's records and filter to a compact list. Namespaces, verified against a live response:
-the envelope is OAI-PMH (`http://www.openarchives.org/OAI/2.0/`); each record's `<metadata>` holds one
-`<arXiv>` element in `http://arxiv.org/OAI/arXiv/`, with `id`, `created`, `updated`, `authors/author`
+Namespaces, verified against a live response: the envelope is OAI-PMH
+(`http://www.openarchives.org/OAI/2.0/`); each record's `<metadata>` holds one `<arXiv>` element in
+`http://arxiv.org/OAI/arXiv/`, with `id`, `created`, `updated`, `authors/author`
 (`keyname`/`forenames`), `title`, `categories` (space-separated, primary category first), and
 `abstract`. Skip any `<header status="deleted">` record.
-
-```bash
-python3 - /tmp/radar/page*.xml <<'PY'
-import sys, json, datetime, xml.etree.ElementTree as ET
-OAI, ARX = "{http://www.openarchives.org/OAI/2.0/}", "{http://arxiv.org/OAI/arXiv/}"
-CATS = {"cs.AI", "cs.CL", "cs.HC", "cs.MA"}                  # this repo's categories (step 1)
-PHRASES = ["language model agent", "tool use", "agent memory", "multi-agent"]  # this repo's theme spine
-window_start = datetime.date.today() - datetime.timedelta(days=7)   # or the configured window start
-today = datetime.date.today()
-
-seen, out = set(), []
-for path in sys.argv[1:]:
-    for r in ET.parse(path).getroot().findall(f".//{OAI}record"):
-        header = r.find(f"{OAI}header")
-        if header is not None and header.get("status") == "deleted":
-            continue
-        md = r.find(f"{OAI}metadata/{ARX}arXiv")
-        if md is None:
-            continue
-        arxid = (md.findtext(f"{ARX}id") or "").strip()
-        created = (md.findtext(f"{ARX}created") or "")[:10]
-        if not arxid or arxid in seen or not created:
-            continue
-        if not (window_start <= datetime.date.fromisoformat(created) <= today):
-            continue                      # see "Window semantics" — filter by created, not datestamp
-        cats = (md.findtext(f"{ARX}categories") or "").split()
-        if not (set(cats) & CATS):
-            continue
-        title = " ".join((md.findtext(f"{ARX}title") or "").split())
-        abstract = " ".join((md.findtext(f"{ARX}abstract") or "").split())
-        if not any(p in f"{title} {abstract}".lower() for p in PHRASES):
-            continue
-        seen.add(arxid)
-        authors = [f"{a.findtext(f'{ARX}forenames') or ''} {a.findtext(f'{ARX}keyname') or ''}".strip()
-                   for a in md.findall(f"{ARX}authors/{ARX}author")]
-        out.append({
-            "url": f"https://arxiv.org/abs/{arxid}",
-            "title": title,
-            "abstract": abstract,
-            "submitted": created,
-            "primary": cats[0] if cats else "",
-            "authors": [a for a in authors if a][:6],
-        })
-print(json.dumps(out, indent=2))
-print(f"\n# {len(out)} papers in window", file=sys.stderr)
-PY
-```
 
 **Window semantics.** OAI-PMH's `from`/`until` filter by a record's **datestamp** — the date of the
 most recent metadata touch, which includes old papers getting a version bump or a metadata
