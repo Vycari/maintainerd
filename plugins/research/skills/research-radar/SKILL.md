@@ -66,10 +66,19 @@ The set of research themes is the stable spine of the search. It comes from
 arXiv categories to scope to: pick the categories that match this repo's domain so the scan surfaces
 signal without flooding. For an LLM-agent / AI codebase, the set that surfaced signal without
 flooding in testing is `cs.AI`, `cs.CL`, `cs.HC`, `cs.MA`. `cs.LG` is a firehose of
-training/architecture papers that mostly adds noise; add `cs.LG`, `cs.IR`, or `cs.SE` to a query only
-when a week's repo signal is specifically about learning internals, retrieval, or coding agents.
-Relevant work cross-listed from those categories already surfaces via the defaults. A repo in a
-different domain should choose the arXiv categories that match its themes instead.
+training/architecture papers that mostly adds noise; add `cs.LG`, `cs.IR`, or `cs.SE` to the filter
+only when a week's repo signal is specifically about learning internals, retrieval, or coding agents.
+Relevant work cross-listed from those categories already surfaces via the defaults (a harvested
+record's `categories` field lists every category it carries, primary first, so a paper primarily filed
+elsewhere but cross-listed into one of these still matches). A repo in a different domain should
+choose the arXiv categories that match its themes instead — and, since the harvest below is scoped by
+top-level arXiv archive (`cs`, `math`, `q-bio`, …), a repo whose themes span more than one archive
+needs one harvest per archive, each filtered locally to that archive's relevant categories.
+
+Both the categories and the keyword phrases derived from the themes are applied as a **local filter
+over one harvest** (step 2), not as arXiv query parameters — OAI-PMH doesn't support keyword search.
+Where the old search-API approach needed a separate query per theme cluster when the keyword list got
+unwieldy, this needs none: every category and every phrase is OR'd together in a single filter pass.
 
 ## Workflow
 
@@ -93,66 +102,124 @@ Fold anything notable — a new subsystem, a hard problem we're chewing on — i
 step 2. Example: a week heavy on voice barge-in work → add `"endpointing"`, `"turn-taking"`,
 `"full-duplex"` to the queries.
 
-### 2. Query arXiv
+### 2. Harvest arXiv via OAI-PMH
 
-Use the arXiv API (open, no key). Build one or a few `search_query`s combining the categories with
-the keyword spine, sorted newest-first. URL-encode spaces as `+`, parens as `%28`/`%29`, and quote
-phrases.
+**Don't use the search API (`export.arxiv.org/api/query`).** It returns HTTP 406 with an empty body
+to many datacenter/cloud egress IPs — confirmed failing from a scheduled-host run and a cloud routine
+runner while the identical query succeeded from a residential IP (maintainerd#71). This isn't a
+User-Agent or query-shape problem; arXiv appears to throttle or refuse that endpoint from hosting-provider
+ranges. Use arXiv's bulk-metadata endpoint instead, which does not exhibit this:
+`https://oaipmh.arxiv.org/oai`.
+
+OAI-PMH has no keyword search — it hands back every record touched in a date range for a top-level
+archive (`set`). So the shape of the work changes: **harvest the whole window for the archive once,
+then filter locally** (categories + keyword phrases from step 1, OR'd together) instead of building
+one query per theme.
 
 ```bash
 mkdir -p /tmp/radar
 UA="<config.researchRadar.userAgent>"
-curl -sS -m 30 -A "$UA" 'https://export.arxiv.org/api/query?search_query=%28cat:cs.AI+OR+cat:cs.CL+OR+cat:cs.HC+OR+cat:cs.MA%29+AND+%28abs:%22language+model+agent%22+OR+abs:%22tool+use%22+OR+abs:%22agent+memory%22+OR+abs:%22multi-agent%22%29&sortBy=submittedDate&sortOrder=descending&max_results=150' \
-  > /tmp/radar/q1.atom
+SET=cs                    # top-level arXiv archive matching this repo's domain
+FROM=<window start, YYYY-MM-DD>
+UNTIL=<today, YYYY-MM-DD>
+BASE="https://oaipmh.arxiv.org/oai"
+
+page=1
+url="$BASE?verb=ListRecords&metadataPrefix=arXiv&set=$SET&from=$FROM&until=$UNTIL"
+while :; do
+  out="/tmp/radar/page${page}.xml"
+  code=$(curl -sS -m 60 -A "$UA" -D "${out}.hdr" -o "$out" -w '%{http_code}' "$url")
+  echo "page $page: HTTP $code" >&2
+  # retry loop (see flow control below) goes here; on success:
+  token=$(python3 -c "
+import re,sys
+m=re.search(r'<resumptionToken[^>]*>([^<]*)</resumptionToken>', open('$out').read())
+print(m.group(1) if m and m.group(1) else '')")
+  [ -z "$token" ] && break
+  page=$((page+1))
+  url="$BASE?verb=ListRecords&resumptionToken=$token"
+  sleep 3   # courtesy spacing between pages
+done
 ```
 
-(Swap the `cat:` set and the `abs:` keyword phrases for this repo's categories and theme spine — the
-example above is an AI/agent profile.)
+**`https://` and the `-A` User-Agent are both load-bearing**, same as before. **Pagination**: each
+response's `<resumptionToken>` (in the `http://www.openarchives.org/OAI/2.0/` namespace) names the
+next page; an empty or absent token means harvesting is complete. Per OAI-PMH, a resumption request
+carries **only** `verb` and `resumptionToken` — don't repeat `metadataPrefix`/`set`/`from`/`until`
+alongside it.
 
-**`https://` and the `-A` User-Agent are both load-bearing** — arXiv returns an empty body for
-plain-`http` or UA-less requests, which would silently look like a quiet week. Keep them. Run a
-second query (`q2.atom`, …) for a different theme cluster if one query's keywords get unwieldy.
-**Sleep ~3s between calls** — arXiv asks for ~1 request / 3 seconds; a weekly job is otherwise
-trivially within budget.
+**Flow control**: arXiv's OAI-PMH endpoint answers overload with HTTP 503 and a `Retry-After` header
+— honour it. Treat 503, 429, other 5xx, a curl failure, or a response that fails to parse as
+transient and retry with backoff (e.g. 15s, 60s, 180s, 300s; use the `Retry-After` value instead when
+a 503 supplies one and it's longer). This is the same fetch-failure-vs-quiet-week distinction as
+before, just against a different failure surface: if every attempt on any page fails, **stop — do not
+open a PR** and report the failure (see "What not to do"). Keep the fetch in `curl -w '%{http_code}'`
+form so status is visible rather than inferred from an empty body.
 
-Parse the Atom into a compact list and filter to the last 7 days by *submitted* date
-(`<published>`). Filtering by submitted (not `<updated>`) is deliberate: it keeps v2/v3 revisions of
-old papers from re-surfacing.
+Parse each page's records and filter to a compact list. Namespaces, verified against a live response:
+the envelope is OAI-PMH (`http://www.openarchives.org/OAI/2.0/`); each record's `<metadata>` holds one
+`<arXiv>` element in `http://arxiv.org/OAI/arXiv/`, with `id`, `created`, `updated`, `authors/author`
+(`keyname`/`forenames`), `title`, `categories` (space-separated, primary category first), and
+`abstract`. Skip any `<header status="deleted">` record.
 
 ```bash
-python3 - /tmp/radar/*.atom <<'PY'
-import sys, json, re, datetime, xml.etree.ElementTree as ET
-A, X = "{http://www.w3.org/2005/Atom}", "{http://arxiv.org/schemas/atom}"
-cutoff = datetime.date.today() - datetime.timedelta(days=7)
+python3 - /tmp/radar/page*.xml <<'PY'
+import sys, json, datetime, xml.etree.ElementTree as ET
+OAI, ARX = "{http://www.openarchives.org/OAI/2.0/}", "{http://arxiv.org/OAI/arXiv/}"
+CATS = {"cs.AI", "cs.CL", "cs.HC", "cs.MA"}                  # this repo's categories (step 1)
+PHRASES = ["language model agent", "tool use", "agent memory", "multi-agent"]  # this repo's theme spine
+window_start = datetime.date.today() - datetime.timedelta(days=7)   # or the configured window start
+today = datetime.date.today()
+
 seen, out = set(), []
 for path in sys.argv[1:]:
-    for e in ET.parse(path).getroot().findall(f"{A}entry"):
-        pub = (e.findtext(f"{A}published") or "")[:10]
-        if not pub or datetime.date.fromisoformat(pub) < cutoff:
+    for r in ET.parse(path).getroot().findall(f".//{OAI}record"):
+        header = r.find(f"{OAI}header")
+        if header is not None and header.get("status") == "deleted":
             continue
-        url = (e.findtext(f"{A}id") or "").strip()
-        base = re.sub(r"v\d+$", "", url)          # version-stripped id, for dedup
-        if base in seen:
+        md = r.find(f"{OAI}metadata/{ARX}arXiv")
+        if md is None:
             continue
-        seen.add(base)
-        pc = e.find(f"{X}primary_category")
+        arxid = (md.findtext(f"{ARX}id") or "").strip()
+        created = (md.findtext(f"{ARX}created") or "")[:10]
+        if not arxid or arxid in seen or not created:
+            continue
+        if not (window_start <= datetime.date.fromisoformat(created) <= today):
+            continue                      # see "Window semantics" — filter by created, not datestamp
+        cats = (md.findtext(f"{ARX}categories") or "").split()
+        if not (set(cats) & CATS):
+            continue
+        title = " ".join((md.findtext(f"{ARX}title") or "").split())
+        abstract = " ".join((md.findtext(f"{ARX}abstract") or "").split())
+        if not any(p in f"{title} {abstract}".lower() for p in PHRASES):
+            continue
+        seen.add(arxid)
+        authors = [f"{a.findtext(f'{ARX}forenames') or ''} {a.findtext(f'{ARX}keyname') or ''}".strip()
+                   for a in md.findall(f"{ARX}authors/{ARX}author")]
         out.append({
-            "url": url,
-            "title": " ".join((e.findtext(f"{A}title") or "").split()),
-            "abstract": " ".join((e.findtext(f"{A}summary") or "").split()),
-            "published": pub,
-            "primary": pc.get("term") if pc is not None else "",
-            "authors": [a.findtext(f"{A}name") for a in e.findall(f"{A}author")][:6],
+            "url": f"https://arxiv.org/abs/{arxid}",
+            "title": title,
+            "abstract": abstract,
+            "submitted": created,
+            "primary": cats[0] if cats else "",
+            "authors": [a for a in authors if a][:6],
         })
 print(json.dumps(out, indent=2))
 print(f"\n# {len(out)} papers in window", file=sys.stderr)
 PY
 ```
 
-If the newest query returned `max_results` entries and the oldest is still inside the window, you
-truncated — raise `max_results` and re-fetch. If curl fails or returns zero `<entry>` elements (a
-network/API problem, *distinct* from a genuinely quiet week), retry once after a few seconds; if it
-still fails, **stop — do not open a PR** and report the failure (see "What not to do").
+**Window semantics.** OAI-PMH's `from`/`until` filter by a record's **datestamp** — the date of the
+most recent metadata touch, which includes old papers getting a version bump or a metadata
+correction, not just first submissions. (Verified: a harvest for 2026-09-19..2026-09-26 included a
+record with `<created>2024-10-11</created>` and `<datestamp>2026-09-21</datestamp>` — a two-year-old
+paper, edited last week.) Filtering locally on `<created>` (as above) is what keeps the digest "new
+this week," matching the old submitted-date filter's intent — don't drop that check.
+
+**Network access.** The runner needs outbound HTTPS to `oaipmh.arxiv.org`. It does not need
+`export.arxiv.org` — the search API is deliberately not used here because arXiv refuses it from
+datacenter/cloud egress ranges (see above). No other new outbound host is introduced by this
+step; the rest of the skill's network use (`gh`, `git`) is unchanged.
 
 ### 3. Curate and judge
 
@@ -249,7 +316,7 @@ Match the repo's planning/doc voice — prose-forward, explains the *why*, no sh
 
 ## What not to do
 
-- **Don't fabricate papers, authors, titles, or results.** Only report `<entry>` items the API
+- **Don't fabricate papers, authors, titles, or results.** Only report `<record>` items the harvest
   actually returned. A hallucinated paper in a research digest is the worst possible failure here —
   when in doubt, drop it.
 - **Don't open a PR when the fetch failed.** Distinguish a genuinely quiet week (fetch OK, nothing
