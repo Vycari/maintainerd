@@ -373,11 +373,16 @@ fi
 ```
 
 **When GraphQL is blocked** (`gh pr create` returns 403 while `gh auth status` is green), the REST
-fallback in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) applies:
-push, `POST /pulls`, then `POST /issues/{n}/labels` for the skip label. `gh pr ready` has no REST
-form, so in that case leave the PR a draft and **stop and report** it as one — name the PR and the
-`gh pr ready <n>` a human needs to run. Never hand back a labeled draft as if it were open for
-review.
+fallback in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) applies,
+and it splits on the same condition as the inline block:
+
+- **`config.review.skipLabel` unset:** push, then `POST /pulls` with `draft: false`. There is no
+  label to post and nothing to mark ready — the PR opens for normal review, exactly as the non-draft
+  `gh pr create` branch above would.
+- **`config.review.skipLabel` set:** push, `POST /pulls` with `draft: true`, then
+  `POST /issues/{n}/labels` for the skip label. `gh pr ready` has no REST form, so leave the PR a
+  draft and **stop and report** it as one — name the PR and the `gh pr ready <n>` a human needs to
+  run. Never hand back a labeled draft as if it were open for review.
 
 PR body: the "This week" synthesis, then a bullet list of the surfaced papers as
 `- [Title](url) — one-clause why`, so the digest is reviewable from the PR without opening the file.
