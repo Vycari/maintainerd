@@ -56,6 +56,10 @@ Before anything else, load the repo config (see
      real contact.
    - For the profile: `config.paths.designDocs` and `config.paths.productDocs` (doc roots) and
      `config.paths.source` (source root).
+   - `config.review.skipLabel` *(optional)* — a label that marks a PR as exempt from automated
+     review. This skill's PR is prose only (a dated digest plus `radar-state.json`) every run, so
+     when this is set, step 6 opens the PR as a draft with it applied and then marks it ready. If
+     absent, note in your report that the PR will get the repo's normal review.
 
 ## Untrusted input
 
@@ -120,9 +124,19 @@ The window starts where the previous run's harvest ended. It is not a fixed seve
 **Dedupe** has two ledgers:
 
 - **The committed digests.** Every arXiv id in `<researchRadarDir>/*.md`, version-stripped.
-- **The state file's `recentIds`.** Every candidate that survived the prefilter in recent runs,
-  whether or not you picked it, newest first, capped at 500. This is what keeps the overlapping day,
-  or a paper you judged and passed over, from coming back next week.
+- **The state file's `recentIds`.** Every candidate `advance` actually returned to you for ranking
+  (up to `--max`), whether or not you picked it, newest first, capped at 500. This is what keeps the
+  overlapping day, or a paper you judged and passed over, from coming back next week.
+
+  **An id beyond `--max` (`overflowIds` in the prefilter output) is never marked seen** — it was
+  never shown to you, so marking it seen would lose it for good. `advance` only ever adds
+  `candidates` ids to `recentIds`. That said, staying out of `recentIds` does not by itself put
+  every overflow id back in front of you: the *next* harvest's window starts at this run's mark
+  day, inclusive — the overlap that keeps a same-day overflow id in reach — but a day strictly
+  before the mark drops out of the window regardless, so an overflow id whose `<datestamp>` is
+  from an earlier day in the run that just closed is still lost. Recovering that case needs either
+  holding the mark back or carrying it forward some other way — an open question tracked in
+  maintainerd#75, not yet resolved by this skill.
 
 **Old papers with a new version.** OAI's `from`/`until` filter by datestamp, the last metadata touch.
 That includes a two-year-old paper that got a revision last week. (Verified: a harvest for
@@ -243,7 +257,9 @@ The prefilter is cheap and deliberately broad. It works through these steps in o
 4. Drop ids already in a digest or in `recentIds`.
 
 The output holds the survivors, with core-phrase hits first and then a crude term score (up to
-`--max`, default 150). Each carries the terms it `matched`. It also holds `stats`, counting what each stage removed, and `survivorIds`.
+`--max`, default 150). Each carries the terms it `matched`. It also holds `stats`, counting what
+each stage removed, and `overflowIds` — the ids beyond `--max` that survived every filter but were
+never returned to you, so `advance` (step 4) knows not to mark them seen (see "The window" above).
 
 **Then rank the candidates yourself. This is the work.** Read each candidate's abstract against the
 profile and step 1's picture of the repo. Ask whether it informs a subsystem, a problem the repo is
@@ -261,8 +277,9 @@ python3 "$RR" advance --manifest "$RADAR/harvest/manifest.json" \
 ```
 
 This rewrites `radar-state.json` in the working tree. It refuses candidates that were produced from
-a different manifest. The file is committed with the digest in step 6. If the run dies before that
-commit, the committed mark is unchanged, and the next run repeats the window.
+a different manifest. It marks seen only the ids in `candidates` — the ones actually returned for
+ranking — never `overflowIds`. The file is committed with the digest in step 6. If the run dies
+before that commit, the committed mark is unchanged, and the next run repeats the window.
 
 ### 5. Write the report
 
@@ -302,7 +319,7 @@ never overwrite a digest. Template:
 - **From <prTitles.count> merged PR titles (<prTitles.source>), since <since>:** <top ~15 terms with counts>
 - **From <designDocs.count> changed design docs:** <top ~10 terms with counts>
 - **Background terms:** <backgroundTerms, from the prefilter output>
-- **Prefilter:** <records> records → <oldRevisions> old revisions, <category> in category, <terms> matched terms, <alreadyReported> already reported, <alreadySeen> already seen → <survivors> candidates
+- **Prefilter:** <records> records → <oldRevisions> old revisions, <category> in category, <terms> matched terms, <alreadyReported> already reported, <alreadySeen> already seen → <survivors> candidates (<returned> shown for ranking<, <overflow> past `--max`, not yet seen> if any overflow)
 ```
 
 **Quiet-week path:** if ranking genuinely found nothing relevant *and the harvest succeeded*, still
@@ -316,13 +333,25 @@ The repo is PR-only: never push to `config.defaultBranch`. Commit **both** the d
 `radar-state.json`. A digest without its state rewinds the window, and state without its digest
 loses the record of what was surfaced.
 
+**This PR is always prose only** — a dated digest and a state file, never code — so when
+`config.review.skipLabel` is set it should never get a code review. Applying the label after a
+plain (non-draft) `gh pr create` is too late for most bots: they schedule their review on the PR's
+`opened` webhook, which fires before a label from the same command lands. The fix is draft-first:
+open as a draft with the label, then mark it ready — that flow fires no `opened` event for a
+reviewer to race. Never open this PR non-draft-then-labeled.
+
 **If step 0 found an open digest PR,** you are on its branch. Commit, `git push`, and add a PR
-comment summarizing this week's addition. Leave the PR description alone.
+comment summarizing this week's addition. Leave the PR description alone. No new PR is opened, so
+the label question doesn't recur — the PR was already opened correctly (or wasn't) when the week
+started it.
 
 **Otherwise, if `create-pr` is installed,** delegate the branch/commit/PR mechanics to it. It runs
 the repo's pre-flight gates and enforces the PR template. Tell it to branch from
-`config.defaultBranch` with a `research-radar-$(date -u +%Y-%m-%d)` branch name and to use the body
-described below.
+`config.defaultBranch` with a `research-radar-$(date -u +%Y-%m-%d)` branch name, to use the body
+described below, and — when `config.review.skipLabel` is set — to open it as a **draft** with that
+label applied on the create call, then run `gh pr ready` once it's open. `create-pr`'s own labeling
+step only knows to apply a label the caller asks for on the create call; it does not decide
+draft-vs-not on its own, so say so explicitly rather than assuming it infers the skip-review intent.
 
 **Otherwise, open it inline:**
 
@@ -332,14 +361,34 @@ git checkout -b "research-radar-$DAY"              # add -2, -3 if the branch al
 git add "$DIR/$DAY.md" "$DIR/radar-state.json"     # or $DAY-2.md for a same-day re-run
 git commit -m "Research radar — $DAY (<N> papers)"
 git push -u origin HEAD
-gh pr create --repo <config.repo> --base <config.defaultBranch> \
-  --title "Research radar — $DAY" --body "<see below>"
+if [ -n "<config.review.skipLabel>" ]; then
+  gh pr create --repo <config.repo> --base <config.defaultBranch> --draft \
+    --label "<config.review.skipLabel>" \
+    --title "Research radar — $DAY" --body "<see below>"
+  gh pr ready --repo <config.repo>                 # defaults to the current branch's PR
+else
+  gh pr create --repo <config.repo> --base <config.defaultBranch> \
+    --title "Research radar — $DAY" --body "<see below>"
+fi
 ```
+
+**When GraphQL is blocked** (`gh pr create` returns 403 while `gh auth status` is green), the REST
+fallback in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) applies,
+and it splits on the same condition as the inline block:
+
+- **`config.review.skipLabel` unset:** push, then `POST /pulls` with `draft: false`. There is no
+  label to post and nothing to mark ready — the PR opens for normal review, exactly as the non-draft
+  `gh pr create` branch above would.
+- **`config.review.skipLabel` set:** push, `POST /pulls` with `draft: true`, then
+  `POST /issues/{n}/labels` for the skip label. `gh pr ready` has no REST form, so leave the PR a
+  draft and **stop and report** it as one — name the PR and the `gh pr ready <n>` a human needs to
+  run. Never hand back a labeled draft as if it were open for review.
 
 PR body: the "This week" synthesis, then a bullet list of the surfaced papers as
 `- [Title](url) — one-clause why`, so the digest is reviewable from the PR without opening the file.
-Reply to the caller with the PR URL and a one-line shape ("6 papers, heavy on agent memory"). Don't
-paste the whole report back.
+Reply to the caller with the PR URL and a one-line shape ("6 papers, heavy on agent memory"), and say
+whether the skip label was applied (or that `config.review.skipLabel` is unset, so the PR will get
+normal review). Don't paste the whole report back.
 
 ## Voice and style
 

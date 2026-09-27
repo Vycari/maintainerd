@@ -288,9 +288,12 @@ class PrefilterAdvance(Base):
             record(aid(12), TODAY, "cs.AI", "An agent scheduler"),                 # 1 + background
         ]
 
-    def prefilter(self, out):
-        return run(["prefilter", "--manifest", os.path.join(out, "manifest.json"), "--profile",
-                    self.profile, "--state", self.state, "--reported-dir", self.reports])
+    def prefilter(self, out, max_=None):
+        args = ["prefilter", "--manifest", os.path.join(out, "manifest.json"), "--profile",
+                self.profile, "--state", self.state, "--reported-dir", self.reports]
+        if max_ is not None:
+            args += ["--max", str(max_)]
+        return run(args)
 
     def test_filter_and_advance(self):
         self.write_state(f"{TODAY - dt.timedelta(days=3)}T05:00:00Z", recent=[aid(6)])
@@ -368,11 +371,54 @@ class PrefilterAdvance(Base):
     def test_advance_rejects_mismatched_candidates(self):
         r, out, _ = self.harvest({"first": [(200, page([], rd=f"{TODAY}T06:00:00Z"))]})
         cand = os.path.join(self.d, "cand.json")
-        write_json(cand, {"responseDate": "2020-01-01T00:00:00Z", "survivorIds": []})
+        write_json(cand, {"responseDate": "2020-01-01T00:00:00Z", "candidates": []})
         a = run(["advance", "--manifest", os.path.join(out, "manifest.json"),
                  "--candidates", cand, "--state", self.state])
         self.assertNotEqual(a.returncode, 0)
         self.assertFalse(os.path.exists(self.state))
+
+    def test_overflow_beyond_max_stays_unseen_and_resurfaces(self):
+        # Of the 3 survivors, --max 2 admits the two core-phrase hits (aid1, aid8) and pushes the
+        # derived-term-only aid2 into overflow — core hits sort first regardless of score, so a
+        # cap never bumps a core hit for a pile of derived-term matches (see the sort comment in
+        # cmd_prefilter).
+        self.write_state(f"{TODAY - dt.timedelta(days=3)}T05:00:00Z", recent=[aid(6)])
+        r, out, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T06:00:00Z"))]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        p = self.prefilter(out, max_=2)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        res = json.loads(p.stdout)
+        self.assertEqual([c["id"] for c in res["candidates"]], [aid(1), aid(8)])
+        self.assertEqual(res["overflowIds"], [aid(2)])
+        self.assertEqual((res["stats"]["survivors"], res["stats"]["returned"], res["stats"]["overflow"]),
+                          (3, 2, 1))
+
+        cand = os.path.join(self.d, "cand.json")
+        write(cand, p.stdout)
+        a = run(["advance", "--manifest", os.path.join(out, "manifest.json"),
+                 "--candidates", cand, "--state", self.state])
+        self.assertEqual(a.returncode, 0, a.stderr)
+        self.assertIn("2 marked seen, 1 overflow left unseen", a.stderr)
+        state = read_json(self.state)
+        # The mark still advances to this run's responseDate (an overflowing run is not a failed
+        # one) — see test_advance_refuses_to_rewind_a_newer_mark for the no-rewind guarantee.
+        self.assertEqual(state["highWater"]["responseDate"], f"{TODAY}T06:00:00Z")
+        # The ranked/returned ids are marked seen; the overflow id is deliberately not.
+        self.assertIn(aid(1), state["recentIds"])
+        self.assertIn(aid(8), state["recentIds"])
+        self.assertNotIn(aid(2), state["recentIds"])
+
+        # A second run over the same window (the mark day is inclusive, like the overlap in
+        # test_filter_and_advance) re-fetches the same records. aid1 and aid8 are now
+        # alreadySeen, but aid2 was never added to recentIds, so it survives and is returned
+        # again. (Whether a harvest whose window has moved past an *earlier* day would still
+        # re-fetch an overflow id from that day is the open question in maintainerd#75 — this
+        # only exercises the same-day case the seen-set fix actually covers.)
+        r2, out2, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T07:00:00Z"))]})
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(read_json(os.path.join(out2, "manifest.json"))["from"], str(TODAY))
+        res2 = json.loads(self.prefilter(out2).stdout)
+        self.assertEqual([c["id"] for c in res2["candidates"]], [aid(2)])
 
 
 class Profile(Base):

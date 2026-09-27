@@ -456,7 +456,7 @@ def cmd_prefilter(a):
     recent = set((state or {}).get("recentIds", []))
 
     stats = dict(records=0, deleted=0, oldRevisions=0, category=0, terms=0,
-                 alreadyReported=0, alreadySeen=0, survivors=0)
+                 alreadyReported=0, alreadySeen=0, survivors=0, returned=0, overflow=0)
     seen, in_cat, out = set(), [], []
     for path in m["pages"]:
         try:
@@ -519,12 +519,22 @@ def cmd_prefilter(a):
     out.sort(key=lambda c: (-c["coreHits"], -c["score"], c["id"]))
     stats["survivors"] = len(out)
     capped = out[: a.max]
+    overflow = out[a.max:]
+    stats["returned"] = len(capped)
+    stats["overflow"] = len(overflow)
     result = {"responseDate": m["responseDate"], "from": m["from"], "until": m["until"],
               "windowSource": m["windowSource"], "stats": stats, "backgroundTerms": background,
               "returned": len(capped),
               "candidates": capped,
-              # every survivor, not just the returned slice, so the next run skips all of them
-              "survivorIds": [c["id"] for c in out]}
+              # Ids beyond --max that were never shown to the model. `advance` must not mark these
+              # seen — only `candidates` (below) was actually ranked or considered — but staying
+              # unseen doesn't, on its own, guarantee "picked up next run": the next harvest's
+              # window starts at this run's mark day, inclusive (the same-day overlap already
+              # covers a same-day overflow id), but a day strictly before the mark drops out of
+              # the window regardless, so an overflow id datestamped earlier in the window that
+              # just closed is still lost. See maintainerd#75 for the open question of how (or
+              # whether) to carry that case forward.
+              "overflowIds": [c["id"] for c in overflow]}
     json.dump(result, sys.stdout, indent=2)
     print()
     print(f"prefilter: {json.dumps(stats)}; returning {len(capped)}", file=sys.stderr)
@@ -545,7 +555,11 @@ def cmd_advance(a):
         die(f"the state's mark is {current or '(none)'} but this harvest started from "
             f"{m.get('previousMark') or '(none)'}: another run advanced it since; refusing to "
             "overwrite it. Start over from the latest state.")
-    recent = list(dict.fromkeys(cand["survivorIds"] + ((prev or {}).get("recentIds") or [])))
+    # Only ids actually shown to the model (`candidates`) are marked seen. `overflowIds` — survivors
+    # beyond `--max` that were never ranked or considered — are deliberately left out, so they stay
+    # eligible rather than being lost for good the moment the cap is hit.
+    returned_ids = [c["id"] for c in cand["candidates"]]
+    recent = list(dict.fromkeys(returned_ids + ((prev or {}).get("recentIds") or [])))
     state = {
         "version": STATE_VERSION,
         "highWater": {"responseDate": m["responseDate"], "from": m["from"], "until": m["until"],
@@ -558,8 +572,10 @@ def cmd_advance(a):
         json.dump(state, f, indent=2)
         f.write("\n")
     os.replace(tmp, a.state)
+    overflow = len(cand.get("overflowIds") or [])
     print(f"advance: mark {prev['highWater']['responseDate'] if prev else '(none)'} -> "
-          f"{m['responseDate']}", file=sys.stderr)
+          f"{m['responseDate']} ({len(returned_ids)} marked seen"
+          + (f", {overflow} overflow left unseen" if overflow else "") + ")", file=sys.stderr)
 
 
 def main():
