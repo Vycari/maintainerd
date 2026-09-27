@@ -120,9 +120,13 @@ note the package, current → available version, and the reason (outdated/deprec
 ### 4. Dedup against existing work
 
 ```bash
-gh issue list --repo <config.repo> --state open --label <config.labels.dependencies> --json number,title --limit 100
+gh issue list --repo <config.repo> --state open --label <config.labels.dependencies> --json number,title --limit 1000
 gh pr list   --repo <config.repo> --state open --json number,title,headRefName --limit 50
 ```
+
+`--limit` is well above any realistic count of open, dependency-labelled issues; if the issue list
+still comes back at exactly `1000`, treat discovery as truncated, not complete — don't dedup against
+a possibly-short list, say so in the report instead.
 
 Skip a finding already covered by an open PR/issue, a Dependabot/Renovate PR (don't compete with the
 repo's existing bot), or a `wontfix`/not-planned close (a standing decision — e.g. "we pin X").

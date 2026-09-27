@@ -181,10 +181,23 @@ gh pr list --repo "$REPO" --state open \
   --json number,title,headRefName,reviewDecision,mergeable,updatedAt \
   | jq --arg p "$PREFIX" '[.[] | select(.headRefName | startswith($p))]'
 
-# Everything in a human-gated label state, plus brand-new untriaged issues
-gh issue list --repo "$REPO" --state open --limit 200 \
-  --json number,title,labels,createdAt,updatedAt --search "sort:created-asc"
+# Everything in a human-gated label state, plus brand-new untriaged issues — the paginated REST
+# form, not `gh issue list` (which caps at 30 by default, or at the Search API's 1000-result
+# ceiling once `--search` is involved; neither is safe on a repo with hundreds of open issues).
+gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+  -f state=open -f sort=created -f direction=asc -f per_page=100 > /tmp/review-queue-open-issues.json
+gh api "repos/$REPO" --jq '.open_issues_count'
 ```
+
+**Confirm the read is complete before bucketing anything.** Sum the raw pages in
+`/tmp/review-queue-open-issues.json` (before filtering out PRs) and compare to `open_issues_count`
+from the second call — they must match. Fewer means the read truncated; treat it as a failed
+gather (say "gathered N of M open issues" and stop this repo's pass) rather than presenting a short
+worklist as the whole queue. See **List every open issue (no label filter), and confirm the read is
+complete** in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for
+why this shape of call is required and the exact check. Once confirmed complete, filter to issues
+(`select(has("pull_request") | not)`) and project `number, title, labels: [.labels[].name],
+createdAt: .created_at, updatedAt: .updated_at` for the bucketing below.
 
 Bucket the open issues by their `auto:*` state (per the table above). For new/untriaged ones, apply
 the same eligibility exclusions auto-dev uses — the skip label

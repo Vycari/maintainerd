@@ -162,26 +162,36 @@ Gather the current state in parallel (the branch prefix is the identity signal f
 gh pr list --repo <config.repo> --state open --json number,headRefName,title,reviewDecision,mergeable,isDraft,labels \
   | jq --arg p '<config.autoDev.branchPrefix>' '[.[] | select(.headRefName | startswith($p))]'
 
-# All open issues, oldest first
-gh issue list --repo <config.repo> --state open --limit 200 \
-  --json number,title,labels,createdAt,updatedAt --search "sort:created-asc"
+# All open issues, oldest first — the paginated REST form (see below), not `gh issue list`.
+gh api --paginate --slurp -X GET "repos/<config.repo>/issues" \
+  -f state=open -f sort=created -f direction=asc -f per_page=100 > /tmp/auto-dev-open-issues.json
+gh api "repos/<config.repo>" --jq '.open_issues_count'
 
 # Recently closed automated PRs (for step 1's orphan/closure handling)
 gh pr list --repo <config.repo> --state closed --limit 10 --json number,headRefName,mergedAt,closedAt \
   | jq --arg p '<config.autoDev.branchPrefix>' '[.[] | select(.headRefName | startswith($p))]'
 ```
 
-**When blocked**, those three gather queries become **List PRs by state** (filter `headRefName` by
-the branch prefix client-side exactly as the `jq` does now, and read `merged_at` for the closed
-pass) and **List issues by label and state** (with the `select(has("pull_request") | not)` filter,
-since `/issues` returns PRs too, and `sort=created&direction=asc` in place of
-`--search "sort:created-asc"`) — both in
-[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). The PR-label
-re-stamp below becomes `POST /issues/{n}/labels`.
+**The open-issues read is a REST call, not `gh issue list`, in both modes** — see **List every open
+issue (no label filter), and confirm the read is complete** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for why (the
+porcelain's default 30-item cap and, once `--search` is involved, the Search API's separate
+1000-result ceiling) and for the exact completeness check: sum the raw pages of
+`/tmp/auto-dev-open-issues.json` (before filtering out PRs) and compare to `open_issues_count` —
+they must match, or the read is truncated. Only after that check passes, filter to issues
+(`select(has("pull_request") | not)`) and project the fields the rest of this skill uses
+(`number, title, labels: [.labels[].name], createdAt: .created_at, updatedAt: .updated_at`).
 
-Because these three reads feed the in-flight cap and the eligibility walk, they are exactly what
+**When blocked**, the two PR queries become **List PRs by state** (filter `headRefName` by
+the branch prefix client-side exactly as the `jq` does now, and read `merged_at` for the closed
+pass), in the same reference. The open-issues read above already uses the REST form, so nothing
+changes for it when blocked. The PR-label re-stamp below becomes `POST /issues/{n}/labels`.
+
+Because these reads feed the in-flight cap and the eligibility walk, they are exactly what
 invariant 7 governs: **a read that fails or truncates on both paths ends the tick**, with the failed
-call named in the report. Do not proceed on a partial gather.
+call named in the report. Do not proceed on a partial gather — including a gathered open-issue count
+smaller than `open_issues_count`; say "gathered N of M open issues" in the exit report and stop
+rather than triaging a short list.
 
 If `gh` auth or repo resolution fails, print the failure in the exit report and stop — do not attempt repairs.
 

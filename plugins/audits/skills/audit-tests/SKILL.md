@@ -148,15 +148,19 @@ For each candidate finding, skip it if any of these is true:
 ```bash
 # This skill's own open PRs/issues
 gh pr list --repo <config.repo> --state open --json number,title,headRefName --limit 50
-gh issue list --repo <config.repo> --state open --label <config.labels.testQuality> --json number,title --limit 100
+gh issue list --repo <config.repo> --state open --label <config.labels.testQuality> --json number,title --limit 1000
 
 # Don't collide with audit-architecture mid-fix on the same file
 gh pr list --repo <config.repo> --state open --search "head:arch-" --json number,headRefName,files --limit 50
 
 # Don't re-file what a human closed wontfix
 gh issue list --repo <config.repo> --state closed --label <config.labels.testQuality> \
-  --search "is:closed reason:not-planned" --json number,title --limit 50
+  --search "is:closed reason:not-planned" --json number,title --limit 1000
 ```
+
+Each `--limit` is well above any realistic count for its query; if a list comes back at exactly its
+limit, treat that dedup as truncated, not complete, and say so in the report rather than filing
+against an incomplete view.
 
 Skip when:
 

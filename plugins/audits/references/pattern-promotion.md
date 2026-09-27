@@ -79,7 +79,7 @@ gh pr list --repo <config.repo> --state merged --limit 100 \
 
 # Prior automated issues for this pattern, closed as completed (not not-planned)
 gh issue list --repo <config.repo> --state closed --label <config.labels.architecture> \
-  --search "reason:completed" --json number,title,closedAt --limit 100
+  --search "reason:completed" --json number,title,closedAt --limit 1000
 ```
 
 **When GraphQL is blocked** both are 403 (and so is the search qualifier). Use the REST forms in
@@ -89,7 +89,9 @@ issues by label and state** with `state=closed`, filtering client-side on
 `.state_reason == "completed"` in place of the `reason:completed` search qualifier. Recurrence is a
 count, so an incomplete read is a wrong count: if either list cannot be read or paginated to
 completion, **propose nothing this run** and say why. Under-counting silently turns a chronic
-pattern back into a one-off.
+pattern back into a one-off. The issue-list `--limit` is well above any realistic recurrence count
+over one lookback window; a result that comes back at exactly `1000` is the same failure as an
+unreadable list — don't propose based on it, say the count may be truncated instead.
 
 Read titles/bodies to keep only the ones that are the **same specific pattern** from Step A, not just
 the same category label. If

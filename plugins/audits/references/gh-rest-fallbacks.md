@@ -140,6 +140,43 @@ gh api --paginate --slurp -X GET "repos/$REPO/issues" \
        | select(.state_reason == "not_planned") | {number, title}]'
 ```
 
+### List every open issue (no label filter), and confirm the read is complete
+
+`gh issue list --repo $REPO --state open --limit N --json … --search "sort:created-asc"` becomes:
+
+```bash
+gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+  -f state=open -f sort=created -f direction=asc -f per_page=100 \
+| jq '[.[][] | select(has("pull_request") | not)
+       | {number, title, labels: [.labels[].name],
+          createdAt: .created_at, updatedAt: .updated_at}]'
+```
+
+This is the right call **in both modes**, not just the blocked one. The porcelain form it replaces
+caps at 30 by default, and raising `--limit` only helps up to a point: passing `--search` (even just
+for `sort:created-asc`, with no filter terms) routes the whole query through GitHub's Search API,
+which has its own 1000-result ceiling that no `--limit` can raise. The plain `/issues` listing above
+has neither limit.
+
+A truncated read of an issue-only list is invisible from the inside — a repo that genuinely has 40
+open issues and a paginated read that silently stopped at 40 look identical once you've filtered out
+PRs. Check completeness against the repo's own counter instead, which counts issues and PRs
+together, before you filter either list:
+
+```bash
+gh api "repos/$REPO" --jq '.open_issues_count'
+```
+
+Sum the raw entries across all pages (before the `select(has("pull_request") | not)` filter) and
+compare to `open_issues_count`. They must be equal. Fewer means the paginated read stopped early —
+a dropped page, a rate limit, a proxy timeout — and the list is not complete: treat it as a failed
+read (**Three rules that outrank everything below**, rule 1), not a short one, and say so in the
+report ("gathered N of M open issues") rather than acting on the undercount. More is a benign race
+(an issue or PR opened between the two calls) and not a problem. This is the one enumeration in this
+file where "scanned the first N" is never an acceptable fallback: a caller that reads the *whole*
+open-issue set to drive eligibility or staleness decisions (an auto-dev tick, a review-queue gather)
+silently mis-triages everything past a truncated cutoff, not just misses a few items.
+
 ### List PRs by state, and find one by branch
 
 `gh pr list --repo $REPO --state open --json number,headRefName,…` becomes:
