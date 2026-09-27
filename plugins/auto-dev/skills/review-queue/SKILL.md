@@ -205,8 +205,9 @@ open issue (no label filter), and confirm the read is complete** in
 of call is required and the full check. Once confirmed complete, filter `$ISSUES_FILE` to issues
 (`select(has("pull_request") | not)`) and project `number, title, labels: [.labels[].name],
 createdAt: .created_at, updatedAt: .updated_at` for the bucketing below. The file is per-run
-(`mktemp`), so two passes on one machine can't overwrite each other's pages; `rm -f "$ISSUES_FILE"`
-once the pass has bucketed it.
+(`mktemp`), so two passes on one machine can't overwrite each other's pages. `rm -f "$ISSUES_FILE"`
+on every exit from the read: before the re-run, before stopping this repo's pass on a failed read,
+and once the projected list is in hand.
 
 Bucket the open issues by their `auto:*` state (per the table above). For new/untriaged ones, apply
 the same eligibility exclusions auto-dev uses — the skip label

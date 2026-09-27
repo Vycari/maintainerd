@@ -154,7 +154,10 @@ echo "file=$ISSUES_FILE before=$before gathered=$gathered after=$after"
 Use `mktemp`, never a fixed path: two runs on one machine (two repos, or an interactive run beside a
 scheduled one) would otherwise overwrite each other's page file between the write and the check,
 and a run could pass the count check on another repo's issues. Remove the file (`rm -f
-"$ISSUES_FILE"`) once the run has what it needs from it.
+"$ISSUES_FILE"`) on **every** exit from the read, not just the happy path: before a re-run (which
+makes a fresh `mktemp` file), on a failed read before you stop, and once a passing read has been
+projected. An early exit that skips the cleanup leaves issue titles and labels behind in the shared
+temporary directory, one file per failed run.
 
 This is the right call **in both modes**, not just the blocked one. The porcelain form it replaces
 caps at 30 by default, and raising `--limit` only helps up to a point: passing `--search` (even just

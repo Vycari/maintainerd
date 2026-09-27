@@ -187,8 +187,9 @@ after)` is truncated; anything else means an issue or PR opened or closed mid-re
 bracketed read once, and treat a second unsettled result as a failed read. Only after a read passes,
 filter `$ISSUES_FILE` to issues (`select(has("pull_request") | not)`) and project the fields the rest
 of this skill uses (`number, title, labels: [.labels[].name], createdAt: .created_at, updatedAt:
-.updated_at`). The file is per-run (`mktemp`) so concurrent runs can't overwrite each other's pages;
-`rm -f "$ISSUES_FILE"` at the end of the tick.
+.updated_at`). The file is per-run (`mktemp`) so concurrent runs can't overwrite each other's pages.
+`rm -f "$ISSUES_FILE"` on every exit from the read: before the re-run, before stopping on a failed
+read, and once the projected list is in hand — not only at the end of a tick that got that far.
 
 **When blocked**, the two PR queries become **List PRs by state** (filter `headRefName` by
 the branch prefix client-side exactly as the `jq` does now, and read `merged_at` for the closed
