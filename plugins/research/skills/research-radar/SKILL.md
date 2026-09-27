@@ -103,10 +103,11 @@ The window starts where the previous run's harvest ended. It is not a fixed seve
   included because OAI datestamps are day-granular, so records can still land on it after the mark
   was taken. The overlap is removed by the dedupe below.
 - **With no state file**, the window falls back to the last 7 days.
-- **When a set is added** that the mark does not cover (a new `--set`), the window also falls back
-  to the last 7 days (`"windowSource": "new-sets"`), because the old mark says nothing about a set
-  it never harvested. The sets already covered re-fetch those days; `recentIds` stops their papers
-  from being offered again.
+- **When a set is added** that the mark does not cover (a new `--set`), the window starts at the
+  earlier of the mark and 7 days ago (`"windowSource": "new-sets"`). The old mark says nothing
+  about a set it never harvested, so the new set gets at least the first-run window, and the sets
+  already covered still lose nothing since their mark. Any days they re-fetch are deduped by
+  `recentIds`. The 28-day cap still applies.
 - **After a gap of more than 28 days**, the window is capped at 28 days and the manifest says
   `"windowSource": "capped"`. Say so in the digest.
 - **The mark advances only after a complete run.** `advance` runs only after `harvest` has fetched
@@ -272,7 +273,7 @@ never overwrite a digest. Template:
 ```markdown
 # Research radar — <Month DD, YYYY>
 
-**Window:** <from> – <until> (<since last harvest | first run: last 7 days | new set: last 7 days | capped at 28 days>)  ·  **Surfaced:** <N> of <survivors> candidates, <records> records harvested
+**Window:** <from> – <until> (<since last harvest | first run: last 7 days | new set: from the earlier of the mark and 7 days ago | capped at 28 days>)  ·  **Surfaced:** <N> of <survivors> candidates, <records> records harvested
 
 ---
 

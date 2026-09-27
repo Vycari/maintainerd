@@ -230,6 +230,17 @@ class Window(Base):
         self.assertEqual((m["from"], m["windowSource"]), (str(TODAY - dt.timedelta(days=7)), "new-sets"))
         self.assertEqual({q["from"] for q in reqs}, {str(TODAY - dt.timedelta(days=7))})
 
+    def test_new_set_keeps_an_older_mark(self):
+        # Mark 12 days back: the covered set must still be fetched from its mark, not from
+        # the 7-day fallback, or the days between would never be harvested.
+        mark = TODAY - dt.timedelta(days=12)
+        self.write_state(f"{mark}T05:00:00Z", sets=["cs"])
+        r, out, reqs = self.harvest({"first": [(200, page([]))]}, sets=("cs", "physics"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = read_json(os.path.join(out, "manifest.json"))
+        self.assertEqual((m["from"], m["windowSource"]), (str(mark), "new-sets"))
+        self.assertEqual({q["from"] for q in reqs}, {str(mark)})
+
     def test_subset_of_marked_sets_uses_mark(self):
         mark = TODAY - dt.timedelta(days=2)
         self.write_state(f"{mark}T05:00:00Z", sets=["cs", "physics"])

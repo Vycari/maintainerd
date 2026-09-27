@@ -80,18 +80,21 @@ def compute_window(state, today, sets):
     day-granular, so records can still land on that day after the mark was taken.
 
     The mark covers only the sets it was taken over. If this run asks for a set the mark does not
-    cover, the whole window falls back to the first-run window: the new set was never harvested,
-    so the old mark says nothing about it. The already-covered sets re-fetch a few days, and
-    `recentIds` keeps those papers from being offered again."""
+    cover, the window starts at whichever is earlier: the mark (so the sets already covered lose
+    nothing since it) or the first-run window (so the new set gets at least that much). The
+    covered sets may re-fetch a few days, and `recentIds` keeps those papers from being offered
+    again. The 28-day cap still applies."""
     if state is None:
         return today - dt.timedelta(days=FALLBACK_DAYS), today, "fallback"
+    mark = min(dt.date.fromisoformat(state["highWater"]["responseDate"][:10]), today)
+    source = "state"
     if set(sets) - set(state["highWater"].get("sets") or []):
-        return today - dt.timedelta(days=FALLBACK_DAYS), today, "new-sets"
-    mark = dt.date.fromisoformat(state["highWater"]["responseDate"][:10])
+        mark = min(mark, today - dt.timedelta(days=FALLBACK_DAYS))
+        source = "new-sets"
     earliest = today - dt.timedelta(days=MAX_WINDOW_DAYS)
     if mark < earliest:
         return earliest, today, "capped"
-    return min(mark, today), today, "state"
+    return mark, today, source
 
 
 # ── harvest ──────────────────────────────────────────────────────────────────────────────
