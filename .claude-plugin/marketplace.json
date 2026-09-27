@@ -27,7 +27,7 @@
       "name": "research",
       "source": "./plugins/research",
       "description": "Proactive research skills that surface relevant outside knowledge and open a PR/digest: research-radar (periodic arXiv scan for papers relevant to this repo). Room for future research tooling. Themes and output paths come from the repo config.",
-      "version": "0.2.17"
+      "version": "0.2.18"
     },
     {
       "name": "journal",
