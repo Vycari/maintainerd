@@ -197,6 +197,7 @@ with open(f"{out_dir}/manifest.json", "w") as f:
                "set": oai_set, "from": frm, "until": until}, f, indent=2)
 print(f"harvest complete: {len(pages)} page(s) -> {out_dir}/manifest.json", file=sys.stderr)
 PY
+echo "RADAR=$RADAR"       # the parse step below needs this path; carry it over if it runs in a new shell
 ```
 
 Run the block as written: the only value to fill in is the User-Agent (and `SET`, for a repo outside
@@ -235,13 +236,17 @@ is written only after the last page succeeds, and the parse step below reads its
 than globbing a directory — so an incomplete harvest, or a page from any other run, can never reach
 the filter.
 
-Parse the pages the manifest lists and filter to a compact list. Namespaces, verified against a live response:
+Parse the pages the manifest lists and filter to a compact list. If this block runs in a different
+shell invocation from the harvest (each agent tool call is usually a fresh shell), set `RADAR` to the
+`RADAR=…` path the harvest printed; with the wrong path there is no manifest, and the parse fails
+rather than filtering nothing. Namespaces, verified against a live response:
 the envelope is OAI-PMH (`http://www.openarchives.org/OAI/2.0/`); each record's `<metadata>` holds one
 `<arXiv>` element in `http://arxiv.org/OAI/arXiv/`, with `id`, `created`, `updated`, `authors/author`
 (`keyname`/`forenames`), `title`, `categories` (space-separated, primary category first), and
 `abstract`. Skip any `<header status="deleted">` record.
 
 ```bash
+RADAR="${RADAR:-<the RADAR= path the harvest printed>}"   # shell variables don't survive between tool calls
 python3 - "$RADAR/manifest.json" <<'PY'
 import sys, json, datetime, xml.etree.ElementTree as ET
 OAI, ARX = "{http://www.openarchives.org/OAI/2.0/}", "{http://arxiv.org/OAI/arXiv/}"
