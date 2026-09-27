@@ -293,6 +293,18 @@ class PrefilterAdvance(Base):
         self.assertEqual(read_json(os.path.join(out2, "manifest.json"))["from"], str(TODAY))
         self.assertEqual(json.loads(self.prefilter(out2).stdout)["candidates"], [])
 
+    def test_small_harvest_has_no_background(self):
+        # 3 in-category records: "scheduler" hits 2 of them (67%) but that is too few to call
+        # background, so two derived terms still admit a paper.
+        recs = [record(aid(1), TODAY, "cs.AI", "A scheduler", "with a retry budget"),
+                record(aid(2), TODAY, "cs.AI", "Another scheduler"),
+                record(aid(3), TODAY, "cs.AI", "Unrelated")]
+        r, out, _ = self.harvest({"first": [(200, page(recs))]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        res = json.loads(self.prefilter(out).stdout)
+        self.assertEqual(res["backgroundTerms"], [])
+        self.assertEqual([c["id"] for c in res["candidates"]], [aid(1)])
+
     def test_failed_harvest_leaves_mark_alone(self):
         self.write_state("2026-01-01T00:00:00Z")
         with open(self.state) as f:

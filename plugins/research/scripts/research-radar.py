@@ -41,7 +41,8 @@ FALLBACK_DAYS = 7        # no state yet: the old fixed window
 MAX_WINDOW_DAYS = 28     # a long gap is capped (and reported), not harvested in full
 CREATED_GRACE_DAYS = 7   # arXiv datestamps lag first submission by a few days (weekends, holds)
 RECENT_IDS_KEEP = 500    # prefilter survivors remembered across runs, newest first
-BACKGROUND_DF = 0.05     # a derived term in more than this share of in-category records is background
+BACKGROUND_DF = 0.05     # a derived term in more than this share of in-category records is background...
+BACKGROUND_MIN = 5       # ...and in at least this many, so a small harvest doesn't make every hit background
 NEW_ID = re.compile(r"^(\d{2})(\d{2})\.\d{4,5}$")  # YYMM.NNNNN: the prefix is the v1 submission month
 
 ARXIV_ID = re.compile(r"arxiv\.org/(?:abs|pdf)/([a-z\-]+(?:\.[A-Z]{2})?/\d{7}|\d{4}\.\d{4,5})", re.I)
@@ -482,8 +483,8 @@ def cmd_prefilter(a):
     # A derived term that shows up in a large share of this harvest ("agent", "model" in cs.AI)
     # separates nothing; it may still be listed as matched but it neither admits nor scores.
     df = {t: sum(t in r["hits"] for r in in_cat) for t in weights}
-    background = sorted(t for t in weights if weights[t] < 3 and in_cat
-                        and df[t] > BACKGROUND_DF * len(in_cat))
+    background = sorted(t for t in weights if weights[t] < 3
+                        and df[t] >= BACKGROUND_MIN and df[t] > BACKGROUND_DF * len(in_cat))
     for r in in_cat:
         hits = sorted(r.pop("hits"))
         signal = [t for t in hits if t not in background]

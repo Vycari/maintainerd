@@ -143,8 +143,8 @@ The state file and the digests are the run's memory, so the run must start from 
 version. That version might be on a digest PR that hasn't merged yet.
 
 ```bash
-gh pr list --repo <config.repo> --state open --search "head:research-radar-" \
-  --json number,headRefName,url --jq '.[] | "\(.number) \(.headRefName) \(.url)"'
+gh pr list --repo <config.repo> --state open --limit 200 --json number,headRefName,url \
+  --jq '.[] | select(.headRefName | startswith("research-radar-")) | "\(.number) \(.headRefName) \(.url)"'
 ```
 
 - **No open digest PR:** start from the latest default branch: `git fetch origin && git checkout
@@ -223,7 +223,7 @@ The prefilter is cheap and deliberately broad. It works through these steps in o
 2. Keep only records whose categories intersect the profile's.
 3. Keep only records whose title or abstract hits one core or interests phrase, or at least two
    derived terms. Matching is on word boundaries, and hyphens count as spaces. A derived term found
-   in more than 5% of this harvest's in-category records is **background**: "agent" or "model" in
+   in more than 5% of this harvest's in-category records (and at least 5 of them) is **background**: "agent" or "model" in
    `cs.AI` separates nothing. It is listed in `backgroundTerms` and neither admits nor scores. Core
    and interests phrases always count.
 4. Drop ids already in a digest or in `recentIds`.
@@ -307,18 +307,19 @@ comment summarizing this week's addition. Leave the PR description alone.
 
 **Otherwise, if `create-pr` is installed,** delegate the branch/commit/PR mechanics to it. It runs
 the repo's pre-flight gates and enforces the PR template. Tell it to branch from
-`config.defaultBranch` with a `research-radar-$(date +%Y-%m-%d)` branch name and to use the body
+`config.defaultBranch` with a `research-radar-$(date -u +%Y-%m-%d)` branch name and to use the body
 described below.
 
 **Otherwise, open it inline:**
 
 ```bash
-git checkout -b research-radar-$(date +%Y-%m-%d)   # add -2, -3 if the branch already exists (cron double-fire)
-git add "$DIR/$(date +%Y-%m-%d).md" "$DIR/radar-state.json"
-git commit -m "Research radar — $(date +%Y-%m-%d) (<N> papers)"
+DAY=$(date -u +%Y-%m-%d)                           # UTC, matching the digest's filename
+git checkout -b "research-radar-$DAY"              # add -2, -3 if the branch already exists (cron double-fire)
+git add "$DIR/$DAY.md" "$DIR/radar-state.json"     # or $DAY-2.md for a same-day re-run
+git commit -m "Research radar — $DAY (<N> papers)"
 git push -u origin HEAD
 gh pr create --repo <config.repo> --base <config.defaultBranch> \
-  --title "Research radar — $(date +%Y-%m-%d)" --body "<see below>"
+  --title "Research radar — $DAY" --body "<see below>"
 ```
 
 PR body: the "This week" synthesis, then a bullet list of the surfaced papers as
