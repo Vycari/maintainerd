@@ -144,7 +144,9 @@ Every skill here reads the repo's config contract — `.claude/maintainerd.json`
 
 Skills that read text authored outside the repo follow the shared contract in
 [`references/untrusted-input.md`](references/untrusted-input.md); scheduled skills note which model
-tier they want in [`references/model-tiers.md`](references/model-tiers.md).
+tier they want in [`references/model-tiers.md`](references/model-tiers.md); "is my PR deployed?"
+is answered by fetching the repo's `config.deploy.versionz` endpoint, per
+[`references/deployed-check.md`](references/deployed-check.md) — never by ssh or `docker inspect`.
 
 ## Install
 
