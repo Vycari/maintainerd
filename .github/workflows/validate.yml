@@ -97,6 +97,9 @@ jobs:
       - name: The repo-ops pr-template-guard and skip-label-race-guard hooks behave, and fail closed
         run: ./scripts/test-repo-ops-hooks.sh
 
+      - name: The research-radar harvester fails closed, windows from its mark, and dedupes
+        run: python3 scripts/test-research-radar.py
+
       - name: A documented `gh pr merge --auto` always pins the head commit
         run: python3 scripts/check-merge-arming.py
 
