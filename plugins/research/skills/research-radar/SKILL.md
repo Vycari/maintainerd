@@ -103,11 +103,18 @@ The window starts where the previous run's harvest ended. It is not a fixed seve
   included because OAI datestamps are day-granular, so records can still land on it after the mark
   was taken. The overlap is removed by the dedupe below.
 - **With no state file**, the window falls back to the last 7 days.
+- **When a set is added** that the mark does not cover (a new `--set`), the window also falls back
+  to the last 7 days (`"windowSource": "new-sets"`), because the old mark says nothing about a set
+  it never harvested. The sets already covered re-fetch those days; `recentIds` stops their papers
+  from being offered again.
 - **After a gap of more than 28 days**, the window is capped at 28 days and the manifest says
   `"windowSource": "capped"`. Say so in the digest.
 - **The mark advances only after a complete run.** `advance` runs only after `harvest` has fetched
   every page and `prefilter` has parsed every one. A failed or partial harvest leaves it where it
   was, so the next run retries the same window.
+- **The mark never moves backwards.** `advance` refuses when the state file's mark is no longer the
+  one this harvest started from (the manifest's `previousMark`). That means another run advanced
+  it in the meantime; start over from the latest state instead.
 
 **Dedupe** has two ledgers:
 
@@ -143,9 +150,15 @@ The state file and the digests are the run's memory, so the run must start from 
 version. That version might be on a digest PR that hasn't merged yet.
 
 ```bash
-gh pr list --repo <config.repo> --state open --limit 200 --json number,headRefName,url \
-  --jq '.[] | select(.headRefName | startswith("research-radar-")) | "\(.number) \(.headRefName) \(.url)"'
+set -o pipefail
+gh api --paginate "repos/<config.repo>/pulls?state=open&per_page=100" \
+  --jq '.[] | select(.head.ref | startswith("research-radar-")) | "\(.number) \(.head.ref) \(.html_url)"' \
+  || { echo "open-PR check failed: stop" >&2; exit 1; }
 ```
+
+This is the REST API, paginated to the end, so it works where GraphQL is blocked and has no result
+cap. **If the command fails, stop.** An unknown answer is not "no open PR": guessing wrong opens a
+second PR that rewrites `radar-state.json`.
 
 - **No open digest PR:** start from the latest default branch: `git fetch origin && git checkout
   <config.defaultBranch> && git pull`.
@@ -204,7 +217,7 @@ one of three ways:
 
 A failure exits non-zero with **no manifest**. **Stop, do not open a PR**, and report the error.
 The manifest (`$RADAR/harvest/manifest.json`) records exactly the pages fetched, the window and its
-source (`state`, `fallback` or `capped`), and the `responseDate`. It is written only after the last
+source (`state`, `fallback`, `new-sets` or `capped`), and the `responseDate`. It is written only after the last
 page succeeds, and every later step reads it and refuses to run without it.
 
 **Network access:** outbound HTTPS to `oaipmh.arxiv.org` only (plus the `gh`/`git` the skill already
@@ -259,7 +272,7 @@ never overwrite a digest. Template:
 ```markdown
 # Research radar — <Month DD, YYYY>
 
-**Window:** <from> – <until> (<since last harvest | first run: last 7 days | capped at 28 days>)  ·  **Surfaced:** <N> of <survivors> candidates, <records> records harvested
+**Window:** <from> – <until> (<since last harvest | first run: last 7 days | new set: last 7 days | capped at 28 days>)  ·  **Surfaced:** <N> of <survivors> candidates, <records> records harvested
 
 ---
 

@@ -59,6 +59,9 @@ def utc_today():
 # ── state ────────────────────────────────────────────────────────────────────────────────
 
 
+DEFAULT_RADAR_DIR = "planning/research-radar"
+
+
 def load_state(path):
     if not path or not os.path.exists(path):
         return None
@@ -72,11 +75,18 @@ def load_state(path):
     return state
 
 
-def compute_window(state, today):
+def compute_window(state, today, sets):
     """Return (from_date, until_date, source). The mark's own day is included: datestamps are
-    day-granular, so records can still land on that day after the mark was taken."""
+    day-granular, so records can still land on that day after the mark was taken.
+
+    The mark covers only the sets it was taken over. If this run asks for a set the mark does not
+    cover, the whole window falls back to the first-run window: the new set was never harvested,
+    so the old mark says nothing about it. The already-covered sets re-fetch a few days, and
+    `recentIds` keeps those papers from being offered again."""
     if state is None:
         return today - dt.timedelta(days=FALLBACK_DAYS), today, "fallback"
+    if set(sets) - set(state["highWater"].get("sets") or []):
+        return today - dt.timedelta(days=FALLBACK_DAYS), today, "new-sets"
     mark = dt.date.fromisoformat(state["highWater"]["responseDate"][:10])
     earliest = today - dt.timedelta(days=MAX_WINDOW_DAYS)
     if mark < earliest:
@@ -159,11 +169,11 @@ def harvest_set(oai_set, frm, until, ua, out_dir, first_page):
 def cmd_harvest(a):
     today = utc_today()
     state = load_state(a.state)
-    frm, until, source = compute_window(state, today)
+    sets = sorted(set(a.set))
+    frm, until, source = compute_window(state, today, sets)
     os.makedirs(a.out, exist_ok=True)
     if os.listdir(a.out):
         die(f"{a.out} is not empty; harvest into a fresh `mktemp -d` directory")
-    sets = sorted(set(a.set))
     all_pages, dates, page = [], [], 1
     for s in sets:
         pages, response_date, page = harvest_set(s, frm.isoformat(), until.isoformat(), a.ua, a.out, page)
@@ -176,7 +186,7 @@ def cmd_harvest(a):
         "sets": sets,
         "from": frm.isoformat(),
         "until": until.isoformat(),
-        "windowSource": source,  # "state" | "fallback" | "capped"
+        "windowSource": source,  # "state" | "fallback" | "new-sets" | "capped"
         "previousMark": state["highWater"]["responseDate"] if state else None,
         # The earliest responseDate across sets: the mark must not claim coverage a set lacks.
         "responseDate": min(dates),
@@ -355,8 +365,10 @@ def cmd_profile(a):
         die("no arXiv categories: set researchRadar.categories or pass --category")
 
     interests_path = a.interests or rr.get("interestsFile")
-    if not interests_path and paths.get("researchRadarDir"):
-        interests_path = os.path.join(paths["researchRadarDir"], "interests.md")
+    if not interests_path:
+        # Same fallback directory the skill uses for digests and state.
+        interests_path = os.path.join(paths.get("researchRadarDir") or DEFAULT_RADAR_DIR,
+                                      "interests.md")
     if interests_path and not os.path.isabs(interests_path):
         interests_path = os.path.join(a.repo_root, interests_path)
     interests = read_interests(interests_path)
@@ -525,6 +537,11 @@ def cmd_advance(a):
     if cand.get("responseDate") != m["responseDate"]:
         die("candidates were not produced from this manifest; refusing to advance the mark")
     prev = load_state(a.state)
+    current = prev["highWater"]["responseDate"] if prev else None
+    if current != m.get("previousMark"):
+        die(f"the state's mark is {current or '(none)'} but this harvest started from "
+            f"{m.get('previousMark') or '(none)'}: another run advanced it since; refusing to "
+            "overwrite it. Start over from the latest state.")
     recent = list(dict.fromkeys(cand["survivorIds"] + ((prev or {}).get("recentIds") or [])))
     state = {
         "version": STATE_VERSION,

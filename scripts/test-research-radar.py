@@ -129,8 +129,9 @@ class Base(unittest.TestCase):
             srv.close()
         return r, out, srv.requests
 
-    def write_state(self, rd, recent=()):
-        write_json(self.state, {"version": 1, "highWater": {"responseDate": rd}, "recentIds": list(recent)})
+    def write_state(self, rd, recent=(), sets=("cs",)):
+        write_json(self.state, {"version": 1, "highWater": {"responseDate": rd, "sets": list(sets)},
+                                "recentIds": list(recent)})
 
 
 class Harvest(Base):
@@ -218,6 +219,23 @@ class Window(Base):
         self.write_state(f"{TODAY - dt.timedelta(days=90)}T05:00:00Z")
         m, _ = self.window()
         self.assertEqual((m["from"], m["windowSource"]), (str(TODAY - dt.timedelta(days=28)), "capped"))
+
+    def test_new_set_falls_back(self):
+        # The mark covers only "cs"; a newly added set was never harvested, so the old mark
+        # says nothing about it and the window falls back to the first-run window.
+        self.write_state(f"{TODAY - dt.timedelta(days=2)}T05:00:00Z", sets=["cs"])
+        r, out, reqs = self.harvest({"first": [(200, page([]))]}, sets=("cs", "physics"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = read_json(os.path.join(out, "manifest.json"))
+        self.assertEqual((m["from"], m["windowSource"]), (str(TODAY - dt.timedelta(days=7)), "new-sets"))
+        self.assertEqual({q["from"] for q in reqs}, {str(TODAY - dt.timedelta(days=7))})
+
+    def test_subset_of_marked_sets_uses_mark(self):
+        mark = TODAY - dt.timedelta(days=2)
+        self.write_state(f"{mark}T05:00:00Z", sets=["cs", "physics"])
+        r, out, _ = self.harvest({"first": [(200, page([]))]}, sets=("cs",))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(read_json(os.path.join(out, "manifest.json"))["windowSource"], "state")
 
     def test_unreadable_state_fails(self):
         with open(self.state, "w") as f:
@@ -318,6 +336,24 @@ class PrefilterAdvance(Base):
         with open(self.state) as f:
             self.assertEqual(f.read(), before)
 
+    def test_advance_refuses_to_rewind_a_newer_mark(self):
+        # Two runs harvest from the same committed mark; the first advances. The second must not
+        # overwrite the newer mark with its own older view.
+        self.write_state(f"{TODAY - dt.timedelta(days=3)}T05:00:00Z")
+        r, out, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T06:00:00Z"))]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cand = os.path.join(self.d, "cand.json")
+        write(cand, self.prefilter(out).stdout)
+        self.write_state(f"{TODAY}T09:00:00Z")          # the other run's advance
+        with open(self.state) as f:
+            before = f.read()
+        a = run(["advance", "--manifest", os.path.join(out, "manifest.json"),
+                 "--candidates", cand, "--state", self.state])
+        self.assertNotEqual(a.returncode, 0)
+        self.assertIn("another run advanced it", a.stderr)
+        with open(self.state) as f:
+            self.assertEqual(f.read(), before)
+
     def test_advance_rejects_mismatched_candidates(self):
         r, out, _ = self.harvest({"first": [(200, page([], rd=f"{TODAY}T06:00:00Z"))]})
         cand = os.path.join(self.d, "cand.json")
@@ -376,6 +412,23 @@ class Profile(Base):
         self.assertIn("latency budget", doc_terms)
         for template in ("open questions", "summary shipped", "daily report", "questions summary"):
             self.assertNotIn(template, doc_terms)
+
+    def test_interests_default_dir(self):
+        # No researchRadarDir configured: the interests file is looked up in the same fallback
+        # directory the skill uses for digests and state.
+        repo = os.path.join(self.d, "repo2")
+        os.makedirs(os.path.join(repo, "planning/research-radar"))
+        write_json(os.path.join(repo, "cfg.json"), {"researchRadar": {"categories": ["cs.AI"]}})
+        write(os.path.join(repo, "planning/research-radar/interests.md"), "- speech endpointing\n")
+        for cmd in (["init", "-q", "-b", "main"], ["add", "."],
+                    ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "init"]):
+            subprocess.run(["git", *cmd], cwd=repo, check=True, capture_output=True)
+        r = run(["profile", "--repo-root", repo, "--config", os.path.join(repo, "cfg.json"),
+                 "--no-gh", "--branch", "main"], cwd=repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        p = json.loads(r.stdout)
+        self.assertEqual(p["interests"]["file"], "planning/research-radar/interests.md")
+        self.assertEqual(p["interests"]["terms"], ["speech endpointing"])
 
     def test_profile_requires_categories(self):
         r = run(["profile", "--repo-root", self.d, "--config", os.path.join(self.d, "none.json"), "--no-gh"],
