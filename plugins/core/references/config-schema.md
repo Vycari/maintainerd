@@ -174,8 +174,10 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
   // ── research-radar ─────────────────────────────────────────────────────────
   "researchRadar": {
-    "themes":    "derive",  // "derive" (infer from repo) | ["explicit", "theme", "list"]
-    "userAgent": "research-radar/1.0 (mailto:you@example.com)" // arXiv API courtesy UA
+    "themes":        "derive",  // "derive" (infer from repo) | ["explicit", "theme", "list"]
+    "categories":    ["cs.AI", "cs.CL", "cs.HC", "cs.MA"], // arXiv categories the prefilter keeps
+    "interestsFile": "planning/research-radar/interests.md", // optional; default <researchRadarDir>/interests.md
+    "userAgent":     "research-radar/1.0 (mailto:you@example.com)" // arXiv API courtesy UA
   },
 
   // ── create-pr gates (optional) ───────────────────────────────────────────
@@ -350,6 +352,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   *(`90`)* bound `/dependabot drain`. The skill files its issues under `labels.dependencies` +
   `labels.automated`, so it dedups against `audit-deps` findings for free.
 - `researchRadar.themes` — `"derive"` to infer themes from the repo, or an explicit string array.
+- `researchRadar.categories` *(optional)* — the arXiv categories (`cs.AI`, `q-bio.NC`, …) that
+  scope the research-radar prefilter. When it is absent, the skill picks categories from the repo's
+  domain for that run and suggests setting the key.
+- `researchRadar.interestsFile` *(optional; default `<researchRadarDir>/interests.md`)* — pinned
+  interests, one per line, merged into the interest profile alongside the phrases derived from
+  recent PRs and design docs. A missing file is not an error.
 - `review.bots` *(optional)* — extra automated-reviewer logins `address-review` should recognize.
   Defaults to `["coderabbitai[bot]", "gemini-code-assist[bot]"]`. Humans are auto-detected (any
   reviewer who isn't the PR author), so only bots go here.
