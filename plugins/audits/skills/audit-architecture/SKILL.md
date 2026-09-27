@@ -107,7 +107,7 @@ For each finding, check whether it's already tracked:
 ```bash
 # Open issues with the architecture label
 gh issue list --repo <config.repo> \
-  --state open --label <config.labels.architecture> --json number,title,body --limit 100
+  --state open --label <config.labels.architecture> --json number,title,body --limit 1000
 
 # Open PRs (any author)
 gh pr list --repo <config.repo> \
@@ -123,9 +123,13 @@ Skip a finding if any of:
   gh issue list --repo <config.repo> \
     --state closed --label <config.labels.architecture> \
     --search "is:closed reason:not-planned" \
-    --json number,title --limit 50
+    --json number,title --limit 1000
   ```
   (Also check the `config.labels.automated` label if this repo applies it.)
+
+Each `--limit` above is well above any realistic count for its query; if a list comes back at
+exactly its limit, that's the porcelain's own version of a truncated page — treat it the same as
+the REST pagination truncation below, not as a short-but-complete list.
 
 **When GraphQL is blocked**, all three of those are 403. Run the REST equivalents instead —
 **List issues by label and state**, **List PRs by state**, and the `state_reason == "not_planned"`

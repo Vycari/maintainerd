@@ -135,6 +135,63 @@ gh api --paginate --slurp -X GET "repos/$REPO/issues" \
        | select(.state_reason == "not_planned") | {number, title}]'
 ```
 
+### List every open issue (no label filter), and confirm the read is complete
+
+`gh issue list --repo $REPO --state open --limit N --json … --search "sort:created-asc"` becomes a
+bracketed read — the repo's open counter, then every page, then the counter again — into a file of
+this run's own (run it as one shell command, so the variables survive to the check):
+
+```bash
+ISSUES_FILE=$(mktemp "${TMPDIR:-/tmp}/open-issues.XXXXXX")
+before=$(gh api "repos/$REPO" --jq '.open_issues_count')
+gh api --paginate --slurp -X GET "repos/$REPO/issues" \
+  -f state=open -f sort=created -f direction=asc -f per_page=100 > "$ISSUES_FILE"
+after=$(gh api "repos/$REPO" --jq '.open_issues_count')
+gathered=$(jq '[.[][]] | length' "$ISSUES_FILE")
+echo "file=$ISSUES_FILE before=$before gathered=$gathered after=$after"
+```
+
+Use `mktemp`, never a fixed path: two runs on one machine (two repos, or an interactive run beside a
+scheduled one) would otherwise overwrite each other's page file between the write and the check,
+and a run could pass the count check on another repo's issues. Remove the file (`rm -f
+"$ISSUES_FILE"`) on **every** exit from the read, not just the happy path: before a re-run (which
+makes a fresh `mktemp` file), on a failed read before you stop, and once a passing read has been
+projected. An early exit that skips the cleanup leaves issue titles and labels behind in the shared
+temporary directory, one file per failed run.
+
+This is the right call **in both modes**, not just the blocked one. The porcelain form it replaces
+caps at 30 by default, and raising `--limit` only helps up to a point: passing `--search` (even just
+for `sort:created-asc`, with no filter terms) routes the whole query through GitHub's Search API,
+which has its own 1000-result ceiling that no `--limit` can raise. The plain `/issues` listing above
+has neither limit.
+
+A truncated read of an issue-only list is invisible from the inside — a repo that genuinely has 40
+open issues and a paginated read that silently stopped at 40 look identical once you've filtered out
+PRs. So check completeness against the repo's own counter, on the **raw** entries (before filtering
+out PRs), because `open_issues_count` counts open issues and open PRs together. Reading the counter
+on both sides of the pages is what separates a truncated read from a repo that changed during it:
+
+| Result | Meaning | Action |
+|---|---|---|
+| `gathered == before == after` | Complete, and nothing opened or closed mid-read. | Proceed. |
+| `gathered < min(before, after)` | Truncated — a dropped page, a rate limit, a proxy timeout. Even at its smallest during the read, the repo had more open items than you got. | Failed read. |
+| Anything else (`before != after`, or `gathered` between or above them) | An issue or PR opened or closed while the pages were being read. Not truncation — but pages are offset-based, so a close on an early page can shift an entry past a page boundary and out of the read. | Re-run the whole bracketed read once. Proceed if the re-run is `gathered == before == after`; otherwise treat it as a failed read ("open items changed during both reads") — the next run will read a quieter repo. |
+
+A failed read is **Three rules that outrank everything below**, rule 1 — not a short list. Say so in
+the report ("gathered N of M open items") rather than acting on the undercount. Only once a read
+passes, filter to issues and project the fields callers use:
+
+```bash
+jq '[.[][] | select(has("pull_request") | not)
+     | {number, title, labels: [.labels[].name],
+        createdAt: .created_at, updatedAt: .updated_at}]' "$ISSUES_FILE"
+```
+
+This is the one enumeration in this file where "scanned the first N" is never an acceptable
+fallback: a caller that reads the *whole* open-issue set to drive eligibility or staleness decisions
+(an auto-dev tick, a review-queue gather) silently mis-triages everything past a truncated cutoff,
+not just misses a few items.
+
 ### List PRs by state, and find one by branch
 
 `gh pr list --repo $REPO --state open --json number,headRefName,…` becomes:

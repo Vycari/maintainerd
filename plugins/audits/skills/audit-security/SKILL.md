@@ -143,9 +143,13 @@ you can dedup across categories and rank by severity. Assign each finding a seve
 ### 4. Dedup against existing work
 
 ```bash
-gh issue list --repo <config.repo> --state open --label <config.labels.security> --json number,title,body --limit 100
+gh issue list --repo <config.repo> --state open --label <config.labels.security> --json number,title,body --limit 1000
 gh pr list   --repo <config.repo> --state open --json number,title,headRefName --limit 50
 ```
+
+`--limit` is well above any realistic count of open, security-labelled issues; if the issue list
+still comes back at exactly `1000`, treat discovery as truncated, not complete — don't dedup against
+a possibly-short list, say so in the report instead.
 
 Skip a finding if an open issue/PR already covers the same package/file/pattern, or if it was closed
 `wontfix`/not-planned (a standing human decision). For a **Critical/High** that was previously closed
