@@ -184,20 +184,29 @@ gh pr list --repo "$REPO" --state open \
 # Everything in a human-gated label state, plus brand-new untriaged issues — the paginated REST
 # form, not `gh issue list` (which caps at 30 by default, or at the Search API's 1000-result
 # ceiling once `--search` is involved; neither is safe on a repo with hundreds of open issues).
+# One command: a per-run file, and the open counter read on both sides of the pages.
+ISSUES_FILE=$(mktemp "${TMPDIR:-/tmp}/review-queue-open-issues.XXXXXX")
+before=$(gh api "repos/$REPO" --jq '.open_issues_count')
 gh api --paginate --slurp -X GET "repos/$REPO/issues" \
-  -f state=open -f sort=created -f direction=asc -f per_page=100 > /tmp/review-queue-open-issues.json
-gh api "repos/$REPO" --jq '.open_issues_count'
+  -f state=open -f sort=created -f direction=asc -f per_page=100 > "$ISSUES_FILE"
+after=$(gh api "repos/$REPO" --jq '.open_issues_count')
+echo "file=$ISSUES_FILE before=$before gathered=$(jq '[.[][]] | length' "$ISSUES_FILE") after=$after"
 ```
 
-**Confirm the read is complete before bucketing anything.** Sum the raw pages in
-`/tmp/review-queue-open-issues.json` (before filtering out PRs) and compare to `open_issues_count`
-from the second call — they must match. Fewer means the read truncated; treat it as a failed
-gather (say "gathered N of M open issues" and stop this repo's pass) rather than presenting a short
-worklist as the whole queue. See **List every open issue (no label filter), and confirm the read is
-complete** in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for
-why this shape of call is required and the exact check. Once confirmed complete, filter to issues
+**Confirm the read is complete before bucketing anything.** `gathered` counts the raw entries
+(issues and PRs, because `open_issues_count` counts both), and the counter is read on each side of
+the pages so a repo that changed mid-read isn't mistaken for a truncated one:
+`gathered == before == after` is complete; `gathered < min(before, after)` is truncated; anything
+else means an issue or PR opened or closed during the read, so re-run the bracketed read once. A
+truncated read, or a second unsettled one, is a failed gather — say "gathered N of M open items" and
+stop this repo's pass rather than presenting a short worklist as the whole queue. See **List every
+open issue (no label filter), and confirm the read is complete** in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for why this shape
+of call is required and the full check. Once confirmed complete, filter `$ISSUES_FILE` to issues
 (`select(has("pull_request") | not)`) and project `number, title, labels: [.labels[].name],
-createdAt: .created_at, updatedAt: .updated_at` for the bucketing below.
+createdAt: .created_at, updatedAt: .updated_at` for the bucketing below. The file is per-run
+(`mktemp`), so two passes on one machine can't overwrite each other's pages; `rm -f "$ISSUES_FILE"`
+once the pass has bucketed it.
 
 Bucket the open issues by their `auto:*` state (per the table above). For new/untriaged ones, apply
 the same eligibility exclusions auto-dev uses — the skip label
