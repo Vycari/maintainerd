@@ -233,6 +233,26 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "githubRelease":    true                     // create/publish a GitHub release from the tag
   },
 
+  // ── deploy (optional) — where THIS repo's `GET /versionz` build-report endpoint lives, so an
+  // agent can answer "is my PR deployed?" by fetching it instead of ssh/docker inspect.
+  // null/omitted = no deployed-state check for this repo — the honest answer is "can't check,"
+  // never a silent fallback to a shell on the host. See references/deployed-check.md (repo-ops).
+  "deploy": {
+    "versionz": "https://{prodHost}:8443/versionz" // URL template for GET /versionz, whose
+                                                    // contract is {"service","commit","short",
+                                                    // "image_tag","built_at","alembic_head",
+                                                    // "db_revision"}. `{prodHost}` is a literal
+                                                    // placeholder resolved from the user-level
+                                                    // config's `deploy.prodHost` (see "User-level
+                                                    // config" below) — never hardcode a real
+                                                    // hostname here; this file is checked in. A
+                                                    // loopback URL (e.g.
+                                                    // "http://127.0.0.1:8002/versionz") is a valid
+                                                    // value too and marks the endpoint host-only:
+                                                    // reachable only from a shell on the host
+                                                    // itself, never from a workspace session.
+  },
+
   // ── journal (optional) — maps THIS repo to its project in the user's vault (used by `worklog`) ──
   // The vault itself is user-scoped and lives in the user-level config (see "User-level config" below).
   "journal": {
@@ -284,7 +304,7 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`
+### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`, `deploy`
 
 - `coverage.*` *(optional; absent = the ratchet has not been adopted here)* — `floor`, the whole
   percent of line coverage CI refuses to drop below, and `floorCommit`, the default-branch commit it
@@ -421,6 +441,14 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to
   create a GitHub release (`githubRelease`). Repo-specific gates/caveats live in
   `guidelines.release`, not here.
+- `deploy.*` *(optional; absent/null = no deployed-state check for this repo)* — `versionz`, a URL
+  template for the repo's `GET /versionz` build-report endpoint (own route, not folded into
+  `/healthz`, since a commit sha is a small free gift to anyone fingerprinting a public health
+  check). `{prodHost}` resolves from the user-level config (see
+  [User-level config](#user-level-config)); a loopback URL (`http://127.0.0.1:<port>/versionz`)
+  is valid and marks the endpoint host-only. Read by `repo-ops`'s `deployed-check` reference for
+  "is my PR deployed?" — a repo that omits the key gets an honest "can't check," never a fallback
+  to ssh/docker inspect.
 - `journal.*` *(optional)* — maps this repo to its project in the user's Obsidian vault for
   `worklog`: `project` (folder name) and/or `hubNote` (explicit vault-relative path). Absent → the
   project is inferred from the repo name. The **vault itself is not here** — it's user-scoped; see
@@ -644,7 +672,7 @@ because it describes *that repo*. A few settings are **user-scoped**: they're th
 repo the user works in, so pinning them per-repo would be redundant and wrong. Those live in a
 **user-level** file at `~/.claude/maintainerd.json`, read once regardless of which repo you're in.
 
-Today this holds the `journal` category's vault:
+Today this holds the `journal` category's vault, and the `deploy` category's production host:
 
 ```jsonc
 // ~/.claude/maintainerd.json  (per-user, not checked into any repo)
@@ -652,6 +680,12 @@ Today this holds the `journal` category's vault:
   "journal": {
     "vault":        "/Users/you/Obsidian/my-vault", // Obsidian vault root — required by `worklog`
     "projectsGlob": "Projects/**"                    // where project folders live (optional; default "Projects/**")
+  },
+  "deploy": {
+    "prodHost": "prod-01.your-tailnet.ts.net" // fills the `{prodHost}` placeholder in every
+                                               // repo's `deploy.versionz` template — required only
+                                               // by the repo-ops `deployed-check` reference, and
+                                               // only for a repo whose template actually uses it
   }
 }
 ```
@@ -660,6 +694,13 @@ The split rule: **repo-scoped settings → repo config; user-scoped settings →
 bridges them — it reads the vault from here, and the *optional* per-repo `journal.project`/`hubNote`
 pointer (above) from the repo config to know which vault project *this* repo maps to. If the user-level
 file or `journal.vault` is absent, `worklog` asks for the vault path and offers to write it here.
+
+The same split is why `deploy.prodHost` lives here rather than in any repo's `deploy.versionz`: the
+host is the same physical machine for every repo on it, and a real hostname is exactly the kind of
+value this file's own preamble says never to check in — it belongs in the per-user file precisely
+because it must **not** be checked into a repo. A repo's `deploy.versionz` template carries only the
+literal placeholder `{prodHost}`; a loopback template (`http://127.0.0.1:<port>/versionz`) needs no
+substitution at all and resolves the same with or without this key set.
 
 A sample lives alongside this file as [`example-user.json`](example-user.json).
 
