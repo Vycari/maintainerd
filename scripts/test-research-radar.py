@@ -408,11 +408,16 @@ class PrefilterAdvance(Base):
         self.assertIn(aid(8), state["recentIds"])
         self.assertNotIn(aid(2), state["recentIds"])
 
-        # Re-running prefilter over the same harvested pages against the updated state resurfaces
-        # the overflow id: it was never added to recentIds, so it isn't "alreadySeen" this time.
-        # (Whether a genuinely later harvest's date window would still contain it is the open
-        # question tracked in maintainerd#75 — this only checks the seen-set doesn't lose it.)
-        res2 = json.loads(self.prefilter(out).stdout)
+        # A second run over the same window (the mark day is inclusive, like the overlap in
+        # test_filter_and_advance) re-fetches the same records. aid1 and aid8 are now
+        # alreadySeen, but aid2 was never added to recentIds, so it survives and is returned
+        # again. (Whether a harvest whose window has moved past an *earlier* day would still
+        # re-fetch an overflow id from that day is the open question in maintainerd#75 — this
+        # only exercises the same-day case the seen-set fix actually covers.)
+        r2, out2, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T07:00:00Z"))]})
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(read_json(os.path.join(out2, "manifest.json"))["from"], str(TODAY))
+        res2 = json.loads(self.prefilter(out2).stdout)
         self.assertEqual([c["id"] for c in res2["candidates"]], [aid(2)])
 
 

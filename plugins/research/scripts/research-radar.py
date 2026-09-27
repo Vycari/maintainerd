@@ -527,11 +527,13 @@ def cmd_prefilter(a):
               "returned": len(capped),
               "candidates": capped,
               # Ids beyond --max that were never shown to the model. `advance` must not mark these
-              # seen — only `candidates` (below) was actually ranked or considered — but they are
-              # not, on their own, "picked up next run": the harvest window moves forward from this
-              # run's responseDate regardless, so an overflow id whose <datestamp> falls inside the
-              # window that just closed drops out of every future harvest too, cap or no cap. See
-              # maintainerd#75 for the open question of how (or whether) to carry these forward.
+              # seen — only `candidates` (below) was actually ranked or considered — but staying
+              # unseen doesn't, on its own, guarantee "picked up next run": the next harvest's
+              # window starts at this run's mark day, inclusive (the same-day overlap already
+              # covers a same-day overflow id), but a day strictly before the mark drops out of
+              # the window regardless, so an overflow id datestamped earlier in the window that
+              # just closed is still lost. See maintainerd#75 for the open question of how (or
+              # whether) to carry that case forward.
               "overflowIds": [c["id"] for c in overflow]}
     json.dump(result, sys.stdout, indent=2)
     print()

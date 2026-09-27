@@ -130,11 +130,13 @@ The window starts where the previous run's harvest ended. It is not a fixed seve
 
   **An id beyond `--max` (`overflowIds` in the prefilter output) is never marked seen** — it was
   never shown to you, so marking it seen would lose it for good. `advance` only ever adds
-  `candidates` ids to `recentIds`. That said, staying out of `recentIds` does not by itself put an
-  overflow id back in front of you: the *next* harvest's window starts at this run's mark, so a
-  paper whose `<datestamp>` falls inside the window that just closed won't be re-fetched either,
-  cap or no cap. Recovering it needs either holding the mark back or carrying it forward some other
-  way — an open question tracked in maintainerd#75, not yet resolved by this skill.
+  `candidates` ids to `recentIds`. That said, staying out of `recentIds` does not by itself put
+  every overflow id back in front of you: the *next* harvest's window starts at this run's mark
+  day, inclusive — the overlap that keeps a same-day overflow id in reach — but a day strictly
+  before the mark drops out of the window regardless, so an overflow id whose `<datestamp>` is
+  from an earlier day in the run that just closed is still lost. Recovering that case needs either
+  holding the mark back or carrying it forward some other way — an open question tracked in
+  maintainerd#75, not yet resolved by this skill.
 
 **Old papers with a new version.** OAI's `from`/`until` filter by datestamp, the last metadata touch.
 That includes a two-year-old paper that got a revision last week. (Verified: a harvest for
@@ -363,7 +365,7 @@ if [ -n "<config.review.skipLabel>" ]; then
   gh pr create --repo <config.repo> --base <config.defaultBranch> --draft \
     --label "<config.review.skipLabel>" \
     --title "Research radar — $DAY" --body "<see below>"
-  gh pr ready <the PR number just created> --repo <config.repo>
+  gh pr ready --repo <config.repo>                 # defaults to the current branch's PR
 else
   gh pr create --repo <config.repo> --base <config.defaultBranch> \
     --title "Research radar — $DAY" --body "<see below>"
