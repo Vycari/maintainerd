@@ -211,7 +211,7 @@ If `gh` auth or repo resolution fails, print the failure in the exit report and 
 gh pr edit <N> --repo <config.repo> --add-label "<config.autoDev.prLabel>" [--add-label "<extra label>" …]
 ```
 
-A cheap no-op on the normal path. This is a **repair**; the primary application happens at
+Only pass labels that exist: when `extraPrLabels` is non-empty, first run the label-exists pre-check (`gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'`, once per tick, reused by the create step) and drop any configured label it doesn't list — one missing name fails the whole edit and would block the valid `prLabel` too. Note each dropped label once in the exit report. A cheap no-op on the normal path. This is a **repair**; the primary application happens at
 PR-creation time (step 3, item 7). If the edit fails because the label doesn't exist, note it once in
 the exit report and continue — never create the label yourself (invariant 5). Rationale in
 [`references/pr-labeling.md`](references/pr-labeling.md).
@@ -308,7 +308,7 @@ in [`references/pr-labeling.md`](references/pr-labeling.md).
 REST forms in
 [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md):
 `POST /repos/{owner}/{repo}/pulls` (**Create a PR** — it takes `draft`), then
-`POST /repos/{owner}/{repo}/issues/{n}/labels` for `config.autoDev.prLabel` and every `config.autoDev.extraPrLabels` entry (one call with all of them in `labels[]`), and the same labels
+`POST /repos/{owner}/{repo}/issues/{n}/labels` for `config.autoDev.prLabel` and every `config.autoDev.extraPrLabels` entry that passed the existence check (one call with those names in `labels[]` — a single missing name fails the whole request and would drop the valid ones too), and the same labels
 endpoint for step 0's re-stamp. The label-exists pre-check is already `gh api .../labels` and is
 unaffected.
 

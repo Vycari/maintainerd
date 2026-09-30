@@ -51,7 +51,7 @@ opened without it.
 — i.e. the "after the fact" path becomes the only path, and the race above is unavoidable rather
 than a mistake. That is acceptable for this label specifically: `config.autoDev.prLabel` is a
 marker external tooling reads when it handles the PR, not a switch that has to be set before the
-`opened` webhook fires. Apply it (and any `extraPrLabels`, which are never review-gating) immediately after the create and record the ordering in the exit
+`opened` webhook fires. Apply it (and any `extraPrLabels` that passed the existence check — a missing name fails the whole request — which are never review-gating) immediately after the create and record the ordering in the exit
 report. A label that genuinely must precede the first review is the other branch that reference
 describes, and it ends in a stop-and-report, because marking a draft ready has no REST form.
 
@@ -87,7 +87,7 @@ reasons — the label didn't exist when the PR was opened, a transient `gh` fail
 delegated skill — and nothing else would ever fix it.
 
 So step 0 re-stamps on **every** tick, using the `labels` already fetched in its discovery queries
-(no extra API call). This is a cheap no-op on the normal path, where every open automated PR already
+(no extra API call for `prLabel`; when `extraPrLabels` is set, reuse the tick's one label-exists check and leave out any configured label it doesn't list — a single nonexistent name fails the whole `gh pr edit`, which would block the valid labels too). This is a cheap no-op on the normal path, where every open automated PR already
 carries the label. It is a **repair**, not the primary application — the primary application happens
 at PR-creation time, because a label added minutes later doesn't retract a review that external
 tooling already started. If the edit fails because the label doesn't exist, note it once in the exit
