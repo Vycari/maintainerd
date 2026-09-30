@@ -152,7 +152,7 @@ Defaults to apply without asking (state them in the report):
 - `models` *(optional)*: write the tier scaffold with every tier set to `"inherit"` (no behavior change until the maintainer binds `fast`/`capable` to real model ids — point them at [`../../references/model-tiers.md`](../../references/model-tiers.md)). Omitting the block entirely is equally valid.
 - `autoDev` label names: the `auto:*` set from the schema.
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
-- `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.fallbackReviewMinutes`: `60`.
+- `autoDev.prLabel`: `auto:pr` (stamped on every automated PR); `autoDev.extraPrLabels`: omit unless the maintainer names some (then create each too); `autoDev.fallbackReviewMinutes`: `60`.
 - `autoDev.maxPrsInFlight`: `1` (single-PR pipeline; raise it to let the queue drain into several open PRs); `autoDev.orphanReclaimMinutes`: `90`.
 - `autoDev.maintainers`: **omit it.** Who may approve, park, and decide defaults to repo
   permission (`admin`/`maintain`/`write`), read per tick — which is right for every repo whose
@@ -278,6 +278,8 @@ gh label create automated    --color EDEDED --description "Opened by a Maintaine
 
 ```bash
 gh label create auto:pr      --color 5319E7 --description "Opened by the auto-dev pipeline" 2>/dev/null || true
+# one per entry in config.autoDev.extraPrLabels (default []), using the name the config holds
+gh label create "<extraPrLabel>" --color EDEDED --description "Applied to auto-dev PRs" 2>/dev/null || true
 ```
 
 **Only if `depsFlow.enabled` is `true`** — skip this entirely when the block is absent or disabled,
@@ -292,7 +294,7 @@ gh label create "<blockedLabel>" --color B60205 --description "Dependency update
 ```
 
 The same rule applies to every command in this step: each one creates the name the config actually
-holds (`labels.*`, `autoDev.prLabel`), not the default it was written with. The defaults above are
+holds (`labels.*`, `autoDev.prLabel`, `autoDev.extraPrLabels`), not the default it was written with. The defaults above are
 what a stock config contains, not values to paste over a customized one.
 
 Ask before creating; don't mutate the repo's label set unprompted. Don't create a disabled feature's

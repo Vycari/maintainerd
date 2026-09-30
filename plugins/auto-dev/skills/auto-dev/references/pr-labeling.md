@@ -20,6 +20,16 @@ Note that the label is *only* for external tooling: the pipeline still identifie
 `config.autoDev.branchPrefix` (step 0), so a missing label never confuses the state machine — it
 just leaks a PR past the maintainer's tooling config.
 
+## Extra labels (`config.autoDev.extraPrLabels`)
+
+`extraPrLabels` (default `[]`) is an optional list of additional label names applied to every
+automated PR alongside `prLabel` — at creation, in the backfill/re-stamp, and in the REST fallbacks —
+typically routing or ownership labels (e.g. `team:triage`) that a repo's other tooling reads. They
+follow every rule below for `prLabel` (pre-check existence, open without a missing one, never create
+it, re-stamp on the next tick), with one difference: they are for labels that do **not** gate review.
+A label that must be in place before the first review starts belongs in `prLabel`'s role, not here —
+see the two branches under **When GraphQL is blocked**.
+
 ## Apply it at creation, not afterwards
 
 External tooling reacts to the `opened` webhook within seconds, and a label added after the fact
@@ -27,12 +37,12 @@ does not retract a review that already started. So pass it on the create call:
 
 ```bash
 gh pr create --repo <config.repo> --base <config.defaultBranch> \
-  --label "<config.autoDev.prLabel>" [--draft] --title "…" --body "…"
+  --label "<config.autoDev.prLabel>" [--label "<extra label>" …] [--draft] --title "…" --body "…"
 ```
 
-When delegating to `create-pr`, tell it to apply `config.autoDev.prLabel` on the `gh pr create`
+When delegating to `create-pr`, tell it to apply `config.autoDev.prLabel` and every `extraPrLabels` entry on the `gh pr create`
 call — it accepts caller-supplied labels for exactly this reason. Only fall back to
-`gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` if a PR somehow got
+`gh pr edit <PR> --repo <config.repo> --add-label "<config.autoDev.prLabel>"` (one `--add-label` per extra label too) if a PR somehow got
 opened without it.
 
 **When GraphQL is blocked, the create call cannot carry the label at all.** `POST /pulls` has no
@@ -41,7 +51,7 @@ opened without it.
 — i.e. the "after the fact" path becomes the only path, and the race above is unavoidable rather
 than a mistake. That is acceptable for this label specifically: `config.autoDev.prLabel` is a
 marker external tooling reads when it handles the PR, not a switch that has to be set before the
-`opened` webhook fires. Apply it immediately after the create and record the ordering in the exit
+`opened` webhook fires. Apply it (and any `extraPrLabels` that passed the existence check — a missing name fails the whole request — which are never review-gating) immediately after the create and record the ordering in the exit
 report. A label that genuinely must precede the first review is the other branch that reference
 describes, and it ends in a stop-and-report, because marking a draft ready has no REST form.
 
@@ -49,10 +59,10 @@ describes, and it ends in a stop-and-report, because marking a draft ready has n
 
 `gh pr create --label` fails — and on some `gh` versions it fails *after* pushing the branch,
 leaving no PR. Don't risk losing the build: confirm the label exists before the first create, with
-one `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` (`--paginate`, not
+one `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` covering `prLabel` and each `extraPrLabels` entry (`--paginate`, not
 `gh label list`, whose 30-item default would report an existing label as missing). A tick opens at
-most a few PRs, so that single call covers all of them. If it's missing, open the PR **without** the
-label and record in the exit report that the PR is unlabeled and why. Never create the label
+most a few PRs, so that single call covers all of them. If one is missing, open the PR **without** that
+label (keeping the rest) and record in the exit report that the PR is unlabeled and why. Never create the label
 yourself (invariant 5) — `/doctor` reports it, `/bootstrap` creates it.
 
 ### Why proceed unlabeled rather than refuse to open the PR?
@@ -77,7 +87,7 @@ reasons — the label didn't exist when the PR was opened, a transient `gh` fail
 delegated skill — and nothing else would ever fix it.
 
 So step 0 re-stamps on **every** tick, using the `labels` already fetched in its discovery queries
-(no extra API call). This is a cheap no-op on the normal path, where every open automated PR already
+(no extra API call for `prLabel`; when `extraPrLabels` is set, reuse the tick's one label-exists check and leave out any configured label it doesn't list — a single nonexistent name fails the whole `gh pr edit`, which would block the valid labels too). This is a cheap no-op on the normal path, where every open automated PR already
 carries the label. It is a **repair**, not the primary application — the primary application happens
 at PR-creation time, because a label added minutes later doesn't retract a review that external
 tooling already started. If the edit fails because the label doesn't exist, note it once in the exit

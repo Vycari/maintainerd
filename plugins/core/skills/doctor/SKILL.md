@@ -96,7 +96,7 @@ gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'
 Every label in `config.labels.*` must exist. Missing → **FAIL** (the skill's `gh ... --label` call
 errors at runtime). With `--fix`, offer to create the missing ones (same `gh label create` as
 `bootstrap`). If `config.autoDev.enabled`, the `config.autoDev.stateLabels.*` and `config.autoDev.prLabel`
-(default `auto:pr`) must also exist. If `config.depsFlow.enabled`, so must
+(default `auto:pr`) and every `config.autoDev.extraPrLabels` entry must also exist. If `config.depsFlow.enabled`, so must
 `config.depsFlow.blockedLabel` (default `deps:blocked`).
 
 ### 7. daily-update roster
@@ -111,6 +111,7 @@ will try to invoke a missing skill"). Cross-check against the plugins actually i
   (same severity as check 6, which covers it). The pipeline stamps it on every PR it opens so the
   maintainer can configure external review tooling to skip automated PRs; while it's missing, every
   automated PR is unlabeled and that tooling reviews all of them.
+- `extraPrLabels` (default `[]` if absent), when present, is an array of strings → else **WARN**; each entry exists on GitHub (same severity as `prLabel`, covered in check 6).
 - `fallbackReviewMinutes` (default `60` if absent), when present, is a positive number → else **WARN**.
 - `maxPrsInFlight` (default `1` if absent), when present, is an integer ≥ 1 → else **WARN**.
 - `orphanReclaimMinutes` (default `90` if absent), when present, is a positive number → else **WARN**.
