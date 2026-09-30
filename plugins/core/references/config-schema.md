@@ -148,6 +148,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "excludedLabels": ["epic", "question", "wontfix", "duplicate", "invalid"], // never auto-build these
     "openPrsAsDraft": true,
     "prLabel":        "auto:pr",  // applied to every PR the pipeline opens, so external tooling (e.g. CodeRabbit) can treat automated PRs specially. Distinct from labels.automated (which the audits also use). Must already exist; bootstrap creates it.
+    "extraPrLabels":  [],         // OPTIONAL extra label names (e.g. ["team:triage"]) applied to every PR the pipeline opens, alongside prLabel, everywhere prLabel is applied (create, re-stamp, REST fallbacks). Each must already exist; bootstrap creates them. For routing/ownership labels that do NOT gate review. Default [] if absent.
     "fallbackReviewMinutes": 60,  // how long a ready, CI-green automated PR may sit with zero review activity before auto-dev posts a fallback self-review (CodeRabbit normally reviews within minutes; past this, assume it's rate-limited). Default 60 if absent.
     "maxPrsInFlight": 1,          // how many automated PRs may be open at once. 1 = classic single-PR pipeline (an open PR blocks new builds until it merges). >1 lets the queue drain into several built-but-unmerged PRs awaiting review. Never merges/closes anything. Default 1 if absent.
     "orphanReclaimMinutes": 90,    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
@@ -337,7 +338,11 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   and leave them to auto-dev's own review loop. In CodeRabbit that's a negative match in
   `.coderabbit.yaml`: `reviews.auto_review.labels: ["!auto:pr"]`. It's deliberately separate from the
   generic `labels.automated` the audits share, so silencing automated *development* PRs doesn't also
-  silence review on audit PRs. `fallbackReviewMinutes` *(default `60`)* is how long
+  silence review on audit PRs. `extraPrLabels` *(default `[]`)* is an optional array of further label
+  names applied to every automated PR alongside `prLabel`, at creation, in the per-tick re-stamp and in
+  the REST fallbacks; each must already exist (bootstrap creates them, `doctor` checks them). Use it for
+  routing or ownership labels that do **not** gate review — with GraphQL blocked they can only be
+  applied after the `opened` webhook (see `gh-rest-fallbacks.md`). `fallbackReviewMinutes` *(default `60`)* is how long
   a ready, CI-green automated PR may sit with no review activity before auto-dev posts a one-per-PR
   **fallback self-review** to fill the gap when CodeRabbit is rate-limited. `maxPrsInFlight`
   *(default `1`)* caps how many automated PRs may be open at once — `1` is the classic single-PR
