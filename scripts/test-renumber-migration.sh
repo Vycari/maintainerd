@@ -311,6 +311,13 @@ sync_branch
 run_tool
 expect "a non-migration file added in a subdirectory does not block" renumbered:1 0
 
+new_case nested-unparsed-revision
+mkdir -p "$WORK/$DIRP/sub"
+printf 'revision = ("0004")\ndown_revision = "0003"\n' >"$WORK/$DIRP/sub/x.py"
+(cd "$WORK" && git add "$DIRP/sub/x.py" && git commit -q -m nested)
+run_tool
+expect "a nested file with an unparseable revision assignment is refused, not skipped" refused:nested-migration 2
+
 new_case inline-comment
 (
   cd "$WORK" && printf 'revision = "0004"\ndown_revision = "0003"  # replaces "0002"\n' >"$DIRP/0004_widgets.py" && git add -A && git commit -q -m c
