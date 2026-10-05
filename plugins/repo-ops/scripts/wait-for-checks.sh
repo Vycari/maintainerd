@@ -94,6 +94,8 @@ job_id_of() {
 # iso_to_epoch <ISO-8601 UTC> — epoch seconds, bash 3.2 / BSD and GNU date both. Empty on failure.
 iso_to_epoch() {
   local t="$1" e
+  # GNU `date -d ""` means "midnight today", not "no date": an absent timestamp must stay absent.
+  case "$t" in [0-9][0-9][0-9][0-9]-*) ;; *) return 0 ;; esac
   e="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$t" +%s 2>/dev/null)" || e=""
   [ -n "$e" ] || e="$(date -u -d "$t" +%s 2>/dev/null)" || e=""
   printf '%s' "$e"
@@ -108,7 +110,7 @@ poll_once() {
 
   VERDICT=""
   DETAIL=""
-  pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json statusCheckRollup,state 2>&1)" || {
+  pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json statusCheckRollup,state,headRefOid 2>&1)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
   }
@@ -177,14 +179,16 @@ poll_once() {
   # Green only when there is something to be green about and nothing is still moving.
   if [ "$(printf '%s' "$norm" | jq 'length')" -gt 0 ] &&
     [ "$(printf '%s' "$norm" | jq '[.[] | select(.state != "SUCCESS")] | length')" = "0" ]; then
-    SEEN_GREEN="$(printf '%s' "$norm" | jq -c '[.[].name] | sort')"
+    # The identity of a green snapshot is the head commit AND the set of checks: a push during the
+    # settle delay can show the same already-green names on a new commit.
+    SEEN_GREEN="$(printf '%s' "$pr" | jq -r '.headRefOid // ""')|$(printf '%s' "$norm" | jq -c '[.[].name] | sort')"
     VERDICT="green"
   fi
   return 0
 }
 
 # settle_green — the rollup just read all-green; wait --settle-seconds (within the deadline), read it
-# again, and keep the verdict only if it is still green over the very same set of checks. A check
+# again, and keep the verdict only if it is still green over the very same head commit and set of checks. A check
 # that registered in between is a check the first snapshot did not know to wait for.
 settle_green() {
   local first="$SEEN_GREEN"

@@ -216,6 +216,13 @@ write_threads "" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "title-link shape naming an older commit is stale -> timeout" timeout 2
 
+new_case review-later-commit-link
+write_config "$CFG_5"
+write_prview "" ".comments = [$(bot_comment "$(printf '<h2>Confidence Score: 5/5</h2>\n<sub>Last reviewed commit: ["old"](https://github.com/o/r/commit/%s)</sub>\n(earlier round: [new](https://github.com/o/r/commit/%s))' "$OLD_SHA" "$HEAD_SHA")")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a later commit link in the text does not replace the one the label names" timeout 2
+
 new_case review-no-sha
 write_config "$CFG_5"
 write_prview "" ".comments = [$(bot_comment '<h2>Confidence Score: 5/5</h2>')]"
@@ -506,6 +513,13 @@ rollup ".2" "$(check_run build COMPLETED SUCCESS), $(check_run slow QUEUED '' 20
 echo '{"status":"queued","runner_id":5}' >"$STUB_DIR/job"
 run_tool "$WFC" 7 -R o/r --timeout-seconds 4 --interval-seconds 1 --settle-seconds 1 --queue-threshold-seconds 99999
 expect "all-green snapshot, then a second required check appears -> not green" timeout 2
+
+new_case checks-push-during-settle
+rollup ".1" "$(check_run build COMPLETED SUCCESS)"
+write_prview ".2" ".headRefOid = \"ccccccc3333333333333333333333333333333333\" | .statusCheckRollup = [$(check_run build COMPLETED SUCCESS)]"
+write_prview ".3" ".headRefOid = \"ccccccc3333333333333333333333333333333333\" | .statusCheckRollup = [$(check_run build IN_PROGRESS '')]"
+run_tool "$WFC" 7 -R o/r --timeout-seconds 4 --interval-seconds 1 --settle-seconds 1
+expect "same check names green on a NEW head after the settle delay -> not green" timeout 2
 
 new_case checks-settled-green
 rollup ".1" "$(check_run build COMPLETED SUCCESS)"

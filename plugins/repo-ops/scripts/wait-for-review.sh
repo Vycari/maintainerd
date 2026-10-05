@@ -105,8 +105,10 @@ score_from_text() {
   # The commit is named in the link after "Last reviewed commit:". Greptile's link TEXT is the commit
   # title (`[feat: x](.../commit/<sha>)`) and older shapes use the short sha as the text
   # (`[a1b2c3d](...)`), so the sha is read from the /commit/<sha> URL first, the bracketed text second.
-  tail="$(printf '%s' "$text" | tr '\n' ' ' | sed -n 's/.*Last reviewed commit:\(.*\)$/\1/p')"
-  sha="$(printf '%s' "$tail" | sed -n 's#.*/commit/\([0-9a-fA-F]\{7,40\}\).*#\1#p' | head -n 1)"
+  # Only the FIRST label and the FIRST commit link after it count: a later link in the text (a quoted
+  # older review, say) must not replace the one the label names.
+  tail="$(printf '%s' "$text" | tr '\n' ' ' | awk '{ i = index($0, "Last reviewed commit:"); if (i) print substr($0, i + 21) }')"
+  sha="$(printf '%s' "$tail" | grep -oE '/commit/[0-9a-fA-F]{7,40}' | head -n 1 | sed 's#/commit/##')"
   [ -n "$sha" ] || sha="$(printf '%s' "$tail" | sed -n 's/^[^0-9a-fA-F]*\[\{0,1\}\([0-9a-fA-F]\{7,40\}\)\].*/\1/p' | head -n 1)"
   printf '%s %s' "$score" "$sha"
 }
