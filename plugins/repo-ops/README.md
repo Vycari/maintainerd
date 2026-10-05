@@ -178,9 +178,16 @@ checks the claim after the reply is posted.
   partial, which part. `additionalContext` carries the diff of any tracked repo file the reply
   names (versus the branch's fork point from `origin/HEAD`, its upstream, or `origin/main`/
   `master`; with none of those, `HEAD~1`, and the context says it is one commit wide), else the
-  last three commits' stat; truncated to 6,000 characters. The opt-in key is read from the
-  cwd's `.claude/maintainerd.json`, else the one at the top of the checkout, so a reply posted
+  last three commits' stat; truncated to 6,000 characters. The opt-in key and the commits are
+  read in the directory the reply is posted from: the tool's cwd, moved by any `cd`/`pushd`
+  earlier in the same command (`cd ../pr-worktree && gh pr comment …` is judged in that
+  worktree; a `cd "$VAR"` makes the directory unknown, so later replies are not judged). Its
+  `.claude/maintainerd.json` is read there, else at the top of the checkout, so a reply posted
   from a subdirectory is still checked.
+- **Which body it reads:** `--body`/`-b`, `--body-file <file>`, `--body-file -` fed by that
+  segment's own heredoc or here-string (never the rest of the command, so a later
+  `git show <sha>` does not vote; stdin from a pipe is runtime and not judged), and for the API
+  forms a `body=` field — with `-F`/`--field`, `body=@file` is the file's contents, as gh sends it.
 
 Limits, stated plainly: the fix claim is a fixed phrase list with a simple negation/promise guard
 ("not fixed", "will fix"), so an unusual phrasing can slip through and an unusual one can trip it;
@@ -192,7 +199,10 @@ is not judged — `-f body="Fixed in $NEW_HEAD"` passes silently, while `'Fixed 
 single quotes, an escaped `\$`, or a `--body-file` holding that text is literal and is judged; outside a git checkout, or when
 the reply is posted from a checkout that does not hold the PR's commits, nothing can be verified
 (the first case says nothing; the second blocks, and the remedy is to post from the PR's worktree);
-`sh -c "gh …"`, `xargs gh` and `find -exec gh` are not recognized, as for the other hooks.
+`sh -c "gh …"`, `xargs gh` and `find -exec gh` are not recognized, as for the other hooks; and the
+hook reads the command, not which parts of it ran, so in `false && gh pr comment … --body Fixed`
+the reply is judged although it was never posted — the feedback says so, and that it then needs
+no correction.
 
 ## Wait tools
 

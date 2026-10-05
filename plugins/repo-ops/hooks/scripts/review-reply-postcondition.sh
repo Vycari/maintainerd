@@ -20,7 +20,8 @@
 # corrected reply, with the diff of any repo file the reply names attached as additionalContext.
 #
 # It never returns anything but that feedback, never edits the thread, and never touches the
-# network: verification is `git` in the hook's cwd only.
+# network: verification is `git` in the directory the reply was posted from (the hook's cwd,
+# moved by any `cd`/`pushd` earlier in the same command) only.
 #
 # Opt-in, Vycari-agnostic: gated on `review.replyNamesCommit` (boolean, default false) in
 # .claude/maintainerd.json. Unset/false → this hook says nothing, ever.
@@ -34,7 +35,10 @@
 # quotes and not escaped, see word_is_runtime — a file produced
 # earlier in the same command, `--input`) is not read, so such a reply is not judged; a fix
 # claim is detected by a fixed phrase list, with a simple negation guard ("not fixed"); outside
-# a git checkout nothing can be verified, so the hook says nothing.
+# a git checkout nothing can be verified, so the hook says nothing; after a `cd` to a runtime
+# directory the checkout is unknown, so later replies are not judged; and the hook reads the
+# command, not which parts of it ran (`false && gh pr comment …` is still judged — the feedback
+# says a reply that never posted needs no correction).
 #
 # Contract: hook JSON on stdin, jq + git on PATH, bash 3.2 (macOS /bin/bash).
 
@@ -54,17 +58,32 @@ case "$COMMAND" in
   *) exit 0 ;;
 esac
 
-# The config lives at the repository root, and the Bash tool's cwd may be a subdirectory: look
-# in the cwd first, then at the top of the checkout it sits in. Outside a git checkout nothing
-# can be verified, so the hook says nothing.
-git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1 || exit 0
-CONFIG="$CWD/.claude/maintainerd.json"
-if [ ! -f "$CONFIG" ]; then
-  TOP=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
-  [ -n "$TOP" ] && CONFIG="$TOP/.claude/maintainerd.json"
+# opted_in <dir> -> 0 when <dir> is inside a git checkout whose config sets
+# review.replyNamesCommit: true. The config lives at the repository root, and the directory may
+# be a subdirectory: look in <dir> first, then at the top of the checkout it sits in. Outside a
+# git checkout nothing can be verified, so the hook says nothing. The directory is the one the
+# reply was POSTED from: the tool's cwd, moved by any `cd`/`pushd` earlier in the same command
+# (see the scan below), so a `cd ../pr-worktree && gh pr comment …` is judged in that worktree.
+opted_in() {
+  local dir="$1" config top
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  config="$dir/.claude/maintainerd.json"
+  if [ ! -f "$config" ]; then
+    top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
+    [ -n "$top" ] && config="$top/.claude/maintainerd.json"
+  fi
+  [ -f "$config" ] || return 1
+  [ "$(jq -r '.review.replyNamesCommit // false' "$config" 2>/dev/null || true)" = "true" ]
+}
+
+# Fast path: the tool's cwd is not opted in and nothing in the command could move to a checkout
+# that is, so there is nothing this hook could ever say.
+if ! opted_in "$CWD"; then
+  case "$COMMAND" in
+    *cd*) : ;;
+    *) exit 0 ;;
+  esac
 fi
-[ -f "$CONFIG" ] || exit 0
-[ "$(jq -r '.review.replyNamesCommit // false' "$CONFIG" 2>/dev/null || true)" = "true" ] || exit 0
 
 SCAN_LIB="$SCRIPT_DIR/lib/gh-exec-words.sh"
 if [ ! -r "$SCAN_LIB" ] || [ ! -r "$SCRIPT_DIR/lib/gh-command-scan.sh" ]; then
@@ -138,6 +157,58 @@ word_is_runtime() {
   return 1
 }
 
+# field_file <name=@path> -> appends the file's text to EXTRA_TEXT (a `gh api -F body=@file`
+# posts the FILE's contents, not the literal `@file`). `@-` (stdin) or an unreadable path is
+# decided outside the command, so the body is marked runtime and not judged.
+EXTRA_TEXT=""
+field_file() {
+  local f="${1#*=@}"
+  if [ "$f" = "-" ]; then
+    stdin_body "$CUR_ORIG"
+  elif [ -r "$DIR/$f" ]; then
+    EXTRA_TEXT="$EXTRA_TEXT $(cat "$DIR/$f")"
+  elif [ -r "$f" ]; then
+    EXTRA_TEXT="$EXTRA_TEXT $(cat "$f")"
+  else
+    REPLY_RUNTIME=1
+  fi
+}
+
+# stdin_body <segment-original> -> appends to EXTRA_TEXT the text this segment feeds on stdin:
+# its own `<<TAG` heredoc (the lines after the segment's line, up to TAG) or `<<<` here-string.
+# Only that text — never the rest of the command, whose other words (a later `git show <sha>`)
+# must not vote. Stdin from a pipe or a redirected file is decided outside the command, so the
+# body is marked runtime and not judged.
+stdin_body() {
+  local seg="$1" opener tag quoted rest body b
+  case "$seg" in
+    *'<<<'*)
+      rest="${seg#*<<<}"
+      while :; do case "$rest" in ' '*) rest="${rest# }" ;; *) break ;; esac; done
+      EXTRA_TEXT="$EXTRA_TEXT $rest"
+      word_is_runtime "$rest" && REPLY_RUNTIME=1
+      return 0 ;;
+    *'<<'*) ;;
+    *) REPLY_RUNTIME=1; return 0 ;;
+  esac
+  opener="${seg#*<<}"
+  opener="${opener#-}"
+  while :; do case "$opener" in ' '*) opener="${opener# }" ;; *) break ;; esac; done
+  tag="${opener%%[$' \t\n;&|)<>']*}"
+  case "$tag" in \'*|\"*|\\*) quoted=1 ;; *) quoted=0 ;; esac
+  tag=$(unquote_word "$tag")
+  [ -n "$tag" ] || { REPLY_RUNTIME=1; return 0; }
+  # The body starts on the line after the one this segment ends on.
+  rest="${COMMAND:$((CUR_OFF + CUR_LEN))}"
+  case "$rest" in *$'\n'*) ;; *) REPLY_RUNTIME=1; return 0 ;; esac
+  body=$'\n'"${rest#*$'\n'}"
+  b="${body%%$'\n'"$tag"*}"
+  if [ "$quoted" -eq 0 ] && heredoc_expands "$b"; then
+    REPLY_RUNTIME=1
+  fi
+  EXTRA_TEXT="$EXTRA_TEXT $b"
+}
+
 # reply_body <segment-masked> <segment-original> -> sets REPLY_KIND ("" = not a reply),
 # REPLY_BODY (the text of the body, "" = unresolvable) and REPLY_RUNTIME (1 when some of the
 # body is decided by the shell at run time, so it is not judged).
@@ -150,6 +221,7 @@ reply_body() {
   REPLY_KIND=""
   REPLY_BODY=""
   REPLY_RUNTIME=0
+  EXTRA_TEXT=""
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue
     offs[${#offs[@]}]=$off
@@ -204,32 +276,37 @@ WORDS
       pr-comment:--body-file|pr-comment:-F)
         file=$(unquote_word "$next")
         if [ "$file" = "-" ]; then
-          text="$text $COMMAND"       # stdin heredoc: its body is elsewhere in the command
-          case "$COMMAND" in
-            *'<<'*) word_is_runtime "\$(cat <<${COMMAND#*<<}" && REPLY_RUNTIME=1 ;;
-          esac
-        elif [ -r "$CWD/$file" ]; then
-          text="$text $(cat "$CWD/$file")"
+          stdin_body "$orig"          # this segment's own heredoc / here-string, nothing else
+        elif [ -r "$DIR/$file" ]; then
+          text="$text $(cat "$DIR/$file")"
         elif [ -r "$file" ]; then
           text="$text $(cat "$file")"
         fi
         i=$((i + 2)); continue ;;
       pr-comment:--body-file=*) file=$(unquote_word "${raw#--body-file=}")
-        [ -r "$CWD/$file" ] && text="$text $(cat "$CWD/$file")" ;;
+        [ -r "$DIR/$file" ] && text="$text $(cat "$DIR/$file")" ;;
       *:-f|*:-F|*:--field|*:--raw-field)
         case "$(unquote_word "$next")" in
+          body=@*|query=@*)
+            # -F/--field reads `@file` (and `@-`, stdin) as the value; -f/--raw-field sends it as-is.
+            case "$uq" in
+              -F|--field) field_file "$(unquote_word "$next")" ;;
+              *) text="$text $next" ;;
+            esac ;;
           body=*|query=*|*addPullRequestReviewThreadReply*)
             text="$text $next"; word_is_runtime "$next" && REPLY_RUNTIME=1 ;;
         esac
         i=$((i + 2)); continue ;;
       *:-f?*|*:-F?*|*:--field=*|*:--raw-field=*)
         case "$uq" in
+          -Fbody=@*|-Fquery=@*|--field=body=@*|--field=query=@*)
+            field_file "$uq" ;;
           *body=*|*query=*) text="$text $raw"; word_is_runtime "$raw" && REPLY_RUNTIME=1 ;;
         esac ;;
     esac
     i=$((i + 1))
   done
-  REPLY_BODY="$text"
+  REPLY_BODY="$text$EXTRA_TEXT"
 }
 
 # claims_fix <lowercased body> -> 0 when the body claims something is fixed/addressed.
@@ -245,10 +322,10 @@ claims_fix() {
 # commit_ok <sha> -> 0 when <sha> names a commit reachable from HEAD or HEAD's upstream.
 commit_ok() {
   local sha="$1"
-  git -C "$CWD" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1 || return 1
-  git -C "$CWD" merge-base --is-ancestor "$sha" HEAD >/dev/null 2>&1 && return 0
-  git -C "$CWD" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 \
-    && git -C "$CWD" merge-base --is-ancestor "$sha" '@{upstream}' >/dev/null 2>&1 && return 0
+  git -C "$DIR" rev-parse --verify --quiet "${sha}^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$DIR" merge-base --is-ancestor "$sha" HEAD >/dev/null 2>&1 && return 0
+  git -C "$DIR" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 \
+    && git -C "$DIR" merge-base --is-ancestor "$sha" '@{upstream}' >/dev/null 2>&1 && return 0
   return 1
 }
 
@@ -272,18 +349,18 @@ diff_context() {
   # The branch's fork point from the default branch, so every fix commit on it is covered;
   # only when no default-branch ref resolves, fall back to the latest commit and say so.
   for ref in origin/HEAD '@{upstream}' origin/main origin/master main master; do
-    base=$(git -C "$CWD" merge-base HEAD "$ref" 2>/dev/null || true)
-    [ -n "$base" ] && [ "$base" != "$(git -C "$CWD" rev-parse HEAD 2>/dev/null)" ] && break
+    base=$(git -C "$DIR" merge-base HEAD "$ref" 2>/dev/null || true)
+    [ -n "$base" ] && [ "$base" != "$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" ] && break
     base=""
   done
   if [ -z "$base" ]; then
-    base=$(git -C "$CWD" rev-parse --verify --quiet 'HEAD~1' 2>/dev/null || true)
+    base=$(git -C "$DIR" rev-parse --verify --quiet 'HEAD~1' 2>/dev/null || true)
     [ -n "$base" ] && note="[no default-branch ref found: diffs cover the latest commit only — run git log to see earlier fixes]"$'\n'
   fi
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     tok="${tok#./}"
-    if git -C "$CWD" ls-files --error-unmatch -- "$tok" >/dev/null 2>&1; then
+    if git -C "$DIR" ls-files --error-unmatch -- "$tok" >/dev/null 2>&1; then
       case " $files " in *" $tok "*) ;; *) files="$files $tok" ;; esac
     fi
   done <<TOKENS
@@ -291,12 +368,12 @@ $(printf '%s' "$1" | grep -Eo '[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' | sort -u | head 
 TOKENS
   if [ -n "$base" ] && [ -n "$files" ]; then
     for f in $files; do
-      out="$out$(git -C "$CWD" diff "$base" HEAD -- "$f" 2>/dev/null)"$'\n'
+      out="$out$(git -C "$DIR" diff "$base" HEAD -- "$f" 2>/dev/null)"$'\n'
     done
   fi
   if [ -z "${out//[[:space:]]/}" ]; then
     note=""
-    out=$(git -C "$CWD" log -3 --stat --format='%h %s' 2>/dev/null || true)
+    out=$(git -C "$DIR" log -3 --stat --format='%h %s' 2>/dev/null || true)
   fi
   out="$note$out"
   if [ "${#out}" -gt "$DIFF_MAX" ]; then
@@ -306,27 +383,66 @@ TOKENS
 }
 
 # ------------------------------------------------------------------------------------ the scan
+# cd_target <segment-masked> -> prints the directory a `cd`/`pushd` segment moves to (relative
+# to DIR), "?" when it cannot be known statically ($VAR, `cd -`, ~user), nothing when the
+# segment is not a cd/pushd.
+cd_target() {
+  local seg="$1" off len w first="" arg="" n=0
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    w="${seg:$off:$len}"
+    if [ "$n" -eq 0 ]; then
+      case "$w" in [a-zA-Z_]*=*) continue ;; esac
+      first="$w"
+    elif [ -z "$arg" ]; then
+      case "$w" in -L|-P|-e|-@) ;; *) arg="$w" ;; esac
+    fi
+    n=$((n + 1))
+  done <<ARGV
+$(argv_spans "$seg")
+ARGV
+  case "$first" in cd|pushd) ;; *) return 0 ;; esac
+  if [ -z "$arg" ]; then printf '%s' "${HOME:-?}"; return 0; fi
+  word_is_runtime "$arg" && { printf '?'; return 0; }
+  arg=$(unquote_word "$arg")
+  case "$arg" in
+    -|'~'?*) printf '?' ;;
+    '~'|'~/'*) printf '%s' "${HOME:-?}${arg#\~}" ;;
+    /*) printf '%s' "$arg" ;;
+    *) printf '%s' "$DIR/$arg" ;;
+  esac
+}
+
 MASKED=$(mask_all_heredocs "$COMMAND")
 BAD_BODIES=""
+BAD_DIR=""
+DIR="$CWD"
 while IFS=' ' read -r OFF LEN; do
   [ -n "$OFF" ] || continue
   SEG_MASKED="${MASKED:$OFF:$LEN}"
   SEG_ORIG="${COMMAND:$OFF:$LEN}"
+  NEWDIR=$(cd_target "$SEG_MASKED")
+  if [ -n "$NEWDIR" ]; then DIR="$NEWDIR"; continue; fi
+  CUR_OFF=$OFF CUR_LEN=$LEN CUR_ORIG="$SEG_ORIG"
   reply_body "$SEG_MASKED" "$SEG_ORIG"
   [ -n "$REPLY_KIND" ] || continue
+  [ "$DIR" != "?" ] || continue          # posted from a directory this hook cannot know
+  opted_in "$DIR" || continue
   [ -n "${REPLY_BODY//[[:space:]]/}" ] || continue
   claims_fix "$REPLY_BODY" || continue
   body_names_good_commit "$REPLY_BODY" && continue
   [ "$REPLY_RUNTIME" -eq 1 ] && continue
   BAD_BODIES="$BAD_BODIES$REPLY_BODY"$'\n'
+  BAD_DIR="$DIR"
 done <<SEGMENTS
 $(split_simple_commands "$MASKED")
 SEGMENTS
 
 [ -n "$BAD_BODIES" ] || exit 0
+DIR="$BAD_DIR"
 
 CTX=$(diff_context "$BAD_BODIES")
-REASON="repo-ops review-reply-postcondition: the review reply you just posted claims a fix but names no commit that exists in this checkout and is reachable from HEAD (or its upstream). A 'fixed' reply must name the commit that fixed it, and be written after re-reading the diff, not from the plan. Re-read the diff below (git show <sha>), confirm the change really does what the reply says, then post a corrected reply that names the real commit SHA — and if the fix is partial, say exactly which part is done and which is not. If you have not pushed the fix yet, do that first."
+REASON="repo-ops review-reply-postcondition: this command contains a review reply that claims a fix but names no commit that exists in this checkout and is reachable from HEAD (or its upstream). A 'fixed' reply must name the commit that fixed it, and be written after re-reading the diff, not from the plan. Re-read the diff below (git show <sha>), confirm the change really does what the reply says, then post a corrected reply that names the real commit SHA — and if the fix is partial, say exactly which part is done and which is not. If you have not pushed the fix yet, do that first. (This hook reads the command, not which parts of it ran: if that reply was never posted — a short-circuited && or a failed command — there is nothing to correct, and you should not post one.)"
 jq -n --arg reason "$REASON" --arg ctx "Diff context (best effort; files named in the reply, else the latest commits):
 $CTX" '{
   decision: "block",

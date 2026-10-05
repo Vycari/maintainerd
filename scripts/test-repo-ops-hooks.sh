@@ -748,6 +748,34 @@ expect_post block "config found at the repo root when cwd is a subdirectory" "$R
 rmdir "$RP_REPO/sub/dir" "$RP_REPO/sub"
 
 echo
+echo "== review-reply-postcondition: only the reply's own body votes =="
+expect_post block "--body-file - heredoc claiming a fix, a later git show <sha> does not vote" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed.
+EOF
+git show $RP_HEAD"
+expect_post none  "--body-file - heredoc that names the commit itself" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed in $RP_HEAD.
+EOF"
+expect_post block "--body-file - from a here-string claiming a fix" "$RP_REPO" "gh pr comment 12 --body-file - <<< 'Fixed.'"
+expect_post none  "--body-file - fed by a pipe is decided at runtime, not judged" "$RP_REPO" "printf 'Fixed.' | gh pr comment 12 --body-file -"
+printf 'Fixed.\n' > "$RP_REPO/reply.md"
+expect_post block "gh api -F body=@file posts the file: a fix claim with no SHA" "$RP_REPO" "gh api $REPLIES -F body=@reply.md"
+expect_post block "gh api --field=body=@file, attached form" "$RP_REPO" "gh api $REPLIES --field=body=@reply.md"
+expect_post block "gh api -Fbody=@file, attached short form" "$RP_REPO" "gh api $REPLIES -Fbody=@reply.md"
+printf 'Fixed in %s.\n' "$RP_HEAD" > "$RP_REPO/reply.md"
+expect_post none  "gh api -F body=@file whose file names the commit" "$RP_REPO" "gh api $REPLIES -F body=@reply.md"
+expect_post none  "gh api -F body=@missing-file is not judged" "$RP_REPO" "gh api $REPLIES -F body=@nope.md"
+expect_post block "gh api -f body=@x is a literal string, not a file" "$RP_REPO" "gh api $REPLIES -f body='@x Fixed'"
+
+echo
+echo "== review-reply-postcondition: a cd earlier in the command picks the checkout =="
+expect_post block "cd into an opted-in checkout from an opted-out one" "$RP_OFF" "cd $RP_REPO && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "cd into an opted-in checkout, naming its commit" "$RP_OFF" "cd $RP_REPO && gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+expect_post none  "cd out of an opted-in checkout to an opted-out one" "$RP_REPO" "cd $RP_OFF && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "cd to a runtime directory: the checkout is unknown, not judged" "$RP_REPO" 'cd "$WT" && gh pr comment 12 --body "Fixed."'
+expect_post block "a relative cd resolves against the cwd" "$(dirname "$RP_REPO")" "cd $(basename "$RP_REPO") && gh pr comment 12 --body \"Fixed.\""
+
+echo
 echo "== review-reply-postcondition: wrappers resolve like a bare gh =="
 expect_post block "command gh pr comment" "$RP_REPO" 'command gh pr comment 12 --body "Fixed"'
 expect_post block "env VAR=x gh pr comment" "$RP_REPO" 'env GH_TOKEN=x gh pr comment 12 --body "Fixed"'
