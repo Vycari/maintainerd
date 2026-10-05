@@ -203,7 +203,8 @@ stdin_body() {
   case "$rest" in *$'\n'*) ;; *) REPLY_RUNTIME=1; return 0 ;; esac
   rest="${rest#*$'\n'}"
   # The terminator is a line that is exactly TAG (after leading tabs, for `<<-`); a body line
-  # that merely starts with TAG is body. No terminator: the body runs to the end, as in bash.
+  # that merely starts with TAG is body. No terminator: the body runs to the end of the
+  # command, as bash sends it (with a warning), so it is still judged.
   while [ -n "$rest" ]; do
     case "$rest" in
       *$'\n'*) line="${rest%%$'\n'*}"; rest="${rest#*$'\n'}" ;;
@@ -215,7 +216,6 @@ stdin_body() {
     if [ "$line" = "$tag" ]; then found=1; break; fi
     b="$b"$'\n'"$line"
   done
-  [ "$found" -eq 1 ] || REPLY_RUNTIME=1
   if [ "$quoted" -eq 0 ] && heredoc_expands "$b"; then
     REPLY_RUNTIME=1
   fi
@@ -398,7 +398,9 @@ TOKENS
 # ------------------------------------------------------------------------------------ the scan
 # cd_target <segment-masked> -> prints the directory a `cd`/`pushd` segment moves to (relative
 # to DIR), "?" when it cannot be known statically ($VAR, `cd -`, ~user, `pushd +N`), "POPD" for
-# a `popd`, nothing when the segment is none of these.
+# a `popd`, nothing when the segment is none of these. A `pushd` result is prefixed "PUSH:" so
+# the caller pushes the current directory; the verb is the resolved first word, never a
+# substring of the segment (a `cd work/pushd` is a cd).
 cd_target() {
   local seg="$1" off len w first="" arg="" n=0
   while IFS=' ' read -r off len; do
@@ -424,6 +426,7 @@ ARGV
     if [ "$first" = pushd ]; then printf '?'; else printf '%s' "${HOME:-?}"; fi
     return 0
   fi
+  [ "$first" = pushd ] && printf 'PUSH:'
   word_is_runtime "$arg" && { printf '?'; return 0; }
   arg=$(unquote_word "$arg")
   case "$arg" in
@@ -455,8 +458,8 @@ while IFS=' ' read -r OFF LEN; do
           DIR="?"
         fi ;;
       *)
-        case "$SEG_MASKED" in
-          *pushd*) DIR_STACK="$DIR${DIR_STACK:+$'\n'}$DIR_STACK" ;;
+        case "$NEWDIR" in
+          PUSH:*) DIR_STACK="$DIR${DIR_STACK:+$'\n'}$DIR_STACK"; NEWDIR="${NEWDIR#PUSH:}" ;;
         esac
         DIR="$NEWDIR" ;;
     esac

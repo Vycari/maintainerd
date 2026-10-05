@@ -778,6 +778,9 @@ expect_post block "pushd into an opted-in checkout from an opted-out one" "$RP_O
 expect_post none  "pushd then popd returns to the opted-out cwd" "$RP_OFF" "pushd $RP_REPO && popd && gh pr comment 12 --body \"Fixed.\""
 expect_post block "pushd out, popd back into the opted-in cwd" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed.\""
 expect_post none  "pushd out then popd back: a commit of the cwd counts" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+mkdir -p "$RP_REPO/work/pushd"
+expect_post block "a cd whose path contains 'pushd' is not a pushd: popd returns to the cwd" "$RP_REPO" "pushd $RP_OFF && cd $RP_REPO/work/pushd && popd && gh pr comment 12 --body \"Fixed.\""
+rm -rf "$RP_REPO/work"
 
 echo
 echo "== review-reply-postcondition: heredoc terminators are whole lines =="
@@ -789,6 +792,8 @@ expect_post none  "a body line that starts with the tag does not end the body" "
 Fixed.
 EOF-adjacent note: see $RP_HEAD.
 EOF"
+expect_post block "an unterminated quoted stdin heredoc is still judged" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed."
 
 echo
 echo "== review-reply-postcondition: wrappers resolve like a bare gh =="
