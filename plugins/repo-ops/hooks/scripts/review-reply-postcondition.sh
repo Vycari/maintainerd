@@ -78,6 +78,22 @@ fi
 . "$SCAN_LIB"
 
 # ------------------------------------------------------------------ is it a reply, what's its body
+# heredoc_expands <unquoted-delimiter heredoc body> -> 0 when the shell expands part of it. In
+# such a body quotes are literal and a backslash escapes only the next character, so `\\$X`
+# (an escaped backslash) still expands while `\$X` does not.
+heredoc_expands() {
+  local h="$1" n=${#1} k=0
+  while [ "$k" -lt "$n" ]; do
+    case "${h:$k:1}" in
+      \\) k=$((k + 2)); continue ;;
+      '`') return 0 ;;
+      '$') case "${h:$((k + 1)):1}" in [A-Za-z0-9_\{\(@*#?!-]) return 0 ;; esac ;;
+    esac
+    k=$((k + 1))
+  done
+  return 1
+}
+
 # word_is_runtime <raw shell word> -> 0 when the shell substitutes part of the word when it runs
 # ($VAR, ${VAR}, $1, $(cmd), `cmd`) outside single quotes and not backslash-escaped: the posted
 # text may then name a commit this hook cannot see. A `$(cat <<TAG …)` heredoc is not runtime —
@@ -108,7 +124,7 @@ word_is_runtime() {
             case "$opener" in *$'\n'*) ;; *) return 0 ;; esac
             body=$'\n'"${opener#*$'\n'}"
             b="${body%%$'\n'"$tag"*}"
-            if [ "$quoted" -eq 0 ] && printf '%s' "$b" | grep -Eq '(^|[^\\])(\$[A-Za-z0-9_{(]|`)'; then
+            if [ "$quoted" -eq 0 ] && heredoc_expands "$b"; then
               return 0
             fi
             after="${body#"$b"}"

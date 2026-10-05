@@ -725,6 +725,18 @@ expect_post none  "an unquoted-delimiter heredoc expanding \$VAR is not judged" 
 Fixed in \$NEW_HEAD.
 EOF
 )\""
+expect_post none  "an unquoted heredoc: an escaped backslash before \$VAR still expands" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \\\\\$NEW_HEAD.
+EOF
+)\""
+expect_post none  "an unquoted heredoc expanding \$@ is not judged" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \$@.
+EOF
+)\""
+expect_post block "an unquoted heredoc with an escaped \\\$VAR is literal" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \\\$NEW_HEAD.
+EOF
+)\""
 expect_post none  "--body-file - from an unquoted stdin heredoc expanding \$VAR is not judged" "$RP_REPO" "gh pr comment 12 --body-file - <<EOF
 Fixed in \$NEW_HEAD.
 EOF"
