@@ -106,6 +106,8 @@ on — is covered in [`references/scheduling.md`](references/scheduling.md).
 
 **Eligibility:** all open issues, oldest first, EXCEPT issues labeled with the Skip state label (`config.autoDev.stateLabels.skip`) or any label in `config.autoDev.excludedLabels` (defaults: `epic`, `question`, `wontfix`, `duplicate`, `invalid`). Pull requests are never triaged as issues.
 
+**Digest issues are never eligible.** A planner's rolling digest (an issue whose **body starts with** one of `config.autoDev.digestBodyMarkers`, default `["<!-- auto-dev-shadow-digest ", "<!-- auto-dev-digest "]`) is the planner's output, not work: it is rewritten on every run, so triaging it only generates a park question to answer and a label to remove. Exclude it at the open-issues read, before any state, age or label test, and do not count, label, comment on or park it. The match is anchored on the start of the body (after leading whitespace), so an ordinary issue that merely quotes a marker stays eligible.
+
 ## The tick algorithm
 
 Work through these steps in order — the order **is** the priority. Execute the **first step that has work**, finish it, print the exit report, and stop. The ordering puts concrete, human-approved progress ahead of speculative grooming: advancing an open PR (step 2) and **building an approved issue (step 3) both outrank the triage pass (step 4)**, because a ready build is work the maintainer has already greenlit while triage only feeds the queue. With the default `config.autoDev.maxPrsInFlight` of `1`, an open PR blocks building until it merges, so most ticks either advance that PR or, finding it quiescent, fall through to triage. With a higher cap, an open PR **no longer blocks building**: a tick advances an open PR only when one actually needs work (CI red, unaddressed feedback, a draft to resume, or a review-window timeout that triggers a fallback self-review); when every open PR is quiescent (waiting on the maintainer's review or merge) and the in-flight count is below the cap, the tick builds the next Ready issue instead. That's what drains the queue overnight — each merge-blocked-but-quiescent PR simply frees the tick to build the following issue, up to the cap. Triage runs on the ticks that would otherwise idle (all PRs quiescent, and either nothing is Ready or the cap is reached).
@@ -185,11 +187,21 @@ entries (issues and PRs, because `open_issues_count` counts both) and is compare
 read on each side of the pages. `gathered == before == after` is complete; `gathered < min(before,
 after)` is truncated; anything else means an issue or PR opened or closed mid-read, so re-run the
 bracketed read once, and treat a second unsettled result as a failed read. Only after a read passes,
-filter `$ISSUES_FILE` to issues (`select(has("pull_request") | not)`) and project the fields the rest
+filter `$ISSUES_FILE` to issues (`select(has("pull_request") | not)`), drop digest issues with the
+filter below, and project the fields the rest
 of this skill uses (`number, title, labels: [.labels[].name], createdAt: .created_at, updatedAt:
 .updated_at`). The file is per-run (`mktemp`) so concurrent runs can't overwrite each other's pages.
 `rm -f "$ISSUES_FILE"` on every exit from the read: before the re-run, before stopping on a failed
 read, and once the projected list is in hand — not only at the end of a tick that got that far.
+
+The digest filter (pass `--argjson markers` the configured `digestBodyMarkers`, or the default array above when the key is absent):
+
+```jq
+# auto-dev digest-skip filter
+[.[][] | select(has("pull_request") | not)
+  | select(((.body // "") | sub("^\\s+"; "")) as $b
+           | any($markers[]; . as $m | $b | startswith($m)) | not)]
+```
 
 **When blocked**, the two PR queries become **List PRs by state** (filter `headRefName` by
 the branch prefix client-side exactly as the `jq` does now, and read `merged_at` for the closed
