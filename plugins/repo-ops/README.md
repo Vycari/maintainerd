@@ -15,9 +15,9 @@ same on all of them. Nothing here merges.
 
 ## Hooks
 
-Three `PreToolUse` guards on `Bash`, installed automatically once this plugin is enabled — no
-separate opt-in. Both read the hook JSON from stdin with `jq` and are written for bash 3.2
-(macOS `/bin/bash`). Like the skills, both are generic: neither names a specific repo, label, or
+Three `PreToolUse` guards and one opt-in `PostToolUse` hook on `Bash`, installed automatically once this plugin is enabled — no
+separate opt-in. All read the hook JSON from stdin with `jq` and are written for bash 3.2
+(macOS `/bin/bash`). Like the skills, all are generic: none names a specific repo, label, or
 org. See [`hooks/hooks.json`](hooks/hooks.json) for the manifest and
 [`hooks/scripts/`](hooks/scripts/) for the implementations; the pin-file test suite lives at
 `scripts/test-repo-ops-hooks.sh` in the maintainerd repo root (a cross-plugin link doesn't
@@ -153,6 +153,40 @@ that mentions the command is invisible to it, and every merge a compound command
 found. Limits, all toward checking *less*: `sh -c "gh pr merge …"`, `xargs gh`, and a merge written
 inside a `$( … )` substitution are not recognized, and a wrapper tool that merges on the caller's
 behalf (such as a repo's own `ws prs merge`) is not a `gh` invocation and is not warned about.
+
+### `review-reply-postcondition`
+
+A `PostToolUse` hook, **opt-in** via `config.review.replyNamesCommit: true` (default `false`; unset
+means the hook says nothing, ever). A review reply that says "fixed" is a claim about the world,
+and an agent's claim about its own diff is a postcondition, not a sentence — the cloud worker's
+reply on pepper#2899 claimed full compliance for a half-done fix, twice in one day. This hook
+checks the claim after the reply is posted.
+
+- **What it watches:** `gh pr comment`, `gh api repos/…/pulls/N/comments/ID/replies` (inline
+  thread reply), and `gh api graphql` carrying `addPullRequestReviewThreadReply`. Scoping is the
+  same structural scan as the other hooks (plus `lib/gh-exec-words.sh`, which resolves `command`/
+  `env`/`exec`/path/`VAR=` prefixes to the gh argv), so an `echo "gh pr comment … fixed"` or a
+  heredoc that writes a script is never a reply, and in a compound command each reply is judged
+  on its own body.
+- **What it requires:** when the body claims a fix — "fixed", "addressed", "resolved",
+  "implemented", "corrected", "done in", "handled in", "applied in" — it must contain a 7–40
+  hex-digit token naming a commit that exists in the hook's working checkout and is an ancestor of
+  `HEAD` or of `HEAD`'s upstream. Verification is `git` only; there is no network call.
+- **What it returns:** PostToolUse feedback, `decision: "block"` with a reason (the reply is
+  already posted; this is how PostToolUse makes the model act on a correction) telling the agent
+  to re-read the diff and post a corrected reply naming the real commit — and, if the fix is
+  partial, which part. `additionalContext` carries the diff of any tracked repo file the reply
+  names (versus the merge-base with `origin/HEAD`, else `HEAD~1`), else the last three commits'
+  stat; truncated to 6,000 characters.
+
+Limits, stated plainly: the fix claim is a fixed phrase list with a simple negation/promise guard
+("not fixed", "will fix"), so an unusual phrasing can slip through and an unusual one can trip it;
+it proves a plausible commit is *named*, not that the commit *does what the reply says* — that
+stays the reviewer's job; a body decided at runtime (`$VAR`, a file written earlier in the same
+command, `--input`) is not read, so such a reply is not judged; outside a git checkout, or when
+the reply is posted from a checkout that does not hold the PR's commits, nothing can be verified
+(the first case says nothing; the second blocks, and the remedy is to post from the PR's worktree);
+`sh -c "gh …"`, `xargs gh` and `find -exec gh` are not recognized, as for the other hooks.
 
 ## Wait tools
 

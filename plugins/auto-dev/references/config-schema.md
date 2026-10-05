@@ -234,6 +234,9 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // hook, which warns when `gh pr create` carries this label
                                      // without `--draft` — the bot schedules its review on the open
                                      // event, before a label applied in the same command lands.
+    "replyNamesCommit":  false       // opt-in. true = the repo-ops `review-reply-postcondition` hook
+                                     // requires a review reply that claims a fix to name a commit
+                                     // reachable from HEAD. false/absent = the hook says nothing.
   },
 
   // ── release (the `release` skill) — null/omitted = repo ships continuously, no versioned release ──
@@ -458,6 +461,16 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   for on a `gh pr create` — many review bots schedule their run on the `opened` webhook, before a
   label applied in the same command lands, so the label alone doesn't reliably suppress the review.
   `null`/absent = this repo has no such label; the hook says nothing.
+- `review.replyNamesCommit` *(optional; default `false`)* — opt in to the `repo-ops`
+  `review-reply-postcondition` hook (see that plugin's README). When `true`, a `gh pr comment` or
+  inline-thread reply (`gh api …/pulls/N/comments/ID/replies`, or the GraphQL
+  `addPullRequestReviewThreadReply`) whose body claims a fix — "fixed", "addressed", "resolved",
+  "done in", … — must name a 7–40 hex-digit commit SHA that exists in the local checkout and is
+  reachable from `HEAD` or its upstream; otherwise the hook hands the agent a correction (with the
+  diff of any repo file the reply names) to rewrite the reply from the diff. A claim an agent makes
+  about its own change is a postcondition, not a sentence. Default `false` because the hook can
+  only judge from a git checkout and from reply text it can read; a repo opts in once its reviewers
+  and agents post replies from the PR's own worktree.
 
   Either breaker takes `null` to disable **that** breaker; the other keeps working. Neither takes
   `0` — a cap of zero would halt before the first round, which is not a policy anyone wants and is
