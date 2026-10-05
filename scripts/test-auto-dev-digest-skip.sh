@@ -69,5 +69,12 @@ else
   bad "an empty marker list drops nothing" "got $got"
 fi
 
+got="$(run_filter '["", "<!-- auto-dev-digest "]' | numbers)"
+if [ "$got" = "[1,2,3,5,7]" ]; then
+  ok "an empty marker string is ignored, not treated as matching every body"
+else
+  bad "an empty marker string is ignored" "got $got, want [1,2,3,5,7]"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

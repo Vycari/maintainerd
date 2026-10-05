@@ -194,13 +194,14 @@ of this skill uses (`number, title, labels: [.labels[].name], createdAt: .create
 `rm -f "$ISSUES_FILE"` on every exit from the read: before the re-run, before stopping on a failed
 read, and once the projected list is in hand — not only at the end of a tick that got that far.
 
-The digest filter (pass `--argjson markers` the configured `digestBodyMarkers`, or the default array above when the key is absent):
+The digest filter (pass `--argjson markers` the configured `digestBodyMarkers`, or the default array above when the key is absent; empty strings are ignored, since an empty prefix would match every body):
 
 ```jq
 # auto-dev digest-skip filter
 [.[][] | select(has("pull_request") | not)
   | select(((.body // "") | sub("^\\s+"; "")) as $b
-           | any($markers[]; . as $m | $b | startswith($m)) | not)]
+           | any($markers[] | select(type == "string" and length > 0); . as $m | $b | startswith($m))
+           | not)]
 ```
 
 **When blocked**, the two PR queries become **List PRs by state** (filter `headRefName` by

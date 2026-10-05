@@ -146,7 +146,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
       "skip":       "auto:skip"
     },
     "excludedLabels": ["epic", "question", "wontfix", "duplicate", "invalid"], // never auto-build these
-    "digestBodyMarkers": ["<!-- auto-dev-shadow-digest ", "<!-- auto-dev-digest "], // an open issue whose body STARTS with one of these is a planner's rolling digest, not work: the tick never triages it. Default as shown if absent.
+    "digestBodyMarkers": ["<!-- auto-dev-shadow-digest ", "<!-- auto-dev-digest "], // an open issue whose body STARTS with one of these (non-empty strings; empty ones are ignored) is a planner's rolling digest, not work: the tick never triages it. Default as shown if absent.
     "openPrsAsDraft": true,
     "prLabel":        "auto:pr",  // applied to every PR the pipeline opens, so external tooling (e.g. CodeRabbit) can treat automated PRs specially. Distinct from labels.automated (which the audits also use). Must already exist; bootstrap creates it.
     "extraPrLabels":  [],         // OPTIONAL extra label names (e.g. ["team:triage"]) applied to every PR the pipeline opens, alongside prLabel, everywhere prLabel is applied (create, re-stamp, REST fallbacks). Each must already exist; bootstrap creates them. For routing/ownership labels that do NOT gate review. Default [] if absent.
