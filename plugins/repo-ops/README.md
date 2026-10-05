@@ -15,7 +15,7 @@ same on all of them. Nothing here merges.
 
 ## Hooks
 
-Two `PreToolUse` guards on `Bash`, installed automatically once this plugin is enabled — no
+Three `PreToolUse` guards on `Bash`, installed automatically once this plugin is enabled — no
 separate opt-in. Both read the hook JSON from stdin with `jq` and are written for bash 3.2
 (macOS `/bin/bash`). Like the skills, both are generic: neither names a specific repo, label, or
 org. See [`hooks/hooks.json`](hooks/hooks.json) for the manifest and
@@ -24,11 +24,11 @@ org. See [`hooks/hooks.json`](hooks/hooks.json) for the manifest and
 resolve in an installed marketplace layout, so this is named rather than linked — see
 "Repository layout" in the top-level README).
 
-### How both guards read a command
+### How the guards read a command
 
-Both hooks ask the same question of a Bash payload — *which `gh pr create`/`gh pr edit`
-invocations does this command actually run, and what does each one say?* — and both answer it
-with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/lib/gh-command-scan.sh):
+The hooks ask the same question of a Bash payload — *which `gh` invocations does this command
+actually run, and what does each one say?* (`pr create`/`pr edit` for the first two, `pr merge`
+and the merge API for `merge-guard`) — and all answer it with one shared scanner, [`hooks/scripts/lib/gh-command-scan.sh`](hooks/scripts/lib/gh-command-scan.sh):
 
 1. **Heredoc bodies are redacted in place.** `cat > deploy.sh <<'EOF'` followed by a line reading
    `gh pr create --body "..."` writes that text to a file; it does not run gh. Redaction replaces
@@ -127,6 +127,32 @@ affect the check, and each `gh pr create` in a compound command is judged on its
 Label values are parsed the way gh accepts them — quoted (`--label "skip review"`, matched in
 full rather than truncated at the space), repeated (`--label a --label b`), `--label=value`, the
 `-l` shorthand, and comma-separated (`--label a,b`, which gh splits into two labels).
+
+### `merge-guard`
+
+**Warns** (advisory only, never denies) when a Bash command really runs a merge: `gh pr merge`
+(any flags, `--auto` and `--admin` included), the REST merge endpoint (`gh api -X PUT
+repos/<o>/<r>/pulls/<n>/merge`, or the same path with `-f` fields, which makes gh default to
+POST), or a GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` / `enqueuePullRequest`
+mutation. An explicit `-X GET` on the merge path is a read and is not flagged.
+
+It turns "agents never merge" from a sentence retyped into every agent prompt into a reminder at
+the moment of the call. It warns rather than denies on purpose: the hook payload alone cannot
+reliably tell a spawned agent from the lead session or the maintainer, and a fail-closed hook that
+blocked the maintainer's own merges would be switched off within a day. When the payload does carry
+a non-empty `agent_id` / `agent_type` (a subagent call) the warning says so in stronger words, still
+without blocking. Structural prevention for agents belongs in their definitions (an agent that
+declares no merge capability).
+
+Config: the optional `createPr.agentsMayMerge` key in `.claude/maintainerd.json`. Absent or `false`
+(the default) the guard warns — it needs no config at all to be active, unlike
+`skip-label-race-guard`. `true` silences it for a repo that has deliberately delegated merging — but only when the command stays in the hook's cwd repo; a `cd`, `pushd`, `-R/--repo` or `GH_REPO` in the command still warns, since the target repo's config was never read. A `gh api graphql` call whose query comes from a file (`--input`, `-F query=@file`) cannot be inspected and warns too; a bare GET of the REST merge path does not.
+
+Because it uses the same scanner, an `echo "gh pr merge 5"`, a script-building heredoc, or a PR body
+that mentions the command is invisible to it, and every merge a compound command really runs is
+found. Limits, all toward checking *less*: `sh -c "gh pr merge …"`, `xargs gh`, and a merge written
+inside a `$( … )` substitution are not recognized, and a wrapper tool that merges on the caller's
+behalf (such as a repo's own `ws prs merge`) is not a `gh` invocation and is not warned about.
 
 ## Note on code review
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# Tests for the repo-ops plugin's two PreToolUse Bash hooks:
+# Tests for the repo-ops plugin's three PreToolUse Bash hooks:
 #   plugins/repo-ops/hooks/scripts/pr-template-guard.sh
 #   plugins/repo-ops/hooks/scripts/skip-label-race-guard.sh
+#   plugins/repo-ops/hooks/scripts/merge-guard.sh
 #
 # Each case feeds a PreToolUse hook JSON payload on stdin and asserts the decision the script
 # renders, against a scratch repo built fresh per case (a `.claude/maintainerd.json` and a PR
@@ -18,6 +19,7 @@ export LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/pr-template-guard.sh"
 SKIP_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/skip-label-race-guard.sh"
+MERGE_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/merge-guard.sh"
 
 PASS=0
 FAIL=0
@@ -122,7 +124,7 @@ CONFIG_SKIP_LABEL='{"review": {"skipLabel": "greptile:skip"}}'
 CONFIG_SKIP_LABEL_SPACED='{"review": {"skipLabel": "skip review"}}'
 
 echo "== every hook script emits valid JSON or nothing, on an unrelated command =="
-for s in "$TEMPLATE_GUARD" "$SKIP_GUARD"; do
+for s in "$TEMPLATE_GUARD" "$SKIP_GUARD" "$MERGE_GUARD"; do
   d=$(repo "$TEMPLATE" "$CONFIG_PLAIN")
   out=$(run_guard "$s" "echo hello" "$d")
   if [ -z "$out" ]; then
@@ -628,6 +630,145 @@ expect "$SKIP_GUARD" none "a comma list that only contains a prefix of the skip 
   "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip,review" --body y'
 expect "$SKIP_GUARD" none "an echo mentioning the label, next to a real DRAFTED create" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'echo "gh pr create --label greptile:skip" && gh pr create --draft --label greptile:skip --title a'
+
+echo
+echo "== merge-guard: warns on every real merge, never denies =="
+CONFIG_MAY_MERGE='{"createPr": {"agentsMayMerge": true}}'
+CONFIG_NO_MERGE='{"createPr": {"agentsMayMerge": false}}'
+for c in \
+  'gh pr merge 5' \
+  'gh pr merge 5 --squash --delete-branch' \
+  'gh pr merge --auto --squash 5' \
+  'gh pr merge 5 --admin' \
+  'gh pr merge 5 -R Vycari/pepper' \
+  'command gh pr merge 5' \
+  'env GH_TOKEN=x gh pr merge 5' \
+  'env -i gh pr merge 5' \
+  'exec gh pr merge 5' \
+  'GH_PAGER=cat gh pr merge 5' \
+  '/usr/bin/gh pr merge 5' \
+  '"gh" pr merge 5' \
+  'if gh pr merge 5; then echo done; fi' \
+  '! gh pr merge 5' \
+  'gh pr checks 5 --watch && gh pr merge 5' \
+  'gh pr view 5; gh pr merge 5 --squash' \
+  'gh pr view 5 | cat && (gh pr merge 5)' \
+  'gh pr merge 5 &' \
+  'gh api -X PUT repos/o/r/pulls/1/merge' \
+  'gh api -XPUT repos/o/r/pulls/1/merge' \
+  'gh api --method PUT repos/o/r/pulls/1/merge' \
+  'gh api --method=PUT /repos/o/r/pulls/1/merge -f merge_method=squash' \
+  'gh api repos/o/r/pulls/1/merge -f merge_method=squash' \
+  'gh api -X PUT "repos/o/r/pulls/1/merge"' \
+  'gh api graphql --input query.json' \
+  'gh api graphql --input=query.json' \
+  'gh api graphql -Fquery=@merge.graphql' \
+  'gh api graphql -fquery=@merge.graphql' \
+  'gh api graphql -F query=@merge.graphql' \
+  'gh api graphql -f query="mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
+  'gh api graphql -f query="mutation { enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
+  'gh api graphql -f query="mutation { enqueuePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"'; do
+  expect "$MERGE_GUARD" warn "$c" "$(repo "" "$CONFIG_PLAIN")" "$c"
+done
+expect "$MERGE_GUARD" warn "warns with no .claude/maintainerd.json at all (active by default)" \
+  "$(repo "" "")" 'gh pr merge 5'
+expect "$MERGE_GUARD" warn "agentsMayMerge=false still warns" \
+  "$(repo "" "$CONFIG_NO_MERGE")" 'gh pr merge 5'
+expect_match "$MERGE_GUARD" "Agents never merge" "the warning states the rule" \
+  "$(repo "" "$CONFIG_PLAIN")" 'gh pr merge 5'
+
+echo
+echo "== merge-guard: a subagent payload gets the stronger wording, still no deny =="
+D=$(repo "" "$CONFIG_PLAIN")
+out=$(jq -n --arg cmd 'gh pr merge 5' --arg cwd "$D" '{cwd:$cwd, agent_id:"agent-123", tool_name:"Bash", tool_input:{command:$cmd}}' | bash "$MERGE_GUARD")
+if [ "$(decision "$out")" = "warn" ] && printf '%s' "$out" | grep -q 'SUBAGENT'; then
+  PASS=$((PASS + 1)); printf '  ok   warn   subagent payload: warns and says SUBAGENT\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL subagent payload: %s\n' "$out"
+fi
+out=$(jq -n --arg cmd 'gh pr merge 5' --arg cwd "$D" '{cwd:$cwd, agent_id:"", tool_name:"Bash", tool_input:{command:$cmd}}' | bash "$MERGE_GUARD")
+if [ "$(decision "$out")" = "warn" ] && ! printf '%s' "$out" | grep -q 'SUBAGENT'; then
+  PASS=$((PASS + 1)); printf '  ok   warn   empty agent_id: plain warning\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL empty agent_id: %s\n' "$out"
+fi
+rm -rf "$D"
+
+echo
+echo "== merge-guard: silent when it is not a merge, or merging is delegated =="
+expect "$MERGE_GUARD" none "createPr.agentsMayMerge=true silences the guard" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5'
+for c in \
+  'gh pr view 5' \
+  'gh pr list --state merged' \
+  'gh pr checks 5' \
+  'gh pr ready 5' \
+  'gh pr create --title "merge the thing" --body x' \
+  'gh pr comment 5 --body "gh pr merge 5 is for the maintainer"' \
+  'gh issue comment 5 --body "do not run gh pr merge"' \
+  'echo "gh pr merge 5"' \
+  'echo gh pr merge 5' \
+  'printf "%s" "gh api -X PUT repos/o/r/pulls/1/merge"' \
+  'git merge origin/main' \
+  'mygh pr merge 5' \
+  'ghx pr merge 5' \
+  'gh api repos/o/r/pulls/1' \
+  'gh api -X GET repos/o/r/pulls/1/merge' \
+  'gh api repos/o/r/pulls/1/merge' \
+  'gh api graphql -f query="{ viewer { login } }" -F owner=@owner.txt' \
+  'gh api graphql -f query="{ repository(owner:\"o\", name:\"r\") { pullRequest(number:1) { mergePullRequest: id } } }"' \
+  'gh api -X PUT repos/o/r/issues/1/labels' \
+  'gh api -X PUT repos/o/r/pulls/1/reviews' \
+  'gh api graphql -f query="{ viewer { login } }"' \
+  'gh api repos/o/r/pulls/1/merge_commit' \
+  'ws prs merge 5'; do
+  expect "$MERGE_GUARD" none "$c" "$(repo "" "$CONFIG_PLAIN")" "$c"
+done
+expect "$MERGE_GUARD" none "a heredoc that writes a script containing gh pr merge is data" \
+  "$(repo "" "$CONFIG_PLAIN")" 'cat > merge.sh <<'"'"'EOF'"'"'
+gh pr merge 5 --squash
+EOF
+chmod +x merge.sh'
+expect "$MERGE_GUARD" none "a PR body heredoc mentioning gh pr merge is prose" \
+  "$(repo "" "$CONFIG_PLAIN")" 'gh pr create --title x --body "$(cat <<'"'"'EOF'"'"'
+Agents never run gh pr merge 5; the maintainer does.
+EOF
+)"'
+expect "$MERGE_GUARD" warn "a real merge AFTER a heredoc that merely mentions one is still found" \
+  "$(repo "" "$CONFIG_PLAIN")" 'cat <<'"'"'EOF'"'"' > notes.txt
+gh pr merge 5
+EOF
+gh pr merge 6'
+
+expect "$MERGE_GUARD" warn "a long inline mutation is not truncated away" \
+  "$(repo "" "$CONFIG_PLAIN")" "gh api graphql -f query=\"query { $(printf 'viewer { login } %.0s' $(seq 1 200)) } mutation { mergePullRequest(input:{pullRequestId:\\\"x\\\"}) { clientMutationId } }\""
+expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover a cd elsewhere" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover --repo" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 --repo Vycari/other'
+
+expect "$MERGE_GUARD" none "delegated: quoted GH_REPO/cd/--repo prose in another command is not a repo switch" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'echo "GH_REPO and cd and --repo"; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: an assignment-prefixed cd still counts" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'FOO=1 cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: command cd still counts" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'command cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" none "delegated: cd as an echo argument is not a directory change" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'echo cd; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: export GH_REPO=… before a merge still warns" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'export GH_REPO=Vycari/other; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: -R on the merge itself still warns" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 -R Vycari/other'
+
+echo
+echo "== merge-guard fails LOUDLY if the shared scanner is missing =="
+NOLIB=$(mktemp -d)
+cp "$MERGE_GUARD" "$NOLIB/"
+expect "$NOLIB/merge-guard.sh" warn "merge-guard warns rather than silently skipping the check" \
+  "$(repo "" "$CONFIG_PLAIN")" 'gh pr merge 5'
+expect "$NOLIB/merge-guard.sh" none "...and says nothing on a command with no gh in it" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo hello'
+rm -rf "$NOLIB"
 
 echo
 printf '%s\n' "----------------------------------------"
