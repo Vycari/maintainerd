@@ -660,6 +660,9 @@ for c in \
   'gh api --method=PUT /repos/o/r/pulls/1/merge -f merge_method=squash' \
   'gh api repos/o/r/pulls/1/merge -f merge_method=squash' \
   'gh api -X PUT "repos/o/r/pulls/1/merge"' \
+  'gh api graphql --input query.json' \
+  'gh api graphql --input=query.json' \
+  'gh api graphql -F query=@merge.graphql' \
   'gh api graphql -f query="mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
   'gh api graphql -f query="mutation { enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
   'gh api graphql -f query="mutation { enqueuePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"'; do
@@ -709,6 +712,8 @@ for c in \
   'ghx pr merge 5' \
   'gh api repos/o/r/pulls/1' \
   'gh api -X GET repos/o/r/pulls/1/merge' \
+  'gh api repos/o/r/pulls/1/merge' \
+  'gh api graphql -f query="{ repository(owner:\"o\", name:\"r\") { pullRequest(number:1) { mergePullRequest: id } } }"' \
   'gh api -X PUT repos/o/r/issues/1/labels' \
   'gh api -X PUT repos/o/r/pulls/1/reviews' \
   'gh api graphql -f query="{ viewer { login } }"' \
@@ -731,6 +736,13 @@ expect "$MERGE_GUARD" warn "a real merge AFTER a heredoc that merely mentions on
 gh pr merge 5
 EOF
 gh pr merge 6'
+
+expect "$MERGE_GUARD" warn "a long inline mutation is not truncated away" \
+  "$(repo "" "$CONFIG_PLAIN")" "gh api graphql -f query=\"query { $(printf 'viewer { login } %.0s' $(seq 1 200)) } mutation { mergePullRequest(input:{pullRequestId:\\\"x\\\"}) { clientMutationId } }\""
+expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover a cd elsewhere" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover --repo" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 --repo Vycari/other'
 
 echo
 echo "== merge-guard fails LOUDLY if the shared scanner is missing =="

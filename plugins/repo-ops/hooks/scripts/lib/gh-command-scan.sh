@@ -173,7 +173,7 @@ split_simple_commands() {
 # `sh -c "gh pr create …"`, `xargs gh`, `find -exec gh` — still resolve to sh/xargs/find and are
 # not recognized.
 gh_pr_subcommand() {
-  local head="${1:0:2048}"
+  local head="$1"
   local words=() off len
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue
@@ -227,7 +227,7 @@ ARGV
 # gh_pr_subcommand is deliberately left as it was. Same documented limits: `sh -c "gh …"`,
 # `xargs gh` and `find -exec gh` resolve to sh/xargs/find and print nothing.
 gh_command_words() {
-  local head="${1:0:2048}"
+  local head="$1"
   local words=() off len
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue

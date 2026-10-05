@@ -465,7 +465,7 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 ### `createPr`
 
 One optional block, read by the two repo-ops skills that write PR text (and, for `agentsMayMerge`, by the `merge-guard` hook). Absent → the defaults
-below, which are the pre-gate behavior: a repo that sets nothing sees no change.
+below, which are the pre-gate behavior for the two skills; the `merge-guard` hook is active by default (it warns on any merge until `agentsMayMerge` is `true`).
 
 | Key | Default | Meaning |
 | --- | --- | --- |

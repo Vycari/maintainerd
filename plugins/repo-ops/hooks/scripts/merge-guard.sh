@@ -60,10 +60,14 @@ case "$COMMAND" in
   *) exit 0 ;;
 esac
 
+# Delegation is read from the config at the hook's cwd. It silences the guard only when the
+# command cannot have left that repo: a `cd`/`pushd`, `-R/--repo` or `GH_REPO` means the merge may
+# target a repo whose config was never read, so those still warn.
+DELEGATED=0
 CONFIG="$CWD/.claude/maintainerd.json"
 if [ -f "$CONFIG" ]; then
   MAY_MERGE=$(jq -r '.createPr.agentsMayMerge // false' "$CONFIG" 2>/dev/null || true)
-  [ "$MAY_MERGE" = "true" ] && exit 0
+  [ "$MAY_MERGE" = "true" ] && DELEGATED=1
 fi
 
 SCAN_LIB="$SCRIPT_DIR/lib/gh-command-scan.sh"
@@ -87,9 +91,20 @@ merge_kind() {
   [ "$w1" = "api" ] || return 0
   lowered=$(printf '%s' "$words" | tr '[:upper:]' '[:lower:]')
   case "$lowered" in
-    *mergepullrequest*|*enablepullrequestautomerge*|*enqueuepullrequest*)
-      printf 'a GraphQL merge mutation'
-      return 0 ;;
+    *mutation*)
+      case "$lowered" in
+        *mergepullrequest*|*enablepullrequestautomerge*|*enqueuepullrequest*)
+          printf 'a GraphQL merge mutation'
+          return 0 ;;
+      esac ;;
+  esac
+  # A GraphQL query read from a file cannot be inspected here; warn rather than miss a merge.
+  case "$lowered" in
+    *graphql*)
+      if printf '%s\n' "$lowered" | grep -Eq '^(--input|--input=.*|[^=]*=@.*)$'; then
+        printf 'a GraphQL call whose query is read from a file (not inspectable)'
+        return 0
+      fi ;;
   esac
   while IFS= read -r w; do
     case "$w" in
@@ -111,11 +126,11 @@ $words
 WORDS
   [ "$has_path" -eq 1 ] || return 0
   method=$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')
-  # gh api defaults to GET; the merge endpoint is a write. An explicit GET is a read; anything
-  # else (an explicit write method, or fields that make gh default to POST) is a merge attempt.
-  # An unrecognized shape errs toward warning — the guard only ever advises.
+  # gh api defaults to GET unless fields are given (then POST); the merge endpoint is PUT-only.
+  # A bare GET is a read; an explicit non-GET method, or fields, is a merge attempt.
   case "$method" in
     GET) return 0 ;;
+    "") [ "$has_fields" -eq 1 ] || return 0 ;;
   esac
   printf 'the REST merge endpoint'
 }
@@ -126,6 +141,12 @@ while IFS=' ' read -r OFF LEN; do
   [ -n "$OFF" ] || continue
   KIND=$(merge_kind "${MASKED:$OFF:$LEN}")
   [ -n "$KIND" ] || continue
+  if [ "$DELEGATED" -eq 1 ]; then
+    case "$MASKED" in
+      *cd\ *|*pushd\ *|*GH_REPO*|*\ -R*|*--repo*) : ;;
+      *) exit 0 ;;
+    esac
+  fi
   if [ -n "$AGENT" ] && [ "$AGENT" != "null" ]; then
     emit_warning "repo-ops merge-guard: this command merges a pull request via $KIND, and it was issued from a SUBAGENT. Agents never merge: get the PR to a clean review and green checks, report, and leave the merge to the maintainer. Nothing is blocked, but stop here unless the maintainer told you to merge this PR."
   fi

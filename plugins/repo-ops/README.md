@@ -146,7 +146,7 @@ declares no merge capability).
 
 Config: the optional `createPr.agentsMayMerge` key in `.claude/maintainerd.json`. Absent or `false`
 (the default) the guard warns — it needs no config at all to be active, unlike
-`skip-label-race-guard`. `true` silences it for a repo that has deliberately delegated merging.
+`skip-label-race-guard`. `true` silences it for a repo that has deliberately delegated merging — but only when the command stays in the hook's cwd repo; a `cd`, `pushd`, `-R/--repo` or `GH_REPO` in the command still warns, since the target repo's config was never read. A `gh api graphql` call whose query comes from a file (`--input`, `-F query=@file`) cannot be inspected and warns too; a bare GET of the REST merge path does not.
 
 Because it uses the same scanner, an `echo "gh pr merge 5"`, a script-building heredoc, or a PR body
 that mentions the command is invisible to it, and every merge a compound command really runs is
