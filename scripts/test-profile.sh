@@ -529,8 +529,20 @@ expect_status "a branch forbidding force pushes is stricter than a profile allow
 
 # A required check the PUT would drop is a loosening too.
 jq '.required_status_checks.contexts += ["extra"]' "$d/prot-ok.json" > "$d/prot-extra.json"
+jq '.allow_deletions.enabled = true' "$d/prot-extra.json" > "$d/prot-extra-drift.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-extra-drift.json" "${floor_args[@]}"
+expect_match "dropping a required check is labelled once the call is printed" 'LOOSENS — main drops the required check "extra"'
+
+# Neither of these is a loosening the PUT would perform. A profile silent about
+# strictRequiredChecks has no opinion for the PUT, so a strict branch is not "loosened"...
+jq '.required_status_checks.strict = true' "$d/prot-ok.json" > "$d/prot-strictchecks.json"
+jq 'del(.effective.protection.strictRequiredChecks)' "$d/eff-app.json" > "$d/eff-nostrict.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-nostrict.json" --protection "$d/prot-strictchecks.json" "${floor_args[@]}"
+expect_no_match "a profile silent on strictRequiredChecks never labels a stricter branch a loosening" "LOOSEN"
+# ...and a dropped-check WARN with no PUT to go with it prints no section pointing at the call.
 run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-extra.json" "${floor_args[@]}"
-expect_match "dropping a required check is labelled" 'LOOSENS — main drops the required check "extra"'
+expect_no_match "no LOOSENING section when no call is printed" "LOOSENING"
+expect_no_match "and no pointer to a call that is not there" "method PUT"
 
 # protectionFloors validation: only keys with a defined strict direction.
 jq '.defaults.protectionFloors = ["enforceAdmins","requiredReviews.count"]' "$EXAMPLE" > "$d/floors-ok.json"

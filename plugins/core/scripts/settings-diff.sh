@@ -166,7 +166,10 @@ findings="$(jq -n \
         want: $e.protection.enforceAdmins, got: $prot.enforce_admins.enabled }
     , { key: "required_status_checks.strict", pkey: "strictRequiredChecks", mode: "true",
         want: ($e.protection.strictRequiredChecks // false),
-        got: ($prot.required_status_checks.strict // false) }
+        got: ($prot.required_status_checks.strict // false),
+        # The default `false` is the profile'"'"'s silence, and the PUT keeps what the branch has when
+        # the profile is silent, so a stricter branch is not being loosened by anything.
+        implicit: ($e.protection.strictRequiredChecks == null) }
     , { key: "required_approving_review_count", pkey: "requiredReviews.count", mode: "max",
         want: $e.protection.requiredReviews.count,
         got: ($prot.required_pull_request_reviews.required_approving_review_count // 0) }
@@ -285,7 +288,7 @@ findings="$(jq -n \
               | { sev: "FAIL", section: "protection",
                   msg: "\($branch) protection \(.key) is \(.got | tojson), profile wants \(.want | tojson)" }
                 # Not a floor, and the branch is stricter: the call below would weaken it.
-                + (if stricter
+                + (if stricter and ((.implicit // false) | not)
                      then { loosens: true,
                             loosenMsg: "LOOSENS — \($branch) \(.key) \(.got | tojson) → \(.want | tojson) (profile value; not a floor)" }
                      else {} end)) )
@@ -385,7 +388,9 @@ printf '%s' "$findings" | jq -r '
 # tightens it — and the workflow is a human pasting the call below. So those get their own
 # section, above the call, one line each. (A loosening FAIL is listed only there; the WARN
 # about a dropped check keeps its fuller explanation in the list as well.)
-if printf '%s' "$findings" | jq -e '[.findings[] | select(.loosens)] | length > 0' >/dev/null; then
+# Only when the call is actually printed: a dropped-check WARN on its own prints no PUT, and
+# a section pointing at a call that is not there would be worse than none.
+if printf '%s' "$findings" | jq -e '.protectionDiffers and .protectionKnown and ([.findings[] | select(.loosens)] | length > 0)' >/dev/null; then
   printf 'LOOSENING — applying the call below would make the branch LESS protected here:\n'
   printf '%s' "$findings" | jq -r '.findings[] | select(.loosens) | "  \(.loosenMsg)"'
   printf '  Read each before pasting. To keep a stricter value, list the key in the profile'"'"'s\n'
@@ -411,7 +416,7 @@ printf '%s' "$findings" | jq -r '
   | ([.findings[] | select(.sev == "SKIP")] | length) as $s
   | "Summary: \($f) difference(s), \($w) warning(s), \($s) not verified."
   + (([.findings[] | select(.loosens)] | length) as $l
-     | if $l > 0 then "\n\($l) of those would loosen the branch (see LOOSENING above)." else "" end)
+     | if $l > 0 and .protectionDiffers and .protectionKnown then "\n\($l) of those would loosen the branch (see LOOSENING above)." else "" end)
   + "\nNot checked here: protection.requiredReviews.countsBotApproval — GitHub has no setting behind it."
 '
 
