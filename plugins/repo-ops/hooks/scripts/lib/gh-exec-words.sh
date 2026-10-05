@@ -20,8 +20,10 @@ SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gh-command-scan.sh
 . "$SCRIPT_LIB_DIR/gh-command-scan.sh"
 
+# Unlike gh_pr_subcommand, the segment is NOT truncated: a caller reads argument values (a
+# reply body) from these spans, and a cut would drop the end of a long body.
 gh_exec_words() {
-  local head="${1:0:2048}"
+  local head="$1"
   local offs=() lens=() off len
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue

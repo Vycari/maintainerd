@@ -29,7 +29,8 @@
 # masked, simple-command splitting outside quotes, wrapper-aware gh resolution), so an
 # `echo "gh pr comment … fixed"` or a heredoc that writes a script never counts as a reply.
 #
-# Limits (stated in the README): a body whose text is decided at runtime ($VAR, a file produced
+# Limits (stated in the README): a body whose text is decided at runtime ($VAR, ${VAR}, a
+# command substitution other than a `$(cat <<EOF …)` heredoc, a backtick, a file produced
 # earlier in the same command, `--input`) is not read, so such a reply is not judged; a fix
 # claim is detected by a fixed phrase list, with a simple negation guard ("not fixed"); outside
 # a git checkout nothing can be verified, so the hook says nothing.
@@ -47,14 +48,22 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
 [ -n "$COMMAND" ] || exit 0
 CWD="${CWD:-.}"
 
-CONFIG="$CWD/.claude/maintainerd.json"
-[ -f "$CONFIG" ] || exit 0
-[ "$(jq -r '.review.replyNamesCommit // false' "$CONFIG" 2>/dev/null || true)" = "true" ] || exit 0
-
 case "$COMMAND" in
   *gh*) : ;;
   *) exit 0 ;;
 esac
+
+# The config lives at the repository root, and the Bash tool's cwd may be a subdirectory: look
+# in the cwd first, then at the top of the checkout it sits in. Outside a git checkout nothing
+# can be verified, so the hook says nothing.
+git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1 || exit 0
+CONFIG="$CWD/.claude/maintainerd.json"
+if [ ! -f "$CONFIG" ]; then
+  TOP=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
+  [ -n "$TOP" ] && CONFIG="$TOP/.claude/maintainerd.json"
+fi
+[ -f "$CONFIG" ] || exit 0
+[ "$(jq -r '.review.replyNamesCommit // false' "$CONFIG" 2>/dev/null || true)" = "true" ] || exit 0
 
 SCAN_LIB="$SCRIPT_DIR/lib/gh-exec-words.sh"
 if [ ! -r "$SCAN_LIB" ] || [ ! -r "$SCRIPT_DIR/lib/gh-command-scan.sh" ]; then
@@ -66,8 +75,6 @@ if [ ! -r "$SCAN_LIB" ] || [ ! -r "$SCRIPT_DIR/lib/gh-command-scan.sh" ]; then
 fi
 # shellcheck source=lib/gh-exec-words.sh
 . "$SCAN_LIB"
-
-git -C "$CWD" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 # ------------------------------------------------------------------ is it a reply, what's its body
 # reply_body <segment-masked> <segment-original> -> sets REPLY_KIND ("" = not a reply) and
@@ -90,7 +97,6 @@ WORDS
   n=${#words[@]}
   [ "$n" -ge 3 ] || return 0
 
-  local bodyflags=""
   case "${words[1]}" in
     pr)
       [ "${words[2]}" = "comment" ] || return 0
@@ -177,22 +183,42 @@ commit_ok() {
 }
 
 # body_names_good_commit <body> -> 0 when some 7-40 hex token in the body is a reachable commit.
+# Tokens are split on every non-alphanumeric character first, so adjacent candidates
+# ("deadbeef1 50182d3") are each seen, and a hex run inside a longer word is not one.
 body_names_good_commit() {
   local tok
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     commit_ok "$tok" && return 0
   done <<TOKENS
-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | grep -Eo '(^|[^0-9a-z])[0-9a-f]{7,40}([^0-9a-z]|$)' | sed -E 's/^[^0-9a-f]//; s/[^0-9a-f]$//' || true)
+$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '0-9a-z' '\n' | grep -Ex '[0-9a-f]{7,40}' || true)
 TOKENS
   return 1
 }
 
+# body_is_runtime <raw body text> -> 0 when the shell decides part of the body when it runs
+# ($VAR, ${VAR}, $(cmd), `cmd`): the posted text may name a commit this hook cannot see, so the
+# reply is not judged. A `$(cat <<EOF …)` heredoc is not runtime — its text is in the command.
+body_is_runtime() {
+  local t="$1"
+  t="${t//\$(cat <</}"
+  printf '%s' "$t" | grep -Eq '\$[A-Za-z_{(]|`'
+}
+
 # diff_context <body> -> the diff of repo files the body names, truncated; else the latest commit.
 diff_context() {
-  local base files="" out="" tok f
-  base=$(git -C "$CWD" merge-base HEAD origin/HEAD 2>/dev/null \
-    || git -C "$CWD" rev-parse --verify --quiet 'HEAD~1' 2>/dev/null || true)
+  local base="" note="" files="" out="" tok f ref
+  # The branch's fork point from the default branch, so every fix commit on it is covered;
+  # only when no default-branch ref resolves, fall back to the latest commit and say so.
+  for ref in origin/HEAD '@{upstream}' origin/main origin/master main master; do
+    base=$(git -C "$CWD" merge-base HEAD "$ref" 2>/dev/null || true)
+    [ -n "$base" ] && [ "$base" != "$(git -C "$CWD" rev-parse HEAD 2>/dev/null)" ] && break
+    base=""
+  done
+  if [ -z "$base" ]; then
+    base=$(git -C "$CWD" rev-parse --verify --quiet 'HEAD~1' 2>/dev/null || true)
+    [ -n "$base" ] && note="[no default-branch ref found: diffs cover the latest commit only — run git log to see earlier fixes]"$'\n'
+  fi
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     tok="${tok#./}"
@@ -208,8 +234,10 @@ TOKENS
     done
   fi
   if [ -z "${out//[[:space:]]/}" ]; then
+    note=""
     out=$(git -C "$CWD" log -3 --stat --format='%h %s' 2>/dev/null || true)
   fi
+  out="$note$out"
   if [ "${#out}" -gt "$DIFF_MAX" ]; then
     out="${out:0:$DIFF_MAX}"$'\n[... truncated ...]'
   fi
@@ -228,6 +256,7 @@ while IFS=' ' read -r OFF LEN; do
   [ -n "${REPLY_BODY//[[:space:]]/}" ] || continue
   claims_fix "$REPLY_BODY" || continue
   body_names_good_commit "$REPLY_BODY" && continue
+  body_is_runtime "$REPLY_BODY" && continue
   BAD_BODIES="$BAD_BODIES$REPLY_BODY"$'\n'
 done <<SEGMENTS
 $(split_simple_commands "$MASKED")

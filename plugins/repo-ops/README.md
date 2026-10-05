@@ -176,14 +176,18 @@ checks the claim after the reply is posted.
   already posted; this is how PostToolUse makes the model act on a correction) telling the agent
   to re-read the diff and post a corrected reply naming the real commit — and, if the fix is
   partial, which part. `additionalContext` carries the diff of any tracked repo file the reply
-  names (versus the merge-base with `origin/HEAD`, else `HEAD~1`), else the last three commits'
-  stat; truncated to 6,000 characters.
+  names (versus the branch's fork point from `origin/HEAD`, its upstream, or `origin/main`/
+  `master`; with none of those, `HEAD~1`, and the context says it is one commit wide), else the
+  last three commits' stat; truncated to 6,000 characters. The opt-in key is read from the
+  cwd's `.claude/maintainerd.json`, else the one at the top of the checkout, so a reply posted
+  from a subdirectory is still checked.
 
 Limits, stated plainly: the fix claim is a fixed phrase list with a simple negation/promise guard
 ("not fixed", "will fix"), so an unusual phrasing can slip through and an unusual one can trip it;
 it proves a plausible commit is *named*, not that the commit *does what the reply says* — that
-stays the reviewer's job; a body decided at runtime (`$VAR`, a file written earlier in the same
-command, `--input`) is not read, so such a reply is not judged; outside a git checkout, or when
+stays the reviewer's job; a body decided at runtime (`$VAR`, `${VAR}`, `$(cmd)` other than a
+`$(cat <<EOF …)` heredoc, a backtick, a file written earlier in the same command, `--input`) is
+not read, so such a reply is not judged — `Fixed in $NEW_HEAD` passes silently; outside a git checkout, or when
 the reply is posted from a checkout that does not hold the PR's commits, nothing can be verified
 (the first case says nothing; the second blocks, and the remedy is to post from the PR's worktree);
 `sh -c "gh …"`, `xargs gh` and `find -exec gh` are not recognized, as for the other hooks.

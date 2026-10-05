@@ -709,6 +709,14 @@ expect_post block "--body-file reading a file that claims a fix" "$RP_REPO" 'gh 
 printf 'Fixed in %s.\n' "$RP_HEAD" > "$RP_REPO/reply.md"
 expect_post none  "--body-file whose file names the commit" "$RP_REPO" 'gh pr comment 12 --body-file reply.md'
 
+expect_post none  "a later candidate SHA after a bogus one still counts" "$RP_REPO" "gh pr comment 12 --body \"Fixed in deadbeef1 $RP_HEAD\""
+expect_post none  "a SHA past 2048 characters of body still counts" "$RP_REPO" "gh pr comment 12 --body \"Fixed. $(printf 'x%.0s' $(seq 1 2100)) Commit $RP_HEAD.\""
+expect_post none  "a body whose SHA is a shell variable is not judged" "$RP_REPO" 'NEW_HEAD=$(git rev-parse --short HEAD); gh api repos/o/r/pulls/12/comments/345/replies -f body="Fixed in $NEW_HEAD"'
+expect_post none  "a body whose SHA is a command substitution is not judged" "$RP_REPO" 'gh pr comment 12 --body "Fixed in $(git rev-parse --short HEAD)"'
+mkdir -p "$RP_REPO/sub/dir"
+expect_post block "config found at the repo root when cwd is a subdirectory" "$RP_REPO/sub/dir" 'gh pr comment 12 --body "Fixed."'
+rmdir "$RP_REPO/sub/dir" "$RP_REPO/sub"
+
 echo
 echo "== review-reply-postcondition: wrappers resolve like a bare gh =="
 expect_post block "command gh pr comment" "$RP_REPO" 'command gh pr comment 12 --body "Fixed"'
@@ -748,6 +756,20 @@ case "$out" in
 esac
 case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
   *app.py*) PASS=$((PASS + 1)); printf '  ok   ctx    diff context mentions the named file or recent commits\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    %s\n' "$out" ;;
+esac
+
+# With no default-branch ref at all, the fallback diff says it covers the latest commit only.
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
+  *"latest commit only"*) PASS=$((PASS + 1)); printf '  ok   ctx    a HEAD~1 fallback says it is one commit wide\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    no fallback note: %s\n' "$out" ;;
+esac
+git -C "$RP_REPO" branch -q base HEAD~1
+git -C "$RP_REPO" update-ref refs/remotes/origin/main base
+out=$(post_json 'gh pr comment 12 --body "Fixed app.py"' "$RP_REPO" | bash "$REPLY_POST" 2>/dev/null)
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
+  *"latest commit only"*) FAIL=$((FAIL + 1)); printf '  FAIL ctx    fallback note despite origin/main: %s\n' "$out" ;;
+  *"+two"*) PASS=$((PASS + 1)); printf '  ok   ctx    diff runs from the fork point with origin/main\n' ;;
   *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    %s\n' "$out" ;;
 esac
 
