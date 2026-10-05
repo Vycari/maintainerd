@@ -74,7 +74,19 @@ parse_common_args() {
     esac
   done
   if [ -n "$WAIT_PR" ]; then
-    # Accept a PR URL as well as a number.
+    # Accept a PR URL as well as a number. The URL names its repository, and that is the repository
+    # to poll: resolving it from the current checkout instead would verdict a same-numbered PR in
+    # the wrong repo.
+    case "$WAIT_PR" in
+      http*://*/pull/*)
+        url_repo="${WAIT_PR#*://*/}"
+        url_repo="$(printf '%s' "$url_repo" | cut -d/ -f1,2)"
+        if [ -n "$WAIT_REPO" ] && [ "$WAIT_REPO" != "$url_repo" ]; then
+          die 3 "-R $WAIT_REPO contradicts the repository in the PR URL ($url_repo)"
+        fi
+        WAIT_REPO="$url_repo"
+        ;;
+    esac
     WAIT_PR="${WAIT_PR##*/pull/}"
     WAIT_PR="${WAIT_PR%%[/?#]*}"
     is_uint "$WAIT_PR" || die 3 "PR must be a number or a pull request URL"
@@ -83,37 +95,60 @@ parse_common_args() {
   [ -z "$WAIT_INTERVAL_SECONDS" ] || is_uint "$WAIT_INTERVAL_SECONDS" || die 3 "--interval-seconds must be a non-negative integer"
 }
 
-# resolve_repo — sets WAIT_REPO to owner/name, from -R or from the current checkout.
+# resolve_repo — sets WAIT_REPO to owner/name (from -R / the PR URL, else the current checkout), and
+# WAIT_REPO_EXPLICIT=1 when it was named rather than inferred.
 resolve_repo() {
-  [ -n "$WAIT_REPO" ] && return 0
+  WAIT_REPO_EXPLICIT=0
+  if [ -n "$WAIT_REPO" ]; then
+    WAIT_REPO_EXPLICIT=1
+    return 0
+  fi
   WAIT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || WAIT_REPO=""
   [ -n "$WAIT_REPO" ] || die 3 "could not determine the repository; pass -R owner/repo"
 }
 
-# config_file — path of .claude/maintainerd.json for the current checkout, or empty.
-config_file() {
-  local f root
+# load_config — sets WAIT_CONFIG_JSON to the review policy of the repository being waited on.
+# That is the checkout's .claude/maintainerd.json when the checkout IS the target repo, and the
+# target's own file (default branch, via the contents API) when -R or a PR URL names another one:
+# judging repo B's PR by repo A's bots, threshold and skip label would be a wrong verdict that
+# looks right. No config at all is `{}` (schema defaults); a config that cannot be parsed, or a
+# fetch that fails for any reason but "not found", is an error, never a silent default.
+load_config() {
+  local f here out
+  WAIT_CONFIG_JSON="{}"
   if [ -n "$WAIT_CONFIG" ]; then
-    printf '%s' "$WAIT_CONFIG"
-    return
+    [ -f "$WAIT_CONFIG" ] || die 3 "--config $WAIT_CONFIG does not exist"
+    WAIT_CONFIG_JSON="$(cat "$WAIT_CONFIG")"
+  else
+    here=""
+    if [ "$WAIT_REPO_EXPLICIT" = "1" ]; then
+      here="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || here=""
+    else
+      here="$WAIT_REPO"
+    fi
+    if [ "$here" = "$WAIT_REPO" ]; then
+      f="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/maintainerd.json"
+      [ ! -f "$f" ] || WAIT_CONFIG_JSON="$(cat "$f")"
+    else
+      if out="$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WAIT_REPO/contents/.claude/maintainerd.json" 2>&1)"; then
+        WAIT_CONFIG_JSON="$out"
+      else
+        case "$out" in
+          *"404"* | *"Not Found"*) ;;
+          *) die 3 "could not read $WAIT_REPO's .claude/maintainerd.json: $out" ;;
+        esac
+      fi
+    fi
   fi
-  root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  f="$root/.claude/maintainerd.json"
-  [ -f "$f" ] && printf '%s' "$f"
-  return 0
+  printf '%s' "$WAIT_CONFIG_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 ||
+    die 3 "the repository's .claude/maintainerd.json is not a valid JSON object"
 }
 
-# cfg <jq-expr> <default> — read a value from the config; the default when the file, the key, or
-# a null is absent. A config file that exists but is not valid JSON is an error, not a default:
-# silently ignoring a broken threshold would turn a 5/5 gate into "approved".
+# cfg <jq-expr> <default> — read a value from the loaded config; the default when the key or a null
+# is absent.
 cfg() {
-  local expr="$1" default="$2" f v
-  f="$(config_file)"
-  if [ -z "$f" ]; then
-    printf '%s' "$default"
-    return
-  fi
-  v="$(jq -r "($expr) // empty" "$f" 2>/dev/null)" || die 3 "$f is not valid JSON"
+  local expr="$1" default="$2" v
+  v="$(printf '%s' "$WAIT_CONFIG_JSON" | jq -r "($expr) // empty" 2>/dev/null)" || die 3 "could not read $expr from the config"
   if [ -z "$v" ]; then
     printf '%s' "$default"
   else

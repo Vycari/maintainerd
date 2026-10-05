@@ -183,15 +183,23 @@ It polls the **same** bot artifact every round — Greptile edits one comment (o
 marker block) in place — and compares its "Last reviewed commit" with the PR's current head. A
 score for any other commit, or a score whose commit cannot be read, is stale and counts as "no
 review yet": it never satisfies the gate, whatever the number. Scores are only trusted from a login
-in `review.bots` (or from the description's marker block), never from prose that merely quotes one.
+in `review.bots`; the description's marker block counts only when the PR description's latest edit
+was made by that bot (the description is author-writable, so an unattributed block is not
+evidence). When several configured bots have published a score, every one must be on the head and
+at the bar, and a reviewer's outstanding `CHANGES_REQUESTED` blocks `approved` regardless of score.
+
+Policy comes from the repository being waited on: the checkout's `.claude/maintainerd.json` when
+the checkout is that repo, otherwise the target's file read from its default branch (so `-R` or a
+PR URL for another repo is never judged by this checkout's bots, threshold or skip label). A PR URL
+names its repository, and contradicting it with `-R` is an error.
 
 ### `wait-for-checks.sh <pr> [-R owner/repo]`
 
 | Output | Meaning |
 | --- | --- |
-| `green` | Every check in `statusCheckRollup` has finished and none failed (success, neutral and skipped are not failures). |
+| `green` | Every check in `statusCheckRollup` has finished and none failed (success, neutral and skipped are not failures), and the same set of checks is still green after `--settle-seconds` (default 60) — a slower required check can register just after a push, when the rollup briefly holds only checks that are already green. |
 | `failed:<job>` | A check failed (failure, timed out, cancelled, startup failure or action required). `<job>` is the **job** name, and the failing job's log tail follows (`gh run view --job <id> --log-failed`, last 40 lines) — job-level, not run-level. Reported as soon as seen; it does not wait for the rest. |
-| `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A queued job whose assignment cannot be confirmed is not reported this way. |
+| `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A job with no start time yet is aged from the Actions job record's `created_at`. A queued job whose assignment cannot be confirmed is not reported this way. |
 | `timeout` | No verdict by the deadline. An empty rollup keeps waiting, since checks register shortly after a push. |
 
 ## Note on code review
