@@ -188,7 +188,13 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     // body or branch commit messages promise follow-up work without naming an issue, and
     // `address-review` holds a review reply that does the same. An explicit
     // `<!-- no-deferred-work -->` marker in the body bypasses the gate for that PR.
-    "requireIssueForDeferredWork": false
+    "requireIssueForDeferredWork": false,
+
+    // false (default) = repo-ops' `merge-guard` hook warns whenever a Bash command runs `gh pr
+    // merge` or the equivalent merge API/GraphQL call ("agents never merge"). true = the repo has
+    // deliberately delegated merging to agents and the hook stays silent. Advisory either way:
+    // the hook never denies.
+    "agentsMayMerge": false
   },
 
   // ── review feedback (address-review) ─────────────────────────────────────────
@@ -458,12 +464,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
 ### `createPr`
 
-One optional block, read by the two repo-ops skills that write PR text. Absent → the defaults
+One optional block, read by the two repo-ops skills that write PR text (and, for `agentsMayMerge`, by the `merge-guard` hook). Absent → the defaults
 below, which are the pre-gate behavior: a repo that sets nothing sees no change.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `requireIssueForDeferredWork` | `false` | When `true`, text that promises follow-up work must also name an issue. `create-pr` refuses to open the PR otherwise; `address-review` holds the reply. |
+| `agentsMayMerge` | `false` | When `false`, repo-ops' `merge-guard` hook warns (never denies) on any Bash command that merges a PR — `gh pr merge`, the REST merge endpoint, or a GraphQL merge mutation. `true` silences it for a repo that has deliberately delegated merging. |
 
 The rule it mechanizes is *"a follow-up that lives only in a PR dies with the PR"* — a "we'll
 handle X in a follow-up" in a PR body is invisible the moment the PR merges, and the honest fix is

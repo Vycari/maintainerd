@@ -1,5 +1,5 @@
 {
-  "description": "Two PreToolUse guards on Bash: pr-template-guard denies a gh pr create/edit whose body is missing a heading the repo's own PR template requires; skip-label-race-guard warns when a gh pr create applies the repo's review-skip label without --draft.",
+  "description": "Three PreToolUse guards on Bash: pr-template-guard denies a gh pr create/edit whose body is missing a heading the repo's own PR template requires; skip-label-race-guard warns when a gh pr create applies the repo's review-skip label without --draft; merge-guard warns (never denies) when a command merges a pull request.",
   "hooks": {
     "PreToolUse": [
       {
@@ -13,6 +13,11 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/skip-label-race-guard.sh\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/merge-guard.sh\"",
             "timeout": 10
           }
         ]

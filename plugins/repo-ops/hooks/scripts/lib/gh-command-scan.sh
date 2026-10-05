@@ -15,6 +15,7 @@
 #   mask_all_heredocs <command>            -> the command with heredoc BODIES redacted in place
 #   split_simple_commands <masked>         -> lines of "<offset> <length>" into that string
 #   gh_pr_subcommand <segment>             -> "create" | "edit" | "" (empty = not a gh pr cmd)
+#   gh_command_words <segment>             -> the unquoted words after `gh`, one per line (empty = not gh)
 #
 # Offsets are byte-for-byte valid in the ORIGINAL command too: masking only ever replaces a
 # body character with `x`, never inserts or drops one, so a segment can be sliced out of the
@@ -214,6 +215,53 @@ ARGV
   case "$sub2" in
     create|edit) printf '%s' "$sub2" ;;
   esac
+  return 0
+}
+
+# ------------------------------------------------- the words of a `gh` simple command, any subcommand
+# Prints the segment's argv words AFTER the resolved `gh` executable, one unquoted word per line,
+# or nothing when the segment's executable does not resolve to gh. The executable is resolved
+# exactly as gh_pr_subcommand resolves it (assignments, `command [-p]`, `env [-i] …`, `exec`,
+# shell keywords, basename), so every spelling of "this segment runs gh" is shared between the
+# two. Added for guards (merge-guard) that need subcommands other than `pr create|edit`;
+# gh_pr_subcommand is deliberately left as it was. Same documented limits: `sh -c "gh …"`,
+# `xargs gh` and `find -exec gh` resolve to sh/xargs/find and print nothing.
+gh_command_words() {
+  local head="${1:0:2048}"
+  local words=() off len
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    words[${#words[@]}]="${head:$off:$len}"
+  done <<ARGV
+$(argv_spans "$head")
+ARGV
+  local n=${#words[@]} i=0 w exe prev=""
+  while [ "$i" -lt "$n" ]; do
+    w="${words[$i]}"
+    case "$w" in
+      if|then|else|elif|while|until|do|'!'|'{'|'(') prev="keyword"; i=$((i + 1)); continue ;;
+      time) prev="time"; i=$((i + 1)); continue ;;
+      [a-zA-Z_]*=*) prev="assign"; i=$((i + 1)); continue ;;
+      command|exec|env) prev="$w"; i=$((i + 1)); continue ;;
+      -p)
+        case "$prev" in
+          command|time) i=$((i + 1)); continue ;;
+        esac
+        break ;;
+      -i) if [ "$prev" = "env" ]; then i=$((i + 1)); continue; fi; break ;;
+      *) break ;;
+    esac
+  done
+  [ "$i" -lt "$n" ] || return 0
+  exe=$(unquote_word "${words[$i]}")
+  exe="${exe##*/}"
+  [ "$exe" = "gh" ] || return 0
+  i=$((i + 1))
+  while [ "$i" -lt "$n" ]; do
+    unquote_word "${words[$i]}"
+    printf '\n'
+    i=$((i + 1))
+  done
   return 0
 }
 
