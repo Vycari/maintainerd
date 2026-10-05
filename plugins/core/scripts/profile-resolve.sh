@@ -36,7 +36,7 @@ KNOWN_VERSION=1
 
 # The only keys a `languages` or `repoOverrides` block may carry. Everything else in a
 # profile is fixed org-wide, and that is not a convention — it is this list.
-RESOLVABLE='["requiredChecks","coverage","commands","dependabot"]'
+RESOLVABLE='["requiredChecks","coverage","commands","dependabot","mergeQueue","protection"]'
 
 usage() {
   cat >&2 <<'USAGE'
@@ -84,6 +84,41 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
   def is_str_array: type == "array" and (all(.[]; type == "string"));
   def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0 and (test("\\n") | not)));
 
+  # mergeQueue / protection sub-key typing, applied to `defaults` and to every language and
+  # repo block alike: a typo in the fleet default is the same silent misread.
+  def nested_errors($where):
+    . as $b
+    | ( if ($b | has("mergeQueue")) and (($b.mergeQueue | type) != "object")
+              then ["\($where).mergeQueue must be an object"]
+            elif ($b | has("mergeQueue")) then
+              ( ( if ($b.mergeQueue | has("enabled")) and (($b.mergeQueue.enabled | type) != "boolean")
+                    then ["\($where).mergeQueue.enabled must be a boolean"] else [] end )
+              + ( if ($b.mergeQueue | has("mergeMethod"))
+                     and ((($b.mergeQueue.mergeMethod | type) != "string")
+                          or (($b.mergeQueue.mergeMethod | ascii_downcase) as $m | ["squash","merge","rebase"] | index([$m]) | not))
+                    then ["\($where).mergeQueue.mergeMethod must be one of SQUASH, MERGE, REBASE"] else [] end ) )
+            else [] end )
+        # Typed per sub-key: jq reads any string as true, so `"enabled": "false"` would
+        # otherwise validate and then silently mean the opposite of what it says.
++ ( if ($b | has("protection")) and (($b.protection | type) != "object")
+              then ["\($where).protection must be an object"]
+            elif ($b | has("protection")) then
+              ( [ $b.protection as $p
+                  | [ "requiredLinearHistory","allowForcePushes","allowDeletions","strictRequiredChecks","enforceAdmins" ][]
+                  | select(. as $k | ($p | has($k)) and (($p[$k] | type) != "boolean"))
+                  | "\($where).protection.\(.) must be a boolean" ]
+              + ( if ($b.protection | has("requiredReviews")) and (($b.protection.requiredReviews | type) != "object")
+                    then ["\($where).protection.requiredReviews must be an object"]
+                  elif ($b.protection | has("requiredReviews")) then
+                    ( $b.protection.requiredReviews as $r
+                    | ( if ($r | has("count")) and ((($r.count | type) != "number") or ($r.count | floor) != $r.count or $r.count < 0)
+                          then ["\($where).protection.requiredReviews.count must be an integer of at least 0"] else [] end )
+                    + [ [ "dismissStale","countsBotApproval" ][]
+                        | select(. as $k | ($r | has($k)) and (($r[$k] | type) != "boolean"))
+                        | "\($where).protection.requiredReviews.\(.) must be a boolean" ] )
+                  else [] end ) )
+            else [] end );
+
   def block_errors($where):
     . as $b
     | ( if type != "object" then ["\($where) is \(type), expected an object"] else [] end )
@@ -108,6 +143,7 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
               else [] end )
         + ( if ($b | has("dependabot")) and (($b.dependabot | is_str_array) | not)
               then ["\($where).dependabot must be an array of strings"] else [] end )
+        + ($b | nested_errors($where))
         end );
 
   [ ( if (.profileVersion | type) != "number" or (.profileVersion | floor) != .profileVersion
@@ -119,6 +155,7 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
       else [] end )
   , ( if (.org | type) != "string" or (.org | length) == 0 then ["org must be a non-empty string"] else [] end )
   , ( if (.defaults | type) != "object" then ["defaults must be an object"] else [] end )
+  , ( if (.defaults | type) == "object" then (.defaults | nested_errors("defaults")) else [] end )
   # `files.prTemplateHeadings`/`files.prTemplateSource` are the two keys pr-template-check.sh
   # reads by value type rather than by presence, so a malformed one cannot pass silently
   # through resolution and be read as "not set" downstream (jq treats `false` the same as

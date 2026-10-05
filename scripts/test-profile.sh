@@ -257,6 +257,53 @@ expect_jq "so the slug entry's checks are the effective ones" \
   '.effective.requiredChecks == ["ci","slug-only"]'
 expect_match "and the duplication is reported" "two repoOverrides keys resolve to the same repo"
 
+# `mergeQueue` and `protection` are resolvable: a repo's override (or a language block) may
+# carry them, and they merge key by key so an override names only the sub-key it changes.
+jq '.repoOverrides["site"].mergeQueue = {"enabled": false}
+    | .repoOverrides["site"].protection = {"enforceAdmins": true}' "$EXAMPLE" > "$d/mq-prot.json"
+run "$RESOLVE" --profile "$d/mq-prot.json" --validate
+expect_status "a repo override may carry mergeQueue and protection" 0
+run "$RESOLVE" --profile "$d/mq-prot.json" --repo my-org/site --language typescript-web
+expect_jq "the override turns the queue off..." '.effective.mergeQueue.enabled == false'
+expect_jq "...but the queue's other keys are still the defaults'" '.effective.mergeQueue.mergeMethod == "squash"'
+expect_jq "the protection override changes only the sub-key it names" \
+  '(.effective.protection.enforceAdmins == true) and (.effective.protection.requiredLinearHistory == true)
+   and (.effective.protection.requiredReviews.count == 1)'
+run "$RESOLVE" --profile "$d/mq-prot.json" --repo my-org/app --language python-service
+expect_jq "a repo without the override still gets the fleet's values" \
+  '(.effective.mergeQueue.enabled == true) and (.effective.protection.enforceAdmins == false)'
+
+jq '.languages["shell"].mergeQueue = {"enabled": false}' "$EXAMPLE" > "$d/mq-lang.json"
+run "$RESOLVE" --profile "$d/mq-lang.json" --repo my-org/nothing-special --language shell
+expect_jq "a language block may carry mergeQueue too" '.effective.mergeQueue.enabled == false'
+
+jq '.repoOverrides["site"].mergeQueue = null' "$EXAMPLE" > "$d/mq-null.json"
+run "$RESOLVE" --profile "$d/mq-null.json" --validate
+expect_status "a null mergeQueue is rejected — there is no exemption, only a declared value" 1
+expect_match  "naming the key" 'repoOverrides.site.mergeQueue must be an object'
+# Sub-keys are typed too: jq reads any string as true, so "false" would silently mean on.
+jq '.repoOverrides["site"].mergeQueue = {"enabled": "false"}' "$EXAMPLE" > "$d/mq-strbool.json"
+run "$RESOLVE" --profile "$d/mq-strbool.json" --validate
+expect_status "a string where mergeQueue.enabled wants a boolean is rejected" 1
+expect_match  "naming the sub-key" 'repoOverrides.site.mergeQueue.enabled must be a boolean'
+jq '.repoOverrides["site"].mergeQueue = {"mergeMethod": "fast-forward"}' "$EXAMPLE" > "$d/mq-method.json"
+run "$RESOLVE" --profile "$d/mq-method.json" --validate
+expect_status "an unknown merge method is rejected" 1
+jq '.repoOverrides["site"].protection = {"enforceAdmins": "yes", "requiredReviews": {"count": -1, "dismissStale": 1}}' "$EXAMPLE" > "$d/prot-types.json"
+run "$RESOLVE" --profile "$d/prot-types.json" --validate
+expect_status "mistyped protection sub-keys are rejected" 1
+expect_match  "a non-boolean flag is named" 'repoOverrides.site.protection.enforceAdmins must be a boolean'
+expect_match  "a negative count is named" 'protection.requiredReviews.count must be an integer of at least 0'
+expect_match  "a non-boolean nested flag is named" 'protection.requiredReviews.dismissStale must be a boolean'
+jq '.defaults.mergeQueue.enabled = "false"' "$EXAMPLE" > "$d/mq-default-str.json"
+run "$RESOLVE" --profile "$d/mq-default-str.json" --validate
+expect_status "the same typing applies to defaults" 1
+expect_match  "naming it" 'defaults.mergeQueue.enabled must be a boolean'
+jq '.repoOverrides["site"].protection = "strict"' "$EXAMPLE" > "$d/prot-str.json"
+run "$RESOLVE" --profile "$d/prot-str.json" --validate
+expect_status "a non-object protection is rejected" 1
+expect_match  "naming the key" 'repoOverrides.site.protection must be an object'
+
 run "$RESOLVE" --profile "$EXAMPLE" --languages
 expect_match "--languages lists the keys" "typescript-web"
 
