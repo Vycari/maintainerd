@@ -101,7 +101,7 @@ merge_kind() {
   # A GraphQL query read from a file cannot be inspected here; warn rather than miss a merge.
   case "$lowered" in
     *graphql*)
-      if printf '%s\n' "$lowered" | grep -Eq '^(--input|--input=.*|(--(field|raw-field)=)?query=@.*)$'; then
+      if printf '%s\n' "$lowered" | grep -Eq '^(--input|--input=.*|(-[fF]|--(field|raw-field)=)?query=@.*)$'; then
         printf 'a GraphQL call whose query is read from a file (not inspectable)'
         return 0
       fi ;;
@@ -161,8 +161,11 @@ any_cd() {
       [ -n "$woff" ] || continue
       w=$(unquote_word "${seg:$woff:$wlen}")
       if [ "$first" -eq 1 ]; then
-        case "$w" in cd|pushd) return 0 ;; esac
-        first=0
+        case "$w" in
+          [a-zA-Z_]*=*|command|builtin|exec|time|if|then|else|elif|while|until|do|'!'|'{'|'(') : ;;
+          cd|pushd) return 0 ;;
+          *) first=0 ;;
+        esac
       fi
       case "$w" in GH_REPO=*) return 0 ;; esac
     done <<ARGV2

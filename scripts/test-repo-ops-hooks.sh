@@ -662,6 +662,8 @@ for c in \
   'gh api -X PUT "repos/o/r/pulls/1/merge"' \
   'gh api graphql --input query.json' \
   'gh api graphql --input=query.json' \
+  'gh api graphql -Fquery=@merge.graphql' \
+  'gh api graphql -fquery=@merge.graphql' \
   'gh api graphql -F query=@merge.graphql' \
   'gh api graphql -f query="mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
   'gh api graphql -f query="mutation { enablePullRequestAutoMerge(input:{pullRequestId:\"x\"}) { clientMutationId } }"' \
@@ -747,6 +749,12 @@ expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover --repo
 
 expect "$MERGE_GUARD" none "delegated: quoted GH_REPO/cd/--repo prose in another command is not a repo switch" \
   "$(repo "" "$CONFIG_MAY_MERGE")" 'echo "GH_REPO and cd and --repo"; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: an assignment-prefixed cd still counts" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'FOO=1 cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: command cd still counts" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'command cd ../other && gh pr merge 5'
+expect "$MERGE_GUARD" none "delegated: cd as an echo argument is not a directory change" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'echo cd; gh pr merge 5'
 expect "$MERGE_GUARD" warn "delegated: export GH_REPO=… before a merge still warns" \
   "$(repo "" "$CONFIG_MAY_MERGE")" 'export GH_REPO=Vycari/other; gh pr merge 5'
 expect "$MERGE_GUARD" warn "delegated: -R on the merge itself still warns" \
