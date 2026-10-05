@@ -34,8 +34,8 @@
 #   refused:<reason>       it could not do this safely and changed nothing: the branch does not
 #                          contain the base yet (merge or rebase it first), uncommitted changes in
 #                          the migrations directory, a base with no single head, a branch whose
-#                          migrations are not one linear chain, a merge migration, a migration in a
-#                          subdirectory of the migrations directory, a non-numeric
+#                          migrations are not one linear chain, a merge migration, a revision-
+#                          declaring file in a subdirectory of the migrations directory, a non-numeric
 #                          id, a file name that does not start with its revision id. A person
 #                          resolves it. 2
 #
@@ -49,7 +49,8 @@
 #                             once `commands.migrationGraph` is set; there is no default.
 #   defaultBranch             the base is `origin/<defaultBranch>` unless --base says otherwise.
 #
-# Assumes a linear chain of numeric revision ids (`0172`) with files named `<id>_<slug>.<ext>` and
+# Assumes a flat migrations directory (files directly in it; subdirectories are ignored unless a file
+# there declares a revision, which is refused) and a linear chain of numeric revision ids (`0172`) with files named `<id>_<slug>.<ext>` and
 # `revision = "<id>"` / `down_revision = "<id>"` assignments, optionally type-annotated: the shape
 # Alembic repos using sequential ids have. A repo whose files are shaped differently gets a
 # `refused:` verdict, not a guess.
@@ -176,11 +177,15 @@ downs_of() {
   grep -E '^down_revision[^=]*=' | sed -E 's/[[:space:]]*#.*$//' | grep -oE "[\"'][^\"']+[\"']" | tr -d "\"'"
 }
 
-ls_dir() { # <ref> -> every file under $DIR at that ref, as a path relative to $DIR
-  git ls-tree -r --name-only "$1" "$DIR/" 2>/dev/null | sed "s#^$DIR/##"
+ls_dir() { # <ref> -> the files directly in $DIR at that ref (the flat layout), relative to $DIR
+  git ls-tree --name-only "$1" "$DIR/" 2>/dev/null | sed "s#^$DIR/##"
 }
 
 ls_dir "$BASE" >"$TMP/base-names"
+# Everything under $DIR on the base, nested included: only to tell a file the branch added from one
+# the base already had. The base head is read from the flat files alone, as a flat-layout Alembic
+# would, so an archive subdirectory cannot become, or split, the head.
+git ls-tree -r --name-only "$BASE" "$DIR/" 2>/dev/null | sed "s#^$DIR/##" >"$TMP/base-all"
 # The branch's files come from the index, so a renumber that is staged but not yet committed is
 # seen as what it is, and a re-run before the commit reports `up-to-date`.
 git ls-files -- "$DIR/" | sed "s#^$DIR/##" >"$TMP/head-names"
@@ -212,11 +217,17 @@ esac
 N=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  if grep -qxF -- "$f" "$TMP/base-names"; then
+  if grep -qxF -- "$f" "$TMP/base-all"; then
     continue
   fi
   case "$f" in
-    */*) refuse "nested-migration" "$DIR/$f is in a subdirectory of $DIR; this tool only renumbers migrations that sit directly in it." ;;
+    */*)
+      # Not a flat-layout migration. A helper or README down there is none of our business; a file
+      # that declares a revision might be one, and renumbering around it would be a guess.
+      [ -f "$DIR/$f" ] && [ -n "$(rev_of <"$DIR/$f" 2>/dev/null)" ] &&
+        refuse "nested-migration" "$DIR/$f declares a revision from a subdirectory of $DIR; this tool only renumbers migrations that sit directly in it."
+      continue
+      ;;
   esac
   [ -f "$DIR/$f" ] || continue
   N=$((N + 1))

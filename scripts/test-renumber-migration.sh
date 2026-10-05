@@ -287,6 +287,30 @@ mig "$WORK/$DIRP/archive" 0004 0003 buried annotated
 run_tool
 expect "a branch migration in a subdirectory -> refused, not silently skipped" refused:nested-migration 2
 
+new_case nested-helper
+(
+  cd "$WORK" && git checkout -q main && mkdir -p "$DIRP/archive" &&
+    mig "$DIRP/archive" 0002 0001 old_users annotated &&
+    echo "notes" >"$DIRP/archive/README.md" &&
+    git add -A && git commit -q -m archive && git push -q origin main 2>/dev/null && git checkout -q feat
+)
+sync_branch
+on_branch 0004 0003 widgets
+land_on_main 0004 0003 gadgets
+sync_branch
+run_tool
+expect "an archive subdirectory (README, old revision) is ignored, not a head and not a blocker" renumbered:1 0
+
+new_case nested-readme-on-branch
+mkdir -p "$WORK/$DIRP/docs"
+echo "notes" >"$WORK/$DIRP/docs/README.md"
+(cd "$WORK" && git add -A && git commit -q -m readme)
+on_branch 0004 0003 widgets
+land_on_main 0004 0003 gadgets
+sync_branch
+run_tool
+expect "a non-migration file added in a subdirectory does not block" renumbered:1 0
+
 new_case inline-comment
 (
   cd "$WORK" && printf 'revision = "0004"\ndown_revision = "0003"  # replaces "0002"\n' >"$DIRP/0004_widgets.py" && git add -A && git commit -q -m c
