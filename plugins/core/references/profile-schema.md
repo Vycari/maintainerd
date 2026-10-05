@@ -120,10 +120,17 @@ Exactly six keys may vary between repos:
 | `commands` | Format/lint/typecheck/test/coverage are language-shaped. |
 | `dependabot` | Ecosystems differ per repo. |
 | `mergeQueue` | A repo's deployment shape can make a queue pure latency (a push to the default branch *is* the deploy, with no staging and nothing to parallelize). Object; merges key by key. |
-| `protection` | A repo may deliberately be stricter than the fleet (e.g. it enforces admins). Object; merges key by key, so an override names only the sub-key it changes. |
+| `protection` | A repo may deliberately differ from the fleet — typically stricter (e.g. it enforces admins). Object; merges key by key, so an override names only the sub-key it changes. |
 
+`mergeQueue` and `protection` must be objects whose known sub-keys are correctly typed
+(booleans for the flags, an integer of at least 0 for `requiredReviews.count`, `SQUASH`/`MERGE`/`REBASE`
+for `mergeQueue.mergeMethod`) — a string `"false"` is rejected rather than read as true.
 `mergeQueue` and `protection` must be objects — there is no `null` exemption for them. Turning the
-queue off is `{"mergeQueue": {"enabled": false}}`, which still states the decision in the open. Neither
+queue off is `{"mergeQueue": {"enabled": false}}`, which still states the decision in the open. Like
+`defaults.mergeQueue.enabled: false` already does, it means *the standard does not require a queue*:
+`doctor --profile` does not report a queue the repo keeps anyway, any more than it reports other
+settings that are stricter than the profile. An override may also differ in the looser direction;
+that is the point of declaring it in the open. Neither
 is an exemption from the standard: both are *declared*, in a block a reviewer reads, and that is the
 difference between an override and an exemption. `settings-diff.sh` reads both from the effective
 object, so an override changes what `doctor --profile` check 15 compares against and what `new-repo`

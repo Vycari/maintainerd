@@ -281,6 +281,20 @@ jq '.repoOverrides["site"].mergeQueue = null' "$EXAMPLE" > "$d/mq-null.json"
 run "$RESOLVE" --profile "$d/mq-null.json" --validate
 expect_status "a null mergeQueue is rejected — there is no exemption, only a declared value" 1
 expect_match  "naming the key" 'repoOverrides.site.mergeQueue must be an object'
+# Sub-keys are typed too: jq reads any string as true, so "false" would silently mean on.
+jq '.repoOverrides["site"].mergeQueue = {"enabled": "false"}' "$EXAMPLE" > "$d/mq-strbool.json"
+run "$RESOLVE" --profile "$d/mq-strbool.json" --validate
+expect_status "a string where mergeQueue.enabled wants a boolean is rejected" 1
+expect_match  "naming the sub-key" 'repoOverrides.site.mergeQueue.enabled must be a boolean'
+jq '.repoOverrides["site"].mergeQueue = {"mergeMethod": "fast-forward"}' "$EXAMPLE" > "$d/mq-method.json"
+run "$RESOLVE" --profile "$d/mq-method.json" --validate
+expect_status "an unknown merge method is rejected" 1
+jq '.repoOverrides["site"].protection = {"enforceAdmins": "yes", "requiredReviews": {"count": -1, "dismissStale": 1}}' "$EXAMPLE" > "$d/prot-types.json"
+run "$RESOLVE" --profile "$d/prot-types.json" --validate
+expect_status "mistyped protection sub-keys are rejected" 1
+expect_match  "a non-boolean flag is named" 'repoOverrides.site.protection.enforceAdmins must be a boolean'
+expect_match  "a negative count is named" 'protection.requiredReviews.count must be an integer of at least 0'
+expect_match  "a non-boolean nested flag is named" 'protection.requiredReviews.dismissStale must be a boolean'
 jq '.repoOverrides["site"].protection = "strict"' "$EXAMPLE" > "$d/prot-str.json"
 run "$RESOLVE" --profile "$d/prot-str.json" --validate
 expect_status "a non-object protection is rejected" 1

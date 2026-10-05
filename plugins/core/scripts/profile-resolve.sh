@@ -109,9 +109,35 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
         + ( if ($b | has("dependabot")) and (($b.dependabot | is_str_array) | not)
               then ["\($where).dependabot must be an array of strings"] else [] end )
         + ( if ($b | has("mergeQueue")) and (($b.mergeQueue | type) != "object")
-              then ["\($where).mergeQueue must be an object"] else [] end )
+              then ["\($where).mergeQueue must be an object"]
+            elif ($b | has("mergeQueue")) then
+              ( ( if ($b.mergeQueue | has("enabled")) and (($b.mergeQueue.enabled | type) != "boolean")
+                    then ["\($where).mergeQueue.enabled must be a boolean"] else [] end )
+              + ( if ($b.mergeQueue | has("mergeMethod"))
+                     and ((($b.mergeQueue.mergeMethod | type) != "string")
+                          or (($b.mergeQueue.mergeMethod | ascii_downcase) as $m | ["squash","merge","rebase"] | index([$m]) | not))
+                    then ["\($where).mergeQueue.mergeMethod must be one of SQUASH, MERGE, REBASE"] else [] end ) )
+            else [] end )
+        # Typed per sub-key: jq reads any string as true, so `"enabled": "false"` would
+        # otherwise validate and then silently mean the opposite of what it says.
         + ( if ($b | has("protection")) and (($b.protection | type) != "object")
-              then ["\($where).protection must be an object"] else [] end )
+              then ["\($where).protection must be an object"]
+            elif ($b | has("protection")) then
+              ( [ $b.protection as $p
+                  | [ "requiredLinearHistory","allowForcePushes","allowDeletions","strictRequiredChecks","enforceAdmins" ][]
+                  | select(. as $k | ($p | has($k)) and (($p[$k] | type) != "boolean"))
+                  | "\($where).protection.\(.) must be a boolean" ]
+              + ( if ($b.protection | has("requiredReviews")) and (($b.protection.requiredReviews | type) != "object")
+                    then ["\($where).protection.requiredReviews must be an object"]
+                  elif ($b.protection | has("requiredReviews")) then
+                    ( $b.protection.requiredReviews as $r
+                    | ( if ($r | has("count")) and ((($r.count | type) != "number") or ($r.count | floor) != $r.count or $r.count < 0)
+                          then ["\($where).protection.requiredReviews.count must be an integer of at least 0"] else [] end )
+                    + [ [ "dismissStale","countsBotApproval" ][]
+                        | select(. as $k | ($r | has($k)) and (($r[$k] | type) != "boolean"))
+                        | "\($where).protection.requiredReviews.\(.) must be a boolean" ] )
+                  else [] end ) )
+            else [] end )
         end );
 
   [ ( if (.profileVersion | type) != "number" or (.profileVersion | floor) != .profileVersion
