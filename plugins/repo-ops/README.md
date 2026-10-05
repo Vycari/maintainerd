@@ -179,13 +179,14 @@ checks the claim after the reply is posted.
   names (versus the branch's fork point from `origin/HEAD`, its upstream, or `origin/main`/
   `master`; with none of those, `HEAD~1`, and the context says it is one commit wide), else the
   last three commits' stat; truncated to 6,000 characters. The opt-in key and the commits are
-  read in the directory the reply is posted from: the tool's cwd, moved by any `cd`/`pushd`
+  read in the directory the reply is posted from: the tool's cwd, moved by any `cd`/`pushd`/`popd`
   earlier in the same command (`cd ../pr-worktree && gh pr comment …` is judged in that
   worktree; a `cd "$VAR"` makes the directory unknown, so later replies are not judged). Its
   `.claude/maintainerd.json` is read there, else at the top of the checkout, so a reply posted
   from a subdirectory is still checked.
 - **Which body it reads:** `--body`/`-b`, `--body-file <file>`, `--body-file -` fed by that
-  segment's own heredoc or here-string (never the rest of the command, so a later
+  segment's own heredoc (ended by a line that is exactly the tag, after leading tabs for `<<-`)
+  or here-string (never the rest of the command, so a later
   `git show <sha>` does not vote; stdin from a pipe is runtime and not judged), and for the API
   forms a `body=` field — with `-F`/`--field`, `body=@file` is the file's contents, as gh sends it.
 

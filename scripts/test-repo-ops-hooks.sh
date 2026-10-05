@@ -774,6 +774,21 @@ expect_post none  "cd into an opted-in checkout, naming its commit" "$RP_OFF" "c
 expect_post none  "cd out of an opted-in checkout to an opted-out one" "$RP_REPO" "cd $RP_OFF && gh pr comment 12 --body \"Fixed.\""
 expect_post none  "cd to a runtime directory: the checkout is unknown, not judged" "$RP_REPO" 'cd "$WT" && gh pr comment 12 --body "Fixed."'
 expect_post block "a relative cd resolves against the cwd" "$(dirname "$RP_REPO")" "cd $(basename "$RP_REPO") && gh pr comment 12 --body \"Fixed.\""
+expect_post block "pushd into an opted-in checkout from an opted-out one" "$RP_OFF" "pushd $RP_REPO && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "pushd then popd returns to the opted-out cwd" "$RP_OFF" "pushd $RP_REPO && popd && gh pr comment 12 --body \"Fixed.\""
+expect_post block "pushd out, popd back into the opted-in cwd" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "pushd out then popd back: a commit of the cwd counts" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+
+echo
+echo "== review-reply-postcondition: heredoc terminators are whole lines =="
+expect_post block "<<-EOF with a tab-indented terminator: a later git show does not vote" "$RP_REPO" "gh pr comment 12 --body-file - <<-'EOF'
+	Fixed.
+	EOF
+git show $RP_HEAD"
+expect_post none  "a body line that starts with the tag does not end the body" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed.
+EOF-adjacent note: see $RP_HEAD.
+EOF"
 
 echo
 echo "== review-reply-postcondition: wrappers resolve like a bare gh =="

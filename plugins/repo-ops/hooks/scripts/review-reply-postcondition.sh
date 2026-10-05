@@ -80,7 +80,7 @@ opted_in() {
 # that is, so there is nothing this hook could ever say.
 if ! opted_in "$CWD"; then
   case "$COMMAND" in
-    *cd*) : ;;
+    *cd*|*pushd*|*popd*) : ;;
     *) exit 0 ;;
   esac
 fi
@@ -180,7 +180,7 @@ field_file() {
 # must not vote. Stdin from a pipe or a redirected file is decided outside the command, so the
 # body is marked runtime and not judged.
 stdin_body() {
-  local seg="$1" opener tag quoted rest body b
+  local seg="$1" opener tag quoted rest b="" line strip=0 found=0
   case "$seg" in
     *'<<<'*)
       rest="${seg#*<<<}"
@@ -192,7 +192,7 @@ stdin_body() {
     *) REPLY_RUNTIME=1; return 0 ;;
   esac
   opener="${seg#*<<}"
-  opener="${opener#-}"
+  case "$opener" in -*) strip=1; opener="${opener#-}" ;; esac
   while :; do case "$opener" in ' '*) opener="${opener# }" ;; *) break ;; esac; done
   tag="${opener%%[$' \t\n;&|)<>']*}"
   case "$tag" in \'*|\"*|\\*) quoted=1 ;; *) quoted=0 ;; esac
@@ -201,8 +201,21 @@ stdin_body() {
   # The body starts on the line after the one this segment ends on.
   rest="${COMMAND:$((CUR_OFF + CUR_LEN))}"
   case "$rest" in *$'\n'*) ;; *) REPLY_RUNTIME=1; return 0 ;; esac
-  body=$'\n'"${rest#*$'\n'}"
-  b="${body%%$'\n'"$tag"*}"
+  rest="${rest#*$'\n'}"
+  # The terminator is a line that is exactly TAG (after leading tabs, for `<<-`); a body line
+  # that merely starts with TAG is body. No terminator: the body runs to the end, as in bash.
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *$'\n'*) line="${rest%%$'\n'*}"; rest="${rest#*$'\n'}" ;;
+      *) line="$rest"; rest="" ;;
+    esac
+    if [ "$strip" -eq 1 ]; then
+      while :; do case "$line" in $'\t'*) line="${line#$'\t'}" ;; *) break ;; esac; done
+    fi
+    if [ "$line" = "$tag" ]; then found=1; break; fi
+    b="$b"$'\n'"$line"
+  done
+  [ "$found" -eq 1 ] || REPLY_RUNTIME=1
   if [ "$quoted" -eq 0 ] && heredoc_expands "$b"; then
     REPLY_RUNTIME=1
   fi
@@ -384,8 +397,8 @@ TOKENS
 
 # ------------------------------------------------------------------------------------ the scan
 # cd_target <segment-masked> -> prints the directory a `cd`/`pushd` segment moves to (relative
-# to DIR), "?" when it cannot be known statically ($VAR, `cd -`, ~user), nothing when the
-# segment is not a cd/pushd.
+# to DIR), "?" when it cannot be known statically ($VAR, `cd -`, ~user, `pushd +N`), "POPD" for
+# a `popd`, nothing when the segment is none of these.
 cd_target() {
   local seg="$1" off len w first="" arg="" n=0
   while IFS=' ' read -r off len; do
@@ -401,12 +414,20 @@ cd_target() {
   done <<ARGV
 $(argv_spans "$seg")
 ARGV
-  case "$first" in cd|pushd) ;; *) return 0 ;; esac
-  if [ -z "$arg" ]; then printf '%s' "${HOME:-?}"; return 0; fi
+  case "$first" in
+    cd|pushd) ;;
+    popd) if [ -z "$arg" ]; then printf 'POPD'; else printf '?'; fi; return 0 ;;
+    *) return 0 ;;
+  esac
+  if [ -z "$arg" ]; then
+    # bare `pushd` swaps the top two stack entries; bare `cd` goes home
+    if [ "$first" = pushd ]; then printf '?'; else printf '%s' "${HOME:-?}"; fi
+    return 0
+  fi
   word_is_runtime "$arg" && { printf '?'; return 0; }
   arg=$(unquote_word "$arg")
   case "$arg" in
-    -|'~'?*) printf '?' ;;
+    -|'~'?*|+[0-9]*|-[0-9]*) printf '?' ;;
     '~'|'~/'*) printf '%s' "${HOME:-?}${arg#\~}" ;;
     /*) printf '%s' "$arg" ;;
     *) printf '%s' "$DIR/$arg" ;;
@@ -417,12 +438,30 @@ MASKED=$(mask_all_heredocs "$COMMAND")
 BAD_BODIES=""
 BAD_DIR=""
 DIR="$CWD"
+DIR_STACK=""
 while IFS=' ' read -r OFF LEN; do
   [ -n "$OFF" ] || continue
   SEG_MASKED="${MASKED:$OFF:$LEN}"
   SEG_ORIG="${COMMAND:$OFF:$LEN}"
   NEWDIR=$(cd_target "$SEG_MASKED")
-  if [ -n "$NEWDIR" ]; then DIR="$NEWDIR"; continue; fi
+  if [ -n "$NEWDIR" ]; then
+    # A pushd/popd stack mirrors the shell's, so `pushd wt && … && popd` returns to DIR.
+    case "$NEWDIR" in
+      POPD)
+        if [ -n "$DIR_STACK" ]; then
+          DIR="${DIR_STACK%%$'\n'*}"
+          case "$DIR_STACK" in *$'\n'*) DIR_STACK="${DIR_STACK#*$'\n'}" ;; *) DIR_STACK="" ;; esac
+        else
+          DIR="?"
+        fi ;;
+      *)
+        case "$SEG_MASKED" in
+          *pushd*) DIR_STACK="$DIR${DIR_STACK:+$'\n'}$DIR_STACK" ;;
+        esac
+        DIR="$NEWDIR" ;;
+    esac
+    continue
+  fi
   CUR_OFF=$OFF CUR_LEN=$LEN CUR_ORIG="$SEG_ORIG"
   reply_body "$SEG_MASKED" "$SEG_ORIG"
   [ -n "$REPLY_KIND" ] || continue
