@@ -185,9 +185,11 @@ checks the claim after the reply is posted.
 Limits, stated plainly: the fix claim is a fixed phrase list with a simple negation/promise guard
 ("not fixed", "will fix"), so an unusual phrasing can slip through and an unusual one can trip it;
 it proves a plausible commit is *named*, not that the commit *does what the reply says* — that
-stays the reviewer's job; a body decided at runtime (`$VAR`, `${VAR}`, `$(cmd)` other than a
-`$(cat <<EOF …)` heredoc, a backtick, a file written earlier in the same command, `--input`) is
-not read, so such a reply is not judged — `Fixed in $NEW_HEAD` passes silently; outside a git checkout, or when
+stays the reviewer's job; a body the shell decides at runtime (an unquoted or double-quoted `$VAR`, `${VAR}`,
+`$(cmd)` other than a `$(cat <<EOF …)` heredoc, a backtick, or an unquoted-delimiter heredoc that
+expands one; a file written earlier in the same command; `--input`) is not read, so such a reply
+is not judged — `-f body="Fixed in $NEW_HEAD"` passes silently, while `'Fixed in $NEW_HEAD'` in
+single quotes, an escaped `\$`, or a `--body-file` holding that text is literal and is judged; outside a git checkout, or when
 the reply is posted from a checkout that does not hold the PR's commits, nothing can be verified
 (the first case says nothing; the second blocks, and the remedy is to post from the PR's worktree);
 `sh -c "gh …"`, `xargs gh` and `find -exec gh` are not recognized, as for the other hooks.

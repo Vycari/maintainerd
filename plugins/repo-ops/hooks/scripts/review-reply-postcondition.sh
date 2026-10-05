@@ -30,7 +30,8 @@
 # `echo "gh pr comment … fixed"` or a heredoc that writes a script never counts as a reply.
 #
 # Limits (stated in the README): a body whose text is decided at runtime ($VAR, ${VAR}, a
-# command substitution other than a `$(cat <<EOF …)` heredoc, a backtick, a file produced
+# command substitution other than a `$(cat <<EOF …)` heredoc, a backtick — outside single
+# quotes and not escaped, see word_is_runtime — a file produced
 # earlier in the same command, `--input`) is not read, so such a reply is not judged; a fix
 # claim is detected by a fixed phrase list, with a simple negation guard ("not fixed"); outside
 # a git checkout nothing can be verified, so the hook says nothing.
@@ -77,15 +78,62 @@ fi
 . "$SCAN_LIB"
 
 # ------------------------------------------------------------------ is it a reply, what's its body
-# reply_body <segment-masked> <segment-original> -> sets REPLY_KIND ("" = not a reply) and
-# REPLY_BODY (the text of the body, "" = unresolvable).
+# word_is_runtime <raw shell word> -> 0 when the shell substitutes part of the word when it runs
+# ($VAR, ${VAR}, $1, $(cmd), `cmd`) outside single quotes and not backslash-escaped: the posted
+# text may then name a commit this hook cannot see. A `$(cat <<TAG …)` heredoc is not runtime —
+# its text is in the command — unless TAG is unquoted and the heredoc body itself expands.
+word_is_runtime() {
+  local w="$1" n=${#1} k=0 c sq=0 dq=0 rest opener tag quoted body b after
+  while [ "$k" -lt "$n" ]; do
+    c="${w:$k:1}"
+    if [ "$sq" -eq 1 ]; then
+      [ "$c" = "'" ] && sq=0
+      k=$((k + 1)); continue
+    fi
+    case "$c" in
+      \\) k=$((k + 2)); continue ;;
+      "'") [ "$dq" -eq 0 ] && sq=1 ;;
+      '"') dq=$((1 - dq)) ;;
+      '`') return 0 ;;
+      '$')
+        rest="${w:$((k + 1))}"
+        case "$rest" in
+          '(cat <<'*)
+            opener="${rest#(cat <<}"
+            opener="${opener#-}"
+            while :; do case "$opener" in ' '*) opener="${opener# }" ;; *) break ;; esac; done
+            tag="${opener%%[$' \n)']*}"
+            case "$tag" in \'*|\"*|\\*) quoted=1 ;; *) quoted=0 ;; esac
+            tag=$(unquote_word "$tag")
+            case "$opener" in *$'\n'*) ;; *) return 0 ;; esac
+            body=$'\n'"${opener#*$'\n'}"
+            b="${body%%$'\n'"$tag"*}"
+            if [ "$quoted" -eq 0 ] && printf '%s' "$b" | grep -Eq '(^|[^\\])(\$[A-Za-z0-9_{(]|`)'; then
+              return 0
+            fi
+            after="${body#"$b"}"
+            after="${after#$'\n'"$tag"}"
+            k=$((n - ${#after})); continue ;;
+          [A-Za-z0-9_\{\(@*#?!-]*) return 0 ;;
+        esac ;;
+    esac
+    k=$((k + 1))
+  done
+  return 1
+}
+
+# reply_body <segment-masked> <segment-original> -> sets REPLY_KIND ("" = not a reply),
+# REPLY_BODY (the text of the body, "" = unresolvable) and REPLY_RUNTIME (1 when some of the
+# body is decided by the shell at run time, so it is not judged).
 REPLY_KIND=""
 REPLY_BODY=""
+REPLY_RUNTIME=0
 reply_body() {
   local masked="$1" orig="$2" off len i n raw uq next
   local offs=() lens=() words=()
   REPLY_KIND=""
   REPLY_BODY=""
+  REPLY_RUNTIME=0
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue
     offs[${#offs[@]}]=$off
@@ -133,13 +181,17 @@ WORDS
     fi
     case "$REPLY_KIND:$uq" in
       pr-comment:--body|pr-comment:-b)
-        text="$text $next"; i=$((i + 2)); continue ;;
-      pr-comment:--body=*) text="$text ${raw#--body=}" ;;
-      pr-comment:-b?*) text="$text ${raw#-b}" ;;
+        text="$text $next"; word_is_runtime "$next" && REPLY_RUNTIME=1
+        i=$((i + 2)); continue ;;
+      pr-comment:--body=*) text="$text ${raw#--body=}"; word_is_runtime "$raw" && REPLY_RUNTIME=1 ;;
+      pr-comment:-b?*) text="$text ${raw#-b}"; word_is_runtime "$raw" && REPLY_RUNTIME=1 ;;
       pr-comment:--body-file|pr-comment:-F)
         file=$(unquote_word "$next")
         if [ "$file" = "-" ]; then
           text="$text $COMMAND"       # stdin heredoc: its body is elsewhere in the command
+          case "$COMMAND" in
+            *'<<'*) word_is_runtime "\$(cat <<${COMMAND#*<<}" && REPLY_RUNTIME=1 ;;
+          esac
         elif [ -r "$CWD/$file" ]; then
           text="$text $(cat "$CWD/$file")"
         elif [ -r "$file" ]; then
@@ -150,12 +202,14 @@ WORDS
         [ -r "$CWD/$file" ] && text="$text $(cat "$CWD/$file")" ;;
       *:-f|*:-F|*:--field|*:--raw-field)
         case "$(unquote_word "$next")" in
-          body=*) text="$text $next" ;;
-          query=*|*addPullRequestReviewThreadReply*) text="$text $next" ;;
+          body=*|query=*|*addPullRequestReviewThreadReply*)
+            text="$text $next"; word_is_runtime "$next" && REPLY_RUNTIME=1 ;;
         esac
         i=$((i + 2)); continue ;;
       *:-f?*|*:-F?*|*:--field=*|*:--raw-field=*)
-        case "$uq" in *body=*|*query=*) text="$text $raw" ;; esac ;;
+        case "$uq" in
+          *body=*|*query=*) text="$text $raw"; word_is_runtime "$raw" && REPLY_RUNTIME=1 ;;
+        esac ;;
     esac
     i=$((i + 1))
   done
@@ -194,15 +248,6 @@ body_names_good_commit() {
 $(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '0-9a-z' '\n' | grep -Ex '[0-9a-f]{7,40}' || true)
 TOKENS
   return 1
-}
-
-# body_is_runtime <raw body text> -> 0 when the shell decides part of the body when it runs
-# ($VAR, ${VAR}, $(cmd), `cmd`): the posted text may name a commit this hook cannot see, so the
-# reply is not judged. A `$(cat <<EOF …)` heredoc is not runtime — its text is in the command.
-body_is_runtime() {
-  local t="$1"
-  t="${t//\$(cat <</}"
-  printf '%s' "$t" | grep -Eq '\$[A-Za-z_{(]|`'
 }
 
 # diff_context <body> -> the diff of repo files the body names, truncated; else the latest commit.
@@ -256,7 +301,7 @@ while IFS=' ' read -r OFF LEN; do
   [ -n "${REPLY_BODY//[[:space:]]/}" ] || continue
   claims_fix "$REPLY_BODY" || continue
   body_names_good_commit "$REPLY_BODY" && continue
-  body_is_runtime "$REPLY_BODY" && continue
+  [ "$REPLY_RUNTIME" -eq 1 ] && continue
   BAD_BODIES="$BAD_BODIES$REPLY_BODY"$'\n'
 done <<SEGMENTS
 $(split_simple_commands "$MASKED")

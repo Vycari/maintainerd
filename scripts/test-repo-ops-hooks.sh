@@ -713,6 +713,24 @@ expect_post none  "a later candidate SHA after a bogus one still counts" "$RP_RE
 expect_post none  "a SHA past 2048 characters of body still counts" "$RP_REPO" "gh pr comment 12 --body \"Fixed. $(printf 'x%.0s' $(seq 1 2100)) Commit $RP_HEAD.\""
 expect_post none  "a body whose SHA is a shell variable is not judged" "$RP_REPO" 'NEW_HEAD=$(git rev-parse --short HEAD); gh api repos/o/r/pulls/12/comments/345/replies -f body="Fixed in $NEW_HEAD"'
 expect_post none  "a body whose SHA is a command substitution is not judged" "$RP_REPO" 'gh pr comment 12 --body "Fixed in $(git rev-parse --short HEAD)"'
+expect_post block "a single-quoted \$NEW_HEAD is literal text, so it is judged" "$RP_REPO" "gh pr comment 12 --body 'Fixed in \$NEW_HEAD'"
+expect_post block "an escaped \\\$NEW_HEAD in double quotes is literal text" "$RP_REPO" 'gh pr comment 12 --body "Fixed in \$NEW_HEAD"'
+printf 'Fixed in $NEW_HEAD.\n' > "$RP_REPO/reply.md"
+expect_post block "a --body-file holding a literal \$VAR is judged" "$RP_REPO" 'gh pr comment 12 --body-file reply.md'
+expect_post block "a quoted-delimiter heredoc with \$VAR is literal" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<'EOF'
+Fixed in \$NEW_HEAD.
+EOF
+)\""
+expect_post none  "an unquoted-delimiter heredoc expanding \$VAR is not judged" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \$NEW_HEAD.
+EOF
+)\""
+expect_post none  "--body-file - from an unquoted stdin heredoc expanding \$VAR is not judged" "$RP_REPO" "gh pr comment 12 --body-file - <<EOF
+Fixed in \$NEW_HEAD.
+EOF"
+expect_post block "--body-file - from a quoted stdin heredoc with \$VAR is literal" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed in \$NEW_HEAD.
+EOF"
 mkdir -p "$RP_REPO/sub/dir"
 expect_post block "config found at the repo root when cwd is a subdirectory" "$RP_REPO/sub/dir" 'gh pr comment 12 --body "Fixed."'
 rmdir "$RP_REPO/sub/dir" "$RP_REPO/sub"
