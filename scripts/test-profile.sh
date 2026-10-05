@@ -295,6 +295,10 @@ expect_status "mistyped protection sub-keys are rejected" 1
 expect_match  "a non-boolean flag is named" 'repoOverrides.site.protection.enforceAdmins must be a boolean'
 expect_match  "a negative count is named" 'protection.requiredReviews.count must be an integer of at least 0'
 expect_match  "a non-boolean nested flag is named" 'protection.requiredReviews.dismissStale must be a boolean'
+jq '.defaults.mergeQueue.enabled = "false"' "$EXAMPLE" > "$d/mq-default-str.json"
+run "$RESOLVE" --profile "$d/mq-default-str.json" --validate
+expect_status "the same typing applies to defaults" 1
+expect_match  "naming it" 'defaults.mergeQueue.enabled must be a boolean'
 jq '.repoOverrides["site"].protection = "strict"' "$EXAMPLE" > "$d/prot-str.json"
 run "$RESOLVE" --profile "$d/prot-str.json" --validate
 expect_status "a non-object protection is rejected" 1
