@@ -176,6 +176,42 @@ names its repository, and contradicting it with `-R` is an error.
 | `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A job with no start time yet is aged from the Actions job record's `created_at`. A queued job whose assignment cannot be confirmed is not reported this way. |
 | `timeout` | No verdict by the deadline. An empty rollup keeps waiting, since checks register shortly after a push. |
 
+## Queue tools
+
+Two more observe-only scripts, for the question a maintainer asks across many PRs rather than one:
+"what is ready, and in what order do I take them?" Same conventions as the wait tools (plain bash 3.2
+over `gh` and `jq`, generic, exit `3` when the tool itself could not run), and the same hard line:
+they **report, and never merge, enqueue, enable auto-merge, rebase, label or comment**. Deciding what
+to merge, and merging it, stays with the maintainer. Tests: `scripts/test-queue-tools.sh` in the
+maintainerd repo root, against a stubbed `gh`.
+
+### `pr-queue.sh [owner/repo ...] [--json]`
+
+One table of every open PR in the named repositories (the current checkout's when none is named):
+`REPO PR AUTHOR REVIEW CHECKS MERGE QUEUE BLOCKING TITLE`. `REVIEW` and `CHECKS` are the verdicts of
+`wait-for-review.sh` and `wait-for-checks.sh`, each run once with `--timeout-seconds 0` (a verdict not
+reached yet is `pending`), so the readiness rule is exactly theirs, judged with each target repo's own
+`.claude/maintainerd.json`: the `review.approvalThreshold` score on the head commit, every check
+green, 0 unresolved threads. `BLOCKING` names the first thing in the way, or `ready`. `QUEUE` is
+`q<position>` from GraphQL `mergeQueue` (`q<position>!` when the entry is `UNMERGEABLE`); no PR field
+is ever read as queue membership, and a queue that cannot be read is reported, not assumed empty. The
+check verdict is one read of the rollup with no settle delay: a snapshot, not a gate, so use
+`wait-for-checks.sh` before acting on `green`.
+
+### `merge-order.sh <pr> [<pr> ...] [-R owner/repo] [--watch]`
+
+Prints `order: #84 #86 #90`, then one numbered line per PR with what it must wait for and which other
+PRs in the set change the same files (whichever lands second will likely need a rebase). The order
+comes from structure: a PR needs another when its description says `Depends on` / `Stacked on` /
+`Blocked by` / `Requires` `#N` or when its base branch is that PR's head branch; among PRs whose
+dependencies are met the lowest number goes first. File overlap is reported, never used to reorder. A
+cycle is an error. Descriptions are author-writable, so they can only reorder the report.
+
+`--watch` then polls (`--interval-seconds`, default 180; `--timeout-seconds`, default 3600) and prints
+an event per line: `queued: #N q<position>`, `landed: #N` (flagged when it was not the next in
+order), `closed: #N`, `next: #M`, ending on one verdict: `all-landed` (0), `done: <m> landed, <c>
+closed unmerged` (1), or `timeout` plus the PRs still open (2).
+
 ## Note on code review
 
 This plugin used to ship a `code-review` skill. It was dropped in favour of Claude Code's built-in
