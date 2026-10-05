@@ -499,6 +499,15 @@ Four things the helper encodes that a hand-rolled diff gets wrong:
   not asked for it to be switched off. Push restrictions, review bypass allowances and app-pinned
   required checks are **translated** into the shapes the PUT accepts rather than dropped — a warning
   above a call that still loses the thing is a warning read after the paste.
+- **A protection value can be a floor.** Keys named in `effective.protectionFloors` are minima: a
+  branch stricter than the profile on one is conformant (no finding), and the one PUT carries the
+  branch's own value for it. Only a *looser* value is a finding.
+- **A diff whose fix would loosen the branch is labelled.** Any difference where applying the
+  profile's value would weaken protection — a listed key or not — is reported in its own `LOOSENING`
+  section above the call, e.g. `LOOSENS — main enforce_admins true → false (profile value; not a
+  floor)`, and so is a required check the PUT would drop. Surface that section verbatim: it is what
+  tells the human pasting the call that it makes the branch weaker. Still report-only; the fix for a
+  repo that should stay stricter is a floor (or a protection override) in the profile, not the call.
 - **The merge queue is a ruleset rule, not a protection key.** `rulesets?includes_parents=true`,
   because an org-level parent ruleset can be what supplies it. The fix is a ruleset `POST`.
   A ruleset can also supply required checks that classic protection doesn't list; a requirement from

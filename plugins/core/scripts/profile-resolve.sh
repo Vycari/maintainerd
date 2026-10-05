@@ -38,6 +38,11 @@ KNOWN_VERSION=1
 # profile is fixed org-wide, and that is not a convention — it is this list.
 RESOLVABLE='["requiredChecks","coverage","commands","dependabot"]'
 
+# The protection keys `defaults.protectionFloors` may name. Each has a defined strict
+# direction in settings-diff.sh; `requiredReviews.countsBotApproval` has no GitHub setting
+# behind it, so it cannot be a floor.
+FLOORABLE='["requiredLinearHistory","allowForcePushes","allowDeletions","enforceAdmins","strictRequiredChecks","requiredReviews.count","requiredReviews.dismissStale"]'
+
 usage() {
   cat >&2 <<'USAGE'
 usage: profile-resolve.sh --profile FILE (--validate | --languages | --repo SLUG --language KEY)
@@ -80,7 +85,7 @@ jq -e 'type == "object"' "$profile" >/dev/null 2>&1 \
 # ── Shape ────────────────────────────────────────────────────────────────────
 # One jq pass, emitting one message per problem so a broken profile is fixed in one
 # round rather than one error at a time.
-errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" '
+errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" --argjson floorable "$FLOORABLE" '
   def is_str_array: type == "array" and (all(.[]; type == "string"));
   def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0 and (test("\\n") | not)));
 
@@ -132,6 +137,17 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
           + ( if (.defaults.files | has("prTemplateSource")) and (.defaults.files.prTemplateSource != null)
                 and (((.defaults.files.prTemplateSource | type) != "string") or (.defaults.files.prTemplateSource | length) == 0)
               then ["defaults.files.prTemplateSource must be a non-empty string"] else [] end )
+        else [] end )
+  # `protectionFloors` marks protection values as minima (see profile-schema.md). The
+  # strict direction is a fixed table in settings-diff.sh, so a key outside it would be
+  # silently ignored there — reject it here, where the author can still fix it.
+  , ( if (.defaults | type) == "object" and (.defaults | has("protectionFloors"))
+        then ( if ((.defaults.protectionFloors | type) != "array")
+                 then ["defaults.protectionFloors must be an array of protection key names"]
+               else [ .defaults.protectionFloors[]
+                      | select(. as $k | $floorable | index([$k]) | not)
+                      | "defaults.protectionFloors names \(. | tojson), which is not a key that can be a floor — one of: "
+                        + ($floorable | join(", ")) ] end )
         else [] end )
   , ( if (.languages | type) != "object" then ["languages must be an object"]
       elif (.languages | length) == 0 then ["languages is empty — nothing can resolve against this profile"]

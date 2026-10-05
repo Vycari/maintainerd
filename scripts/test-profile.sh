@@ -471,6 +471,82 @@ fi
 expect_match "and the checks the profile adds without a pin are called out" \
   "with no pin — any app could satisfy those"
 
+# ── floors: stricter than the profile is conformant on a listed key ─────────────
+jq '.enforce_admins.enabled = true' "$d/prot-ok.json" > "$d/prot-strict.json"
+jq '.effective.protectionFloors = ["enforceAdmins"]' "$d/eff-app.json" > "$d/eff-floor.json"
+floor_args=(--repo-settings "$d/repo-ok.json" --rulesets "$d/rules-ok.json" --labels "$d/labels-ok.json")
+
+run "$DIFF" --repo my-org/app --effective "$d/eff-floor.json" --protection "$d/prot-strict.json" "${floor_args[@]}"
+expect_status "a branch stricter than a listed floor is conformant" 0
+expect_no_match "and nothing is labelled as loosening" "LOOSEN"
+
+# The same branch with no floor listed is a finding, labelled as a loosening, above the call.
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-strict.json" "${floor_args[@]}"
+expect_status "without the floor the stricter branch is a difference" 1
+expect_match  "labelled with the direction and why" \
+  "LOOSENS — main enforce_admins true → false (profile value; not a floor)"
+case "$output" in
+  *LOOSENING*'method PUT'*) ok "the LOOSENING section comes before the call" ;;
+  *) bad "the LOOSENING section comes before the call" "$output" ;;
+esac
+expect_match  "the summary counts it" "1 of those would loosen the branch"
+
+# A floor is a minimum, so a LOOSER branch is still an ordinary (tightening) finding, and the
+# PUT body keeps the floor-held values of the keys that are met.
+jq '.enforce_admins.enabled = false' "$d/prot-ok.json" > "$d/prot-loose.json"
+jq '.effective.protectionFloors = ["enforceAdmins"] | .effective.protection.enforceAdmins = true' \
+  "$d/eff-app.json" > "$d/eff-floor-true.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-floor-true.json" --protection "$d/prot-loose.json" "${floor_args[@]}"
+expect_status "a branch looser than a floor is still a difference" 1
+expect_match  "reported plainly" "protection enforce_admins is false, profile wants true"
+expect_no_match "and not as a loosening, since the fix tightens" "LOOSEN"
+
+# A floor the branch holds, alongside an unrelated difference: the PUT carries the repo's value.
+jq '.allow_deletions.enabled = true' "$d/prot-strict.json" > "$d/prot-strict-drift.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-floor.json" --protection "$d/prot-strict-drift.json" "${floor_args[@]}"
+expect_status "an unrelated difference is still reported next to a held floor" 1
+expect_no_match "the held floor is not one of the reasons" "enforce_admins is true"
+body="$(printf '%s' "$output" | sed -n '/method PUT/,/^  JSON$/p' | sed '1d;$d')"
+if printf '%s' "$body" | jq -e '(.enforce_admins == true) and (.allow_deletions == false)' >/dev/null 2>&1; then
+  ok "the PUT carries the branch's stricter value, not the profile's"
+else
+  bad "the PUT carries the branch's stricter value, not the profile's" "$body"
+fi
+
+# An integer floor: a larger review count is stricter; a smaller one is not.
+jq '.required_pull_request_reviews.required_approving_review_count = 2' "$d/prot-ok.json" > "$d/prot-two.json"
+jq '.effective.protectionFloors = ["requiredReviews.count"]' "$d/eff-app.json" > "$d/eff-count.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-count.json" --protection "$d/prot-two.json" "${floor_args[@]}"
+expect_status "a larger review count meets a count floor" 0
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-two.json" "${floor_args[@]}"
+expect_match "and without the floor, dropping 2 to 1 is labelled a loosening" \
+  "LOOSENS — main required_approving_review_count 2 → 1"
+# allow_force_pushes: false is the strict value, so a floor must read it the other way round.
+jq '.effective.protectionFloors = ["allowForcePushes"] | .effective.protection.allowForcePushes = true' \
+  "$d/eff-app.json" > "$d/eff-fp.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-fp.json" --protection "$d/prot-ok.json" "${floor_args[@]}"
+expect_status "a branch forbidding force pushes is stricter than a profile allowing them" 0
+
+# A required check the PUT would drop is a loosening too.
+jq '.required_status_checks.contexts += ["extra"]' "$d/prot-ok.json" > "$d/prot-extra.json"
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --protection "$d/prot-extra.json" "${floor_args[@]}"
+expect_match "dropping a required check is labelled" 'LOOSENS — main drops the required check "extra"'
+
+# protectionFloors validation: only keys with a defined strict direction.
+jq '.defaults.protectionFloors = ["enforceAdmins","requiredReviews.count"]' "$EXAMPLE" > "$d/floors-ok.json"
+run "$RESOLVE" --profile "$d/floors-ok.json" --validate
+expect_status "a profile listing floors validates" 0
+run "$RESOLVE" --profile "$d/floors-ok.json" --repo my-org/app --language python-service
+expect_jq "and the floors reach the effective object" \
+  '.effective.protectionFloors == ["enforceAdmins","requiredReviews.count"]'
+jq '.defaults.protectionFloors = ["requiredReviews.countsBotApproval"]' "$EXAMPLE" > "$d/floors-bad.json"
+run "$RESOLVE" --profile "$d/floors-bad.json" --validate
+expect_status "a key with no strict direction cannot be a floor" 1
+expect_match  "and is named" 'defaults.protectionFloors names "requiredReviews.countsBotApproval"'
+jq '.defaults.protectionFloors = "enforceAdmins"' "$EXAMPLE" > "$d/floors-str.json"
+run "$RESOLVE" --profile "$d/floors-str.json" --validate
+expect_status "protectionFloors must be an array" 1
+
 # An exempt repo still has settings; the exemption is about coverage, not conformance.
 run "$DIFF" --repo my-org/site --effective "$d/eff-site.json" --repo-settings "$d/repo-ok.json"
 expect_status "a coverage-exempt repo is still held to the settings standard" 0

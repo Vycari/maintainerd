@@ -149,6 +149,47 @@ findings="$(jq -n \
           // ([$prot.required_status_checks.checks[]?.context])
           // []) end;
 
+  # ── protection keys the profile has an opinion on ──────────────────────────
+  # `mode` is which direction is STRICTER: "true" (on is stricter), "false" (off is
+  # stricter) or "max" (larger is stricter). It is a fixed table rather than a rule
+  # inferred from the value type, because it is a statement about GitHub'"'"'s semantics: for
+  # `allow_force_pushes` the strict value is false, and for a review count a larger number
+  # is stricter in the API even though a bigger one can deadlock a small team.
+  def prot_specs:
+    [ { key: "required_linear_history", pkey: "requiredLinearHistory", mode: "true",
+        want: $e.protection.requiredLinearHistory, got: $prot.required_linear_history.enabled }
+    , { key: "allow_force_pushes", pkey: "allowForcePushes", mode: "false",
+        want: $e.protection.allowForcePushes, got: $prot.allow_force_pushes.enabled }
+    , { key: "allow_deletions", pkey: "allowDeletions", mode: "false",
+        want: $e.protection.allowDeletions, got: $prot.allow_deletions.enabled }
+    , { key: "enforce_admins", pkey: "enforceAdmins", mode: "true",
+        want: $e.protection.enforceAdmins, got: $prot.enforce_admins.enabled }
+    , { key: "required_status_checks.strict", pkey: "strictRequiredChecks", mode: "true",
+        want: ($e.protection.strictRequiredChecks // false),
+        got: ($prot.required_status_checks.strict // false) }
+    , { key: "required_approving_review_count", pkey: "requiredReviews.count", mode: "max",
+        want: $e.protection.requiredReviews.count,
+        got: ($prot.required_pull_request_reviews.required_approving_review_count // 0) }
+    , { key: "dismiss_stale_reviews", pkey: "requiredReviews.dismissStale", mode: "true",
+        want: $e.protection.requiredReviews.dismissStale,
+        got: ($prot.required_pull_request_reviews.dismiss_stale_reviews // false) }
+    ] | map(select(.want != null));
+
+  # Is the branch'"'"'s value STRICTER than the profile'"'"'s? Applying the profile'"'"'s value to
+  # such a branch would loosen it.
+  def stricter:
+    if .mode == "true" then (.got == true and .want == false)
+    elif .mode == "false" then (.got == false and .want == true)
+    else ((.got | type) == "number" and (.want | type) == "number" and .got > .want) end;
+
+  # `protectionFloors` names profile keys whose value is a minimum, not an exact value.
+  def is_floor: . as $s | (($e.protectionFloors // []) | index([$s.pkey])) != null;
+
+  # The floors a stricter branch is HOLDING: no finding, and the PUT keeps the branch'"'"'s value.
+  def held_floors:
+    if prot_present | not then [] else [ prot_specs[] | select(is_floor and stricter) | .pkey ] end;
+  def holds(pk): (held_floors | index([pk])) != null;
+
   # Protections the profile has no opinion on are CARRIED THROUGH the replacement, not
   # dropped. The PUT replaces the whole object, so a body built from the profile alone
   # would silently switch off a safeguard the repo had — conversation resolution, a
@@ -196,13 +237,17 @@ findings="$(jq -n \
 
   def profile_reviews:
     ($e.protection.requiredReviews // {}) as $r
-    | ( (if ($r | has("count")) then { required_approving_review_count: $r.count } else {} end)
-      + (if ($r | has("dismissStale")) then { dismiss_stale_reviews: $r.dismissStale } else {} end) );
+    | ( (if ($r | has("count")) and (holds("requiredReviews.count") | not)
+         then { required_approving_review_count: $r.count } else {} end)
+      + (if ($r | has("dismissStale")) and (holds("requiredReviews.dismissStale") | not)
+         then { dismiss_stale_reviews: $r.dismissStale } else {} end) );
 
   # profile value, else what the branch already had, else off. Written out rather than
   # reached with `//`, because the jq alternative operator treats `false` as empty and
   # would quietly promote every disabled setting to the next fallback.
   def resolve(prof; obs): if (prof) != null then (prof) elif (obs) != null then (obs) else false end;
+  # A floor the branch is holding keeps the branch'"'"'s own value instead of the profile'"'"'s.
+  def pick(pk; prof; obs): if holds(pk) then (obs) else resolve(prof; obs) end;
   def obs_enabled(k): if prot_present and (($prot[k] | type) == "object") then $prot[k].enabled else null end;
 
   # App-pinned required checks round-trip too: the PUT accepts
@@ -234,27 +279,24 @@ findings="$(jq -n \
          msg: "\($branch) has no branch protection at all (\($prot.message)) — every profile rule is unmet",
          fix: "see the single PUT below" }]
     else
-      ( [ { key: "required_linear_history", want: $e.protection.requiredLinearHistory, got: $prot.required_linear_history.enabled }
-        , { key: "allow_force_pushes",      want: $e.protection.allowForcePushes,      got: $prot.allow_force_pushes.enabled }
-        , { key: "allow_deletions",         want: $e.protection.allowDeletions,        got: $prot.allow_deletions.enabled }
-        , { key: "enforce_admins",          want: $e.protection.enforceAdmins,         got: $prot.enforce_admins.enabled }
-        , { key: "required_status_checks.strict", want: ($e.protection.strictRequiredChecks // false),
-            got: ($prot.required_status_checks.strict // false) }
-        , { key: "required_approving_review_count", want: $e.protection.requiredReviews.count,
-            got: ($prot.required_pull_request_reviews.required_approving_review_count // 0) }
-        , { key: "dismiss_stale_reviews", want: $e.protection.requiredReviews.dismissStale,
-            got: ($prot.required_pull_request_reviews.dismiss_stale_reviews // false) }
-        ]
-        | map(select(.want != null))
-        | map(select(.want != .got)
+      ( prot_specs
+        # A listed floor that the branch meets or beats is conformant, not drift.
+        | map(select(.want != .got and ((is_floor and stricter) | not))
               | { sev: "FAIL", section: "protection",
-                  msg: "\($branch) protection \(.key) is \(.got | tojson), profile wants \(.want | tojson)" }) )
+                  msg: "\($branch) protection \(.key) is \(.got | tojson), profile wants \(.want | tojson)" }
+                # Not a floor, and the branch is stricter: the call below would weaken it.
+                + (if stricter
+                     then { loosens: true,
+                            loosenMsg: "LOOSENS — \($branch) \(.key) \(.got | tojson) → \(.want | tojson) (profile value; not a floor)" }
+                     else {} end)) )
       + ( (($e.requiredChecks // []) - (prot_contexts + ruleset_contexts))
           | map({ sev: "FAIL", section: "protection",
                   msg: "\($branch) does not require the check \"\(.)\"" }) )
       + ( ((prot_contexts) - ($e.requiredChecks // []))
           | map({ sev: "WARN", section: "protection",
-                  msg: "\($branch) requires the check \"\(.)\", which the profile does not name. The PUT below would REMOVE it, because it replaces the whole object — add it to the profile'"'"'s requiredChecks first if it should stay." }) )
+                  msg: "\($branch) requires the check \"\(.)\", which the profile does not name. The PUT below would REMOVE it, because it replaces the whole object — add it to the profile'"'"'s requiredChecks first if it should stay.",
+                  loosens: true,
+                  loosenMsg: "LOOSENS — \($branch) drops the required check \"\(.)\" (not in the profile'"'"'s requiredChecks)" }) )
       + unpinned_addition_findings
     end;
 
@@ -309,7 +351,7 @@ findings="$(jq -n \
     protectionKnown: (prot_present or prot_unprotected),
     protectionBody: ({
       required_status_checks:
-        ( { strict: resolve($e.protection.strictRequiredChecks;
+        ( { strict: pick("strictRequiredChecks"; $e.protection.strictRequiredChecks;
                             (if prot_present then $prot.required_status_checks.strict else null end)) }
           # `contexts` is deprecated but still required by the PUT schema, so it is sent
           # whether or not `checks` is; `checks` adds the per-context app pin on top.
@@ -321,13 +363,13 @@ findings="$(jq -n \
                                 | ([obs_checks[] | select(.context == $c) | .app_id] | first) as $a
                                 | if $a == null then { context: $c } else { context: $c, app_id: $a } end ] }
                else {} end) ),
-      enforce_admins: resolve($e.protection.enforceAdmins; obs_enabled("enforce_admins")),
+      enforce_admins: pick("enforceAdmins"; $e.protection.enforceAdmins; obs_enabled("enforce_admins")),
       required_pull_request_reviews:
         ((observed_reviews + profile_reviews) as $r | if ($r | length) == 0 then null else $r end),
       restrictions: preserved_restrictions,
-      required_linear_history: resolve($e.protection.requiredLinearHistory; obs_enabled("required_linear_history")),
-      allow_force_pushes: resolve($e.protection.allowForcePushes; obs_enabled("allow_force_pushes")),
-      allow_deletions: resolve($e.protection.allowDeletions; obs_enabled("allow_deletions"))
+      required_linear_history: pick("requiredLinearHistory"; $e.protection.requiredLinearHistory; obs_enabled("required_linear_history")),
+      allow_force_pushes: pick("allowForcePushes"; $e.protection.allowForcePushes; obs_enabled("allow_force_pushes")),
+      allow_deletions: pick("allowDeletions"; $e.protection.allowDeletions; obs_enabled("allow_deletions"))
     } + preserved_protections) }
 ')"
 
@@ -335,9 +377,20 @@ findings="$(jq -n \
 printf 'settings-diff — %s (branch %s)\n\n' "$repo" "$branch"
 
 printf '%s' "$findings" | jq -r '
-  .findings[]
+  .findings[] | select(((.loosens // false) and .sev == "FAIL") | not)
   | "\(.sev)  \(.msg)" + (if .fix then "\n      fix: \(.fix)" else "" end) + "\n"
 '
+
+# A diff whose fix WEAKENS the branch reads, in a plain list, exactly like one that
+# tightens it — and the workflow is a human pasting the call below. So those get their own
+# section, above the call, one line each. (A loosening FAIL is listed only there; the WARN
+# about a dropped check keeps its fuller explanation in the list as well.)
+if printf '%s' "$findings" | jq -e '[.findings[] | select(.loosens)] | length > 0' >/dev/null; then
+  printf 'LOOSENING — applying the call below would make the branch LESS protected here:\n'
+  printf '%s' "$findings" | jq -r '.findings[] | select(.loosens) | "  \(.loosenMsg)"'
+  printf '  Read each before pasting. To keep a stricter value, list the key in the profile'"'"'s\n'
+  printf '  protectionFloors (where stricter is always acceptable) or add it to the profile.\n\n'
+fi
 
 # Branch protection is REPLACED by its PUT, never patched: a call carrying only the
 # diverging key clears every key it omits. So one call, carrying the whole desired state,
@@ -357,6 +410,8 @@ printf '%s' "$findings" | jq -r '
   | ([.findings[] | select(.sev == "WARN")] | length) as $w
   | ([.findings[] | select(.sev == "SKIP")] | length) as $s
   | "Summary: \($f) difference(s), \($w) warning(s), \($s) not verified."
+  + (([.findings[] | select(.loosens)] | length) as $l
+     | if $l > 0 then "\n\($l) of those would loosen the branch (see LOOSENING above)." else "" end)
   + "\nNot checked here: protection.requiredReviews.countsBotApproval — GitHub has no setting behind it."
 '
 
