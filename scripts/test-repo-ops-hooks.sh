@@ -4,6 +4,8 @@
 #   plugins/repo-ops/hooks/scripts/pr-template-guard.sh
 #   plugins/repo-ops/hooks/scripts/skip-label-race-guard.sh
 #   plugins/repo-ops/hooks/scripts/merge-guard.sh
+# and its PostToolUse Bash hook:
+#   plugins/repo-ops/hooks/scripts/review-reply-postcondition.sh
 #
 # Each case feeds a PreToolUse hook JSON payload on stdin and asserts the decision the script
 # renders, against a scratch repo built fresh per case (a `.claude/maintainerd.json` and a PR
@@ -11,7 +13,7 @@
 #
 #   ./scripts/test-repo-ops-hooks.sh
 #
-# Requires bash, jq. No network, no git.
+# Requires bash, jq (and git, for the review-reply-postcondition block). No network.
 
 set -uo pipefail
 export LC_ALL=C
@@ -20,6 +22,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/pr-template-guard.sh"
 SKIP_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/skip-label-race-guard.sh"
 MERGE_GUARD="$ROOT/plugins/repo-ops/hooks/scripts/merge-guard.sh"
+REPLY_POST="$ROOT/plugins/repo-ops/hooks/scripts/review-reply-postcondition.sh"
 
 PASS=0
 FAIL=0
@@ -630,6 +633,231 @@ expect "$SKIP_GUARD" none "a comma list that only contains a prefix of the skip 
   "$(repo "" "$CONFIG_SKIP_LABEL_SPACED")" 'gh pr create --title x --label "skip,review" --body y'
 expect "$SKIP_GUARD" none "an echo mentioning the label, next to a real DRAFTED create" \
   "$(repo "" "$CONFIG_SKIP_LABEL")" 'echo "gh pr create --label greptile:skip" && gh pr create --draft --label greptile:skip --title a'
+
+# ============================================================================================
+# review-reply-postcondition (PostToolUse)
+# ============================================================================================
+echo
+echo "== review-reply-postcondition: a fix claim must name a reachable commit =="
+
+# A scratch git repo with: c1 (old), c2 (HEAD), and a commit on a side branch that HEAD cannot reach.
+RP_REPO=$(mktemp -d)
+mkdir -p "$RP_REPO/.claude"
+printf '%s' '{"review": {"replyNamesCommit": true}}' > "$RP_REPO/.claude/maintainerd.json"
+RP_OFF=$(mktemp -d)
+mkdir -p "$RP_OFF/.claude"
+printf '%s' '{"review": {}}' > "$RP_OFF/.claude/maintainerd.json"
+(
+  cd "$RP_REPO" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  git init -q . && git checkout -q -b main
+  echo one > app.py && git add app.py .claude && git commit -q -m c1
+  echo two >> app.py && git commit -q -am c2
+  git checkout -q -b side HEAD~1 && echo x > side.txt && git add side.txt && git commit -q -m side
+  git checkout -q main
+)
+RP_HEAD=$(git -C "$RP_REPO" rev-parse --short=9 HEAD)
+RP_OLD=$(git -C "$RP_REPO" rev-parse --short=9 HEAD~1)
+RP_SIDE=$(git -C "$RP_REPO" rev-parse --short=9 side)
+
+# post_json <command> <cwd> -> the PostToolUse payload
+post_json() {
+  jq -n --arg cmd "$1" --arg cwd "$2" '{
+    session_id: "test", cwd: $cwd, hook_event_name: "PostToolUse", tool_name: "Bash",
+    tool_input: { command: $cmd }, tool_response: { stdout: "", stderr: "", interrupted: false }
+  }'
+}
+
+# expect_post <block|none> <label> <cwd> <command>
+expect_post() {
+  local want="$1" label="$2" dir="$3" cmd="$4" out got
+  out=$(post_json "$cmd" "$dir" | bash "$REPLY_POST" 2>/dev/null)
+  if [ -z "$out" ]; then got=none; else got=$(printf '%s' "$out" | jq -r '.decision // "other"' 2>/dev/null); fi
+  if [ "$got" = "$want" ]; then
+    PASS=$((PASS + 1)); printf '  ok   %-6s %s\n' "$got" "$label"
+  else
+    FAIL=$((FAIL + 1)); printf '  FAIL want=%s got=%s  %s\n' "$want" "$got" "$label"
+    printf '       command: %s\n' "$cmd"
+    [ -n "$out" ] && printf '       output:  %s\n' "$out"
+  fi
+}
+
+REPLIES='repos/o/r/pulls/12/comments/345/replies'
+expect_post block "gh pr comment claiming a fix, no SHA" "$RP_REPO" 'gh pr comment 12 --body "Fixed."'
+expect_post none  "gh pr comment claiming a fix, naming HEAD" "$RP_REPO" "gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+expect_post none  "an older reachable commit counts" "$RP_REPO" "gh pr comment 12 --body \"Addressed in $RP_OLD\""
+expect_post block "a SHA that exists but is NOT reachable from HEAD" "$RP_REPO" "gh pr comment 12 --body \"Fixed in $RP_SIDE\""
+expect_post block "a SHA-shaped token that is no commit" "$RP_REPO" 'gh pr comment 12 --body "Fixed in deadbeef1"'
+expect_post block "inline REST reply: -f body= claiming a fix, no SHA" "$RP_REPO" "gh api $REPLIES -f body='Addressed, thanks'"
+expect_post none  "inline REST reply naming the commit" "$RP_REPO" "gh api -X POST $REPLIES -f body=\"Fixed in $RP_HEAD\""
+expect_post block "inline REST reply, -F attached form" "$RP_REPO" "gh api $REPLIES -Fbody='Resolved'"
+expect_post block "inline REST reply, --raw-field" "$RP_REPO" "gh api $REPLIES --raw-field body='Done in the last push'"
+expect_post block "GraphQL thread reply claiming a fix" "$RP_REPO" "gh api graphql -f query='mutation { addPullRequestReviewThreadReply(input:{body:\"Fixed\"}) { comment { id } } }'"
+expect_post block "heredoc body via \$(cat <<EOF) claiming a fix, no SHA" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<'EOF'
+Fixed, see the new guard.
+EOF
+)\""
+expect_post none  "heredoc body naming the commit" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<'EOF'
+Fixed in $RP_HEAD.
+EOF
+)\""
+expect_post block "--body-file - with a stdin heredoc claiming a fix" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Addressed.
+EOF"
+printf 'Fixed.\n' > "$RP_REPO/reply.md"
+expect_post block "--body-file reading a file that claims a fix" "$RP_REPO" 'gh pr comment 12 --body-file reply.md'
+printf 'Fixed in %s.\n' "$RP_HEAD" > "$RP_REPO/reply.md"
+expect_post none  "--body-file whose file names the commit" "$RP_REPO" 'gh pr comment 12 --body-file reply.md'
+
+expect_post none  "a later candidate SHA after a bogus one still counts" "$RP_REPO" "gh pr comment 12 --body \"Fixed in deadbeef1 $RP_HEAD\""
+expect_post none  "a SHA past 2048 characters of body still counts" "$RP_REPO" "gh pr comment 12 --body \"Fixed. $(printf 'x%.0s' $(seq 1 2100)) Commit $RP_HEAD.\""
+expect_post none  "a body whose SHA is a shell variable is not judged" "$RP_REPO" 'NEW_HEAD=$(git rev-parse --short HEAD); gh api repos/o/r/pulls/12/comments/345/replies -f body="Fixed in $NEW_HEAD"'
+expect_post none  "a body whose SHA is a command substitution is not judged" "$RP_REPO" 'gh pr comment 12 --body "Fixed in $(git rev-parse --short HEAD)"'
+expect_post block "a single-quoted \$NEW_HEAD is literal text, so it is judged" "$RP_REPO" "gh pr comment 12 --body 'Fixed in \$NEW_HEAD'"
+expect_post block "an escaped \\\$NEW_HEAD in double quotes is literal text" "$RP_REPO" 'gh pr comment 12 --body "Fixed in \$NEW_HEAD"'
+printf 'Fixed in $NEW_HEAD.\n' > "$RP_REPO/reply.md"
+expect_post block "a --body-file holding a literal \$VAR is judged" "$RP_REPO" 'gh pr comment 12 --body-file reply.md'
+expect_post block "a quoted-delimiter heredoc with \$VAR is literal" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<'EOF'
+Fixed in \$NEW_HEAD.
+EOF
+)\""
+expect_post none  "an unquoted-delimiter heredoc expanding \$VAR is not judged" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \$NEW_HEAD.
+EOF
+)\""
+expect_post none  "an unquoted heredoc: an escaped backslash before \$VAR still expands" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \\\\\$NEW_HEAD.
+EOF
+)\""
+expect_post none  "an unquoted heredoc expanding \$@ is not judged" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \$@.
+EOF
+)\""
+expect_post block "an unquoted heredoc with an escaped \\\$VAR is literal" "$RP_REPO" "gh pr comment 12 --body \"\$(cat <<EOF
+Fixed in \\\$NEW_HEAD.
+EOF
+)\""
+expect_post none  "--body-file - from an unquoted stdin heredoc expanding \$VAR is not judged" "$RP_REPO" "gh pr comment 12 --body-file - <<EOF
+Fixed in \$NEW_HEAD.
+EOF"
+expect_post block "--body-file - from a quoted stdin heredoc with \$VAR is literal" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed in \$NEW_HEAD.
+EOF"
+mkdir -p "$RP_REPO/sub/dir"
+expect_post block "config found at the repo root when cwd is a subdirectory" "$RP_REPO/sub/dir" 'gh pr comment 12 --body "Fixed."'
+rmdir "$RP_REPO/sub/dir" "$RP_REPO/sub"
+
+echo
+echo "== review-reply-postcondition: only the reply's own body votes =="
+expect_post block "--body-file - heredoc claiming a fix, a later git show <sha> does not vote" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed.
+EOF
+git show $RP_HEAD"
+expect_post none  "--body-file - heredoc that names the commit itself" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed in $RP_HEAD.
+EOF"
+expect_post block "--body-file - from a here-string claiming a fix" "$RP_REPO" "gh pr comment 12 --body-file - <<< 'Fixed.'"
+expect_post none  "--body-file - fed by a pipe is decided at runtime, not judged" "$RP_REPO" "printf 'Fixed.' | gh pr comment 12 --body-file -"
+printf 'Fixed.\n' > "$RP_REPO/reply.md"
+expect_post block "gh api -F body=@file posts the file: a fix claim with no SHA" "$RP_REPO" "gh api $REPLIES -F body=@reply.md"
+expect_post block "gh api --field=body=@file, attached form" "$RP_REPO" "gh api $REPLIES --field=body=@reply.md"
+expect_post block "gh api -Fbody=@file, attached short form" "$RP_REPO" "gh api $REPLIES -Fbody=@reply.md"
+printf 'Fixed in %s.\n' "$RP_HEAD" > "$RP_REPO/reply.md"
+expect_post none  "gh api -F body=@file whose file names the commit" "$RP_REPO" "gh api $REPLIES -F body=@reply.md"
+expect_post none  "gh api -F body=@missing-file is not judged" "$RP_REPO" "gh api $REPLIES -F body=@nope.md"
+expect_post block "gh api -f body=@x is a literal string, not a file" "$RP_REPO" "gh api $REPLIES -f body='@x Fixed'"
+
+echo
+echo "== review-reply-postcondition: a cd earlier in the command picks the checkout =="
+expect_post block "cd into an opted-in checkout from an opted-out one" "$RP_OFF" "cd $RP_REPO && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "cd into an opted-in checkout, naming its commit" "$RP_OFF" "cd $RP_REPO && gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+expect_post none  "cd out of an opted-in checkout to an opted-out one" "$RP_REPO" "cd $RP_OFF && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "cd to a runtime directory: the checkout is unknown, not judged" "$RP_REPO" 'cd "$WT" && gh pr comment 12 --body "Fixed."'
+expect_post block "a relative cd resolves against the cwd" "$(dirname "$RP_REPO")" "cd $(basename "$RP_REPO") && gh pr comment 12 --body \"Fixed.\""
+expect_post block "pushd into an opted-in checkout from an opted-out one" "$RP_OFF" "pushd $RP_REPO && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "pushd then popd returns to the opted-out cwd" "$RP_OFF" "pushd $RP_REPO && popd && gh pr comment 12 --body \"Fixed.\""
+expect_post block "pushd out, popd back into the opted-in cwd" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed.\""
+expect_post none  "pushd out then popd back: a commit of the cwd counts" "$RP_REPO" "pushd $RP_OFF && popd && gh pr comment 12 --body \"Fixed in $RP_HEAD.\""
+mkdir -p "$RP_REPO/work/pushd"
+expect_post block "a cd whose path contains 'pushd' is not a pushd: popd returns to the cwd" "$RP_REPO" "pushd $RP_OFF && cd $RP_REPO/work/pushd && popd && gh pr comment 12 --body \"Fixed.\""
+rm -rf "$RP_REPO/work"
+
+echo
+echo "== review-reply-postcondition: heredoc terminators are whole lines =="
+expect_post block "<<-EOF with a tab-indented terminator: a later git show does not vote" "$RP_REPO" "gh pr comment 12 --body-file - <<-'EOF'
+	Fixed.
+	EOF
+git show $RP_HEAD"
+expect_post none  "a body line that starts with the tag does not end the body" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed.
+EOF-adjacent note: see $RP_HEAD.
+EOF"
+expect_post block "an unterminated quoted stdin heredoc is still judged" "$RP_REPO" "gh pr comment 12 --body-file - <<'EOF'
+Fixed."
+
+echo
+echo "== review-reply-postcondition: wrappers resolve like a bare gh =="
+expect_post block "command gh pr comment" "$RP_REPO" 'command gh pr comment 12 --body "Fixed"'
+expect_post block "env VAR=x gh pr comment" "$RP_REPO" 'env GH_TOKEN=x gh pr comment 12 --body "Fixed"'
+expect_post block "exec gh pr comment" "$RP_REPO" 'exec gh pr comment 12 --body "Fixed"'
+expect_post block "/usr/bin/gh by path" "$RP_REPO" '/usr/bin/gh pr comment 12 --body "Fixed"'
+expect_post block "VAR=x prefix" "$RP_REPO" 'GH_TOKEN=x gh pr comment 12 --body "Fixed"'
+expect_post block "after && in a chain" "$RP_REPO" 'git push && gh pr comment 12 --body "Fixed"'
+expect_post block "second of two replies is the bad one" "$RP_REPO" "gh pr comment 12 --body \"Fixed in $RP_HEAD\" && gh pr comment 13 --body \"Fixed\""
+
+echo
+echo "== review-reply-postcondition: false positives and non-replies stay silent =="
+expect_post none "a reply that claims nothing" "$RP_REPO" 'gh pr comment 12 --body "Thanks, looking into it."'
+expect_post none "a disagreement" "$RP_REPO" 'gh pr comment 12 --body "This is intentional; see the design doc."'
+expect_post none "a negated claim: not fixed" "$RP_REPO" 'gh pr comment 12 --body "This is not fixed yet."'
+expect_post none "a promise: will fix" "$RP_REPO" 'gh pr comment 12 --body "I will fix this next round."'
+expect_post none "an echo that mentions the command" "$RP_REPO" 'echo "gh pr comment 12 --body Fixed"'
+expect_post none "a heredoc writing a script that contains the command" "$RP_REPO" "cat > reply.sh <<'EOF'
+gh pr comment 12 --body \"Fixed\"
+EOF"
+expect_post none "gh issue comment is not a review reply" "$RP_REPO" 'gh issue comment 12 --body "Fixed"'
+expect_post none "gh api on another endpoint" "$RP_REPO" "gh api repos/o/r/issues/12/comments -f body='Fixed'"
+expect_post none "gh pr view" "$RP_REPO" 'gh pr view 12 --json state'
+expect_post none "a different command's body does not vote" "$RP_REPO" 'gh issue create --body "Fixed" && gh pr comment 12 --body "Thanks"'
+expect_post none "the hook is opt-in: key unset means silent" "$RP_OFF" 'gh pr comment 12 --body "Fixed."'
+expect_post none "no config at all" "$(mktemp -d)" 'gh pr comment 12 --body "Fixed."'
+NOGIT=$(mktemp -d); mkdir -p "$NOGIT/.claude"; cp "$RP_REPO/.claude/maintainerd.json" "$NOGIT/.claude/"
+expect_post none "outside a git checkout nothing can be verified, so it says nothing" "$NOGIT" 'gh pr comment 12 --body "Fixed."'
+rm -rf "$NOGIT"
+
+echo
+echo "== review-reply-postcondition: the feedback carries the diff of a file the reply names =="
+out=$(post_json 'gh pr comment 12 --body "Fixed app.py"' "$RP_REPO" | bash "$REPLY_POST" 2>/dev/null)
+case "$out" in
+  *'"decision": "block"'*'PostToolUse'*) PASS=$((PASS + 1)); printf '  ok   shape  block + PostToolUse additionalContext\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL shape  %s\n' "$out" ;;
+esac
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
+  *app.py*) PASS=$((PASS + 1)); printf '  ok   ctx    diff context mentions the named file or recent commits\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    %s\n' "$out" ;;
+esac
+
+# With no default-branch ref at all, the fallback diff says it covers the latest commit only.
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
+  *"latest commit only"*) PASS=$((PASS + 1)); printf '  ok   ctx    a HEAD~1 fallback says it is one commit wide\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    no fallback note: %s\n' "$out" ;;
+esac
+git -C "$RP_REPO" branch -q base HEAD~1
+git -C "$RP_REPO" update-ref refs/remotes/origin/main base
+out=$(post_json 'gh pr comment 12 --body "Fixed app.py"' "$RP_REPO" | bash "$REPLY_POST" 2>/dev/null)
+case "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext')" in
+  *"latest commit only"*) FAIL=$((FAIL + 1)); printf '  FAIL ctx    fallback note despite origin/main: %s\n' "$out" ;;
+  *"+two"*) PASS=$((PASS + 1)); printf '  ok   ctx    diff runs from the fork point with origin/main\n' ;;
+  *) FAIL=$((FAIL + 1)); printf '  FAIL ctx    %s\n' "$out" ;;
+esac
+
+echo
+echo "== review-reply-postcondition: fails LOUDLY if the scanner is missing =="
+NOLIB2=$(mktemp -d)
+cp "$REPLY_POST" "$NOLIB2/"
+out=$(post_json 'gh pr comment 12 --body "Fixed"' "$RP_REPO" | bash "$NOLIB2/review-reply-postcondition.sh" 2>/dev/null)
+case "$out" in *"scanner"*"missing"*) PASS=$((PASS + 1)); printf '  ok   warn   missing scanner is announced\n' ;; *) FAIL=$((FAIL + 1)); printf '  FAIL missing scanner: %s\n' "$out" ;; esac
+rm -rf "$NOLIB2" "$RP_REPO" "$RP_OFF"
 
 echo
 echo "== merge-guard: warns on every real merge, never denies =="

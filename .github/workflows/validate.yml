@@ -94,7 +94,7 @@ jobs:
       - name: The PR-template helper checks headings and resolves prTemplateSource correctly
         run: ./scripts/test-pr-template-check.sh
 
-      - name: The repo-ops pr-template-guard and skip-label-race-guard hooks behave, and fail closed
+      - name: The repo-ops pr-template-guard, skip-label-race-guard, merge-guard and review-reply-postcondition hooks behave, and fail closed
         run: ./scripts/test-repo-ops-hooks.sh
 
       - name: The repo-ops wait-for-review and wait-for-checks tools report each outcome, and never act
