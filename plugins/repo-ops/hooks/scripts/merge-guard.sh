@@ -101,7 +101,7 @@ merge_kind() {
   # A GraphQL query read from a file cannot be inspected here; warn rather than miss a merge.
   case "$lowered" in
     *graphql*)
-      if printf '%s\n' "$lowered" | grep -Eq '^(--input|--input=.*|[^=]*=@.*)$'; then
+      if printf '%s\n' "$lowered" | grep -Eq '^(--input|--input=.*|(--(field|raw-field)=)?query=@.*)$'; then
         printf 'a GraphQL call whose query is read from a file (not inspectable)'
         return 0
       fi ;;
@@ -135,6 +135,45 @@ WORDS
   printf 'the REST merge endpoint'
 }
 
+# leaves_repo <merge segment>: the merge itself names another repo (-R/--repo, GH_REPO=…).
+# any_cd <command>: some simple command in the payload is a cd/pushd or sets GH_REPO=…, so a
+# later merge may run elsewhere. Both look at real argv words only, never at quoted prose.
+leaves_repo() {
+  local off len w
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    w=$(unquote_word "${1:$off:$len}")
+    case "$w" in
+      -R|-R?*|--repo|--repo=*|GH_REPO=*) return 0 ;;
+    esac
+  done <<ARGV
+$(argv_spans "$1")
+ARGV
+  return 1
+}
+any_cd() {
+  local off len seg first w
+  while IFS=' ' read -r off len; do
+    [ -n "$off" ] || continue
+    seg="${1:$off:$len}"
+    first=1
+    while IFS=' ' read -r woff wlen; do
+      [ -n "$woff" ] || continue
+      w=$(unquote_word "${seg:$woff:$wlen}")
+      if [ "$first" -eq 1 ]; then
+        case "$w" in cd|pushd) return 0 ;; esac
+        first=0
+      fi
+      case "$w" in GH_REPO=*) return 0 ;; esac
+    done <<ARGV2
+$(argv_spans "$seg")
+ARGV2
+  done <<SEGS
+$(split_simple_commands "$1")
+SEGS
+  return 1
+}
+
 MASKED=$(mask_all_heredocs "$COMMAND")
 
 while IFS=' ' read -r OFF LEN; do
@@ -142,10 +181,7 @@ while IFS=' ' read -r OFF LEN; do
   KIND=$(merge_kind "${MASKED:$OFF:$LEN}")
   [ -n "$KIND" ] || continue
   if [ "$DELEGATED" -eq 1 ]; then
-    case "$MASKED" in
-      *cd\ *|*pushd\ *|*GH_REPO*|*\ -R*|*--repo*) : ;;
-      *) exit 0 ;;
-    esac
+    leaves_repo "${MASKED:$OFF:$LEN}" || any_cd "$MASKED" || exit 0
   fi
   if [ -n "$AGENT" ] && [ "$AGENT" != "null" ]; then
     emit_warning "repo-ops merge-guard: this command merges a pull request via $KIND, and it was issued from a SUBAGENT. Agents never merge: get the PR to a clean review and green checks, report, and leave the merge to the maintainer. Nothing is blocked, but stop here unless the maintainer told you to merge this PR."

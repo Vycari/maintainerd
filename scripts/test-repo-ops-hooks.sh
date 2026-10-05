@@ -713,6 +713,7 @@ for c in \
   'gh api repos/o/r/pulls/1' \
   'gh api -X GET repos/o/r/pulls/1/merge' \
   'gh api repos/o/r/pulls/1/merge' \
+  'gh api graphql -f query="{ viewer { login } }" -F owner=@owner.txt' \
   'gh api graphql -f query="{ repository(owner:\"o\", name:\"r\") { pullRequest(number:1) { mergePullRequest: id } } }"' \
   'gh api -X PUT repos/o/r/issues/1/labels' \
   'gh api -X PUT repos/o/r/pulls/1/reviews' \
@@ -743,6 +744,13 @@ expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover a cd e
   "$(repo "" "$CONFIG_MAY_MERGE")" 'cd ../other && gh pr merge 5'
 expect "$MERGE_GUARD" warn "delegation in the starting cwd does not cover --repo" \
   "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 --repo Vycari/other'
+
+expect "$MERGE_GUARD" none "delegated: quoted GH_REPO/cd/--repo prose in another command is not a repo switch" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'echo "GH_REPO and cd and --repo"; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: export GH_REPO=… before a merge still warns" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'export GH_REPO=Vycari/other; gh pr merge 5'
+expect "$MERGE_GUARD" warn "delegated: -R on the merge itself still warns" \
+  "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 -R Vycari/other'
 
 echo
 echo "== merge-guard fails LOUDLY if the shared scanner is missing =="
