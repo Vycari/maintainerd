@@ -269,6 +269,7 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `protection.requiredReviews.dismissStale` | bool | `dismiss_stale_reviews`. |
 | `protection.requiredReviews.countsBotApproval` | bool | **No GitHub counterpart** — see **What the profile does not govern**. |
 | `protection.enforceAdmins` | bool | `enforce_admins`. |
+| `protectionFloors` | array of strings, optional | Protection keys whose profile value is a **minimum**, not an exact value — see **Floors**. A sibling of `protection`, not inside it, so readers that predate it ignore it rather than reject it. |
 | `labels` | array of strings | Labels that must exist. Missing ones are a finding; **extra ones are not** — a repo's own labels are its business. |
 | `review` | object | Passed through to the repo config's `review` block by `bootstrap` (`bots`, `approvalThreshold`, `scoreSource`, `responderTier`, `impasseRounds`, `sameFileRoundCap` — the schema for them is in [`config-schema.md`](config-schema.md)). Not a GitHub setting. |
 | `requireIssueForDeferredWork` | bool | Passed through to `createPr.requireIssueForDeferredWork`. Not a GitHub setting. |
@@ -401,6 +402,49 @@ Three consequences worth stating, because each is a case where the obvious imple
   is carried across — an unpinned check omitting `app_id` entirely, since the request schema takes an
   optional integer there and `null` is the response's spelling. A warning printed above a call that
   still loses the thing is a warning read after the paste.
+
+### Floors
+
+`defaults.protection.*` is otherwise an exact value, so a profile saying `enforceAdmins: false`
+would generate a PUT that switches `enforce_admins` **off** on a repo that has it on deliberately.
+For keys where stricter is always acceptable, the value is a floor instead:
+
+```jsonc
+"defaults": {
+  "protection": { "enforceAdmins": false, … },
+  "protectionFloors": ["enforceAdmins"]      // these values are minima, not exact values
+}
+```
+
+Entries name profile-side protection keys, dotted for nested ones. For a listed key, a branch whose
+value is **stricter** is conformant — no finding, and the PUT carries the branch's existing value —
+while a **looser** one is still a finding. Which direction is stricter is a fixed table, not
+inferred from the value's type:
+
+| Key | Stricter is |
+| --- | --- |
+| `requiredLinearHistory`, `enforceAdmins`, `strictRequiredChecks`, `requiredReviews.dismissStale` | `true` |
+| `allowForcePushes`, `allowDeletions` | `false` |
+| `requiredReviews.count` | the larger number |
+
+Only those keys may be listed (`profile-resolve.sh --validate` rejects any other, including
+`requiredReviews.countsBotApproval`, which has no GitHub setting). Nothing is a floor unless listed:
+more required approvals in a one-maintainer org is a deadlock rather than a tightening, so a profile
+opts in per key. `protectionFloors` is fixed org-wide like the rest of `defaults`; it is additive and
+optional and does not bump `profileVersion`. `new-repo` has no existing branch to be stricter, so it
+applies the profile's value.
+
+**Loosening is labelled.** Whether or not a key is a floor, any difference whose fix would make the
+branch *less* protected — `enforce_admins true → false` on a key that is not a floor, a required
+check the PUT would drop — is reported in its own `LOOSENING` section above the call:
+
+```text
+LOOSENING — applying the call below would make the branch LESS protected here:
+  LOOSENS — main enforce_admins true → false (profile value; not a floor)
+```
+
+Without the label a weakening diff reads exactly like a tightening one, and the workflow is a human
+pasting the call. The report is still report-only.
 
 The one widening nothing can avoid is a check the **profile adds** to a branch whose existing checks
 are app-pinned: there is no pin to carry across, so any app could satisfy it. That is one warning
