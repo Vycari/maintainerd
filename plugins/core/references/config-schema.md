@@ -212,6 +212,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "impasseRounds":     2,          // rounds on one disputed finding before the loop halts + escalates
     "sameFileRoundCap":  3,          // consecutive rounds rewriting the same file before the loop halts,
                                      // whether or not it agrees with each finding
+    "waitTimeoutMinutes": 20,        // hard deadline for repo-ops' wait-for-review / wait-for-checks;
+                                     // they print `timeout` rather than ever "still waiting"
     "skipLabel":         null        // optional. A label that marks a PR as exempt from automated
                                      // review (a prose/config-only change). null/absent = no such
                                      // label in this repo. Read by the repo-ops `skip-label-race-guard`
@@ -423,6 +425,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   rewrite the same file before the loop halts, regardless of whether it agreed with every finding
   along the way. This is the cap that catches the churn `impasseRounds` cannot see: agreeing with
   each individual finding is what disguises a file being rewritten in circles.
+- `review.waitTimeoutMinutes` *(optional; default `20`)* — the hard deadline, in minutes, for the
+  `repo-ops` wait tools (`wait-for-review.sh`, `wait-for-checks.sh`). They poll no more often than
+  every 3 minutes and, when the deadline passes with no verdict, print `timeout` and exit instead of
+  waiting on. A non-negative integer; anything else is a configuration error (exit 3), not a default.
+  The tools also read `review.approvalThreshold`, `review.bots` and `review.skipLabel` as described
+  above, and never fix, label, reply or merge — they only report.
 - `review.skipLabel` *(optional; default `null`)* — the label a repo uses to mark a PR as exempt
   from automated review (a prose/config-only change, say). Purely declarative here: maintainerd
   never decides *when* a PR qualifies, and no maintainerd skill applies or removes it. It exists so

@@ -128,6 +128,46 @@ Label values are parsed the way gh accepts them — quoted (`--label "skip revie
 full rather than truncated at the space), repeated (`--label a --label b`), `--label=value`, the
 `-l` shorthand, and comma-separated (`--label a,b`, which gh splits into two labels).
 
+## Wait tools
+
+Two scripts that block on a PR until a bot or CI has a verdict, and print it. They exist so an
+agent (or a person) can say "wait for the review" once, instead of hand-rolling a polling loop that
+forgets a deadline, reads a stale comment, or confuses a workflow run with a job. Both are plain
+bash 3.2 over `gh` and `jq`, generic (no repo or org is named), and **observe only**: they never fix
+code, reply, resolve a thread, label, re-run a job, or merge. They live in
+[`scripts/`](scripts/) and are run by path
+(`${CLAUDE_PLUGIN_ROOT}/scripts/wait-for-review.sh <pr> [-R owner/repo]`); the test suite is
+`scripts/test-wait-tools.sh` in the maintainerd repo root, against a stubbed `gh` with no network.
+
+The first line of stdout is the verdict; exit status mirrors it (0 good, 1 needs action, 2 gave up,
+3 the tool itself could not run, which is never reported as a verdict). Both stop at
+`review.waitTimeoutMinutes` (default 20) and poll every 3 minutes unless `--interval-seconds` says
+otherwise; `--timeout-seconds` and `--config FILE` exist for tests and one-off use.
+
+### `wait-for-review.sh <pr> [-R owner/repo]`
+
+| Output | Meaning |
+| --- | --- |
+| `approved` | The bot's score meets `review.approvalThreshold` **on the PR's head commit** and there are 0 unresolved review threads. With the default threshold `"approved"`, GitHub's `reviewDecision` must be `APPROVED` instead. |
+| `findings:<n>` | The head commit's review is in and `<n>` threads are unresolved; one indented `path:line  body` line follows per finding. `findings:0` means the score is below the threshold with nothing open on a line (the shortfall is in the summary). |
+| `no-review-scheduled` | Nothing will review it: the PR is a draft, carries `review.skipLabel`, or `review.bots` is configured empty. Returned immediately. |
+| `timeout` | No verdict by the deadline. |
+
+It polls the **same** bot artifact every round — Greptile edits one comment (or the PR description's
+marker block) in place — and compares its "Last reviewed commit" with the PR's current head. A
+score for any other commit, or a score whose commit cannot be read, is stale and counts as "no
+review yet": it never satisfies the gate, whatever the number. Scores are only trusted from a login
+in `review.bots` (or from the description's marker block), never from prose that merely quotes one.
+
+### `wait-for-checks.sh <pr> [-R owner/repo]`
+
+| Output | Meaning |
+| --- | --- |
+| `green` | Every check in `statusCheckRollup` has finished and none failed (success, neutral and skipped are not failures). |
+| `failed:<job>` | A check failed (failure, timed out, cancelled, startup failure or action required). `<job>` is the **job** name, and the failing job's log tail follows (`gh run view --job <id> --log-failed`, last 40 lines) — job-level, not run-level. Reported as soon as seen; it does not wait for the rest. |
+| `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A queued job whose assignment cannot be confirmed is not reported this way. |
+| `timeout` | No verdict by the deadline. An empty rollup keeps waiting, since checks register shortly after a push. |
+
 ## Note on code review
 
 This plugin used to ship a `code-review` skill. It was dropped in favour of Claude Code's built-in
