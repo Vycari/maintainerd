@@ -318,6 +318,16 @@ printf 'revision = ("0004")\ndown_revision = "0003"\n' >"$WORK/$DIRP/sub/x.py"
 run_tool
 expect "a nested file with an unparseable revision assignment is refused, not skipped" refused:nested-migration 2
 
+new_case nested-numbered-notes
+mkdir -p "$WORK/$DIRP/archive"
+echo "notes" >"$WORK/$DIRP/archive/2024_notes.md"
+(cd "$WORK" && git add "$DIRP/archive/2024_notes.md" && git commit -q -m notes)
+on_branch 0004 0003 widgets
+land_on_main 0004 0003 gadgets
+sync_branch
+run_tool
+expect "a numbered non-.py file in a subdirectory does not block" renumbered:1 0
+
 new_case inline-comment
 (
   cd "$WORK" && printf 'revision = "0004"\ndown_revision = "0003"  # replaces "0002"\n' >"$DIRP/0004_widgets.py" && git add -A && git commit -q -m c

@@ -224,9 +224,9 @@ while IFS= read -r f; do
     */*)
       # Not a flat-layout migration. A helper or README down there is none of our business; a file
       # that declares a revision might be one, and renumbering around it would be a guess.
-      # Judged loosely on purpose (any revision assignment, or a numbered file name), so a form
+      # Judged loosely on purpose (any revision assignment, or a numbered .py file), so a form
       # rev_of cannot parse still cannot slip past as "no migration".
-      if case "${f##*/}" in [0-9]*_*) true ;; *) grep -Eq '^[[:space:]]*(down_)?revision[[:space:]]*(:[^=]*)?=' "$DIR/$f" 2>/dev/null ;; esac; then
+      if case "${f##*/}" in [0-9]*_*.py) true ;; *) grep -Eq '^[[:space:]]*(down_)?revision[[:space:]]*(:[^=]*)?=' "$DIR/$f" 2>/dev/null ;; esac; then
         refuse "nested-migration" "$DIR/$f declares a revision from a subdirectory of $DIR; this tool only renumbers migrations that sit directly in it."
       fi
       continue
