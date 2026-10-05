@@ -231,7 +231,7 @@ repo gets a `refused:` verdict rather than a guess.
 | `no-migrations` | The branch adds no migration file. |
 | `not-configured` | `commands.migrationGraph` is unset. |
 | `graph-failed` | Renumbered (or already current) but the graph check still fails; its output tail follows. Exit 1. |
-| `refused:<reason>` | Changed nothing, a person resolves it. Exit 2. Reasons: `behind-base`, `uncommitted-changes`, `base-head-ambiguous`, `not-a-linear-chain`, `merge-migration`, `non-numeric-id`, `name-mismatch`, `no-revision`, `target-exists`, `no-revisions-on-base`. |
+| `refused:<reason>` | Changed nothing, a person resolves it. Exit 2. Reasons: `behind-base`, `uncommitted-changes`, `base-head-ambiguous`, `not-a-linear-chain`, `merge-migration`, `nested-migration`, `non-numeric-id`, `name-mismatch`, `no-revision`, `target-exists`, `no-revisions-on-base`. |
 
 It sees only the base head. An id claimed by another *open* PR is invisible to it; if the graph
 check names such a collision, renumber again once that PR lands.

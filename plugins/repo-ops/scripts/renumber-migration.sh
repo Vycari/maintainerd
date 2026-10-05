@@ -34,7 +34,8 @@
 #   refused:<reason>       it could not do this safely and changed nothing: the branch does not
 #                          contain the base yet (merge or rebase it first), uncommitted changes in
 #                          the migrations directory, a base with no single head, a branch whose
-#                          migrations are not one linear chain, a merge migration, a non-numeric
+#                          migrations are not one linear chain, a merge migration, a migration in a
+#                          subdirectory of the migrations directory, a non-numeric
 #                          id, a file name that does not start with its revision id. A person
 #                          resolves it. 2
 #
@@ -169,13 +170,14 @@ trap 'rm -rf "$TMP"' EXIT
 rev_of() {
   sed -nE "s/^revision[^=]*=[[:space:]]*[\"']([^\"']*)[\"'].*/\1/p" | head -n 1
 }
-# Every quoted id on the `down_revision` line(s), one per line. `None` yields nothing.
+# Every quoted id on the `down_revision` line(s), one per line, a trailing `# comment` ignored.
+# `None` yields nothing.
 downs_of() {
-  grep -E '^down_revision[^=]*=' | grep -oE "[\"'][^\"']+[\"']" | tr -d "\"'"
+  grep -E '^down_revision[^=]*=' | sed -E 's/[[:space:]]*#.*$//' | grep -oE "[\"'][^\"']+[\"']" | tr -d "\"'"
 }
 
-ls_dir() { # <ref> -> file names directly under $DIR at that ref
-  git ls-tree --name-only "$1" "$DIR/" 2>/dev/null | sed "s#^$DIR/##"
+ls_dir() { # <ref> -> every file under $DIR at that ref, as a path relative to $DIR
+  git ls-tree -r --name-only "$1" "$DIR/" 2>/dev/null | sed "s#^$DIR/##"
 }
 
 ls_dir "$BASE" >"$TMP/base-names"
@@ -210,10 +212,12 @@ esac
 N=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  case "$f" in */*) continue ;; esac
   if grep -qxF -- "$f" "$TMP/base-names"; then
     continue
   fi
+  case "$f" in
+    */*) refuse "nested-migration" "$DIR/$f is in a subdirectory of $DIR; this tool only renumbers migrations that sit directly in it." ;;
+  esac
   [ -f "$DIR/$f" ] || continue
   N=$((N + 1))
   NAME[$N]="$f"

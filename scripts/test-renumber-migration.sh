@@ -133,6 +133,8 @@ absent() { [ ! -e "$WORK/$2" ] && ok "$1" || bad "$1" "$2 should be gone"; }
 
 echo "renumber-migration"
 
+[ -x "$TOOL" ] && ok "the script is executable (the README runs it by path)" || bad "mode" "$TOOL is not executable"
+
 # ── inert without config ────────────────────────────────────────────────────
 new_case unconfigured '{"defaultBranch":"main","commands":{"migrationGraph":null}}'
 on_branch 0004 0003 widgets
@@ -277,6 +279,23 @@ land_on_main 0004 0003 other
 sync_branch
 run_tool
 expect "merge migration -> refused" refused:merge-migration 2
+
+new_case nested
+mkdir -p "$WORK/$DIRP/archive"
+mig "$WORK/$DIRP/archive" 0004 0003 buried annotated
+(cd "$WORK" && git add -A && git commit -q -m nested)
+run_tool
+expect "a branch migration in a subdirectory -> refused, not silently skipped" refused:nested-migration 2
+
+new_case inline-comment
+(
+  cd "$WORK" && printf 'revision = "0004"\ndown_revision = "0003"  # replaces "0002"\n' >"$DIRP/0004_widgets.py" && git add -A && git commit -q -m c
+)
+land_on_main 0004 0003 gadgets
+sync_branch
+run_tool
+expect "a quoted word in a trailing comment is not a second parent" renumbered:1 0
+file_has "and the comment survives" "$DIRP/0005_widgets.py" '"0004"  # replaces "0002"'
 
 new_case non-numeric
 on_branch abc123 0003 hashy
