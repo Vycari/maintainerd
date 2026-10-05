@@ -25,13 +25,16 @@ QUEUE_QUERY='query($owner:String!,$name:String!,$branch:String!){
   repository(owner:$owner,name:$name){mergeQueue(branch:$branch){
     entries(first:100){nodes{position state pullRequest{number}}}}}}'
 
-# fetch_queue <owner/repo> <branch> — prints one "<pr> <position> <state>" line per entry in the
-# branch's merge queue; nothing when the branch has no queue. Returns 1 (with QUEUE_ERR set) when
-# GitHub could not be asked. Queue membership comes only from the GraphQL mergeQueue connection:
-# no PR field (mergeStateStatus, autoMergeRequest, ...) says whether a PR is queued.
+# fetch_queue <owner/repo> <branch> — sets QUEUE_LINES to one "<pr> <position> <state>" line per
+# entry in the branch's merge queue (empty when the branch has no queue). Returns 1, with QUEUE_ERR
+# set, when GitHub could not be asked. Call it directly, not inside $(...): the results are globals,
+# and a command substitution would drop them. Queue membership comes only from the GraphQL
+# mergeQueue connection: no PR field (mergeStateStatus, autoMergeRequest, ...) says whether a PR is
+# queued.
 fetch_queue() {
   local out
   QUEUE_ERR=""
+  QUEUE_LINES=""
   out="$(gh api graphql -f query="$QUEUE_QUERY" -f owner="${1%%/*}" -f name="${1##*/}" -f branch="$2" 2>&1)" || {
     QUEUE_ERR="gh api graphql failed: $out"
     return 1
@@ -40,14 +43,9 @@ fetch_queue() {
     QUEUE_ERR="mergeQueue query returned errors: $(printf '%s' "$out" | jq -c '.errors' | cut -c1-200)"
     return 1
   fi
-  printf '%s' "$out" | jq -r '.data.repository.mergeQueue.entries.nodes[]? | "\(.pullRequest.number) \(.position) \(.state)"' 2>/dev/null || {
+  QUEUE_LINES="$(printf '%s' "$out" | jq -r '.data.repository.mergeQueue.entries.nodes[]? | "\(.pullRequest.number) \(.position) \(.state)"' 2>/dev/null)" || {
     QUEUE_ERR="could not parse the mergeQueue response"
     return 1
   }
 }
 
-# queue_lookup <queue-lines> <pr> — prints "<position> <state>" for the PR, nothing when it is not
-# in the queue.
-queue_lookup() {
-  printf '%s\n' "$1" | awk -v n="$2" '$1 == n { print $2, $3; exit }'
-}

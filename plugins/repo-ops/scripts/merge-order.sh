@@ -111,9 +111,10 @@ fi
 
 # stated_deps <body> — PR numbers a description says it depends on, one per line.
 stated_deps() {
+  local el='(\[?#[0-9]+\]?(\([^)]*\))?|https?://[^ )]*/pull/[0-9]+)'
   printf '%s' "$1" |
-    grep -oiE '(depends on|stacked on|blocked by|requires)[: ]+#[0-9]+(,? *(and )?#[0-9]+)*' |
-    grep -oE '#[0-9]+' | tr -d '#' | sort -un
+    grep -oiE "(depends on|stacked on|blocked by|requires)[: ]+((prs?|pull requests?)[: ]+)?$el(,? *(and )?$el)*" |
+    grep -oE '#[0-9]+|/pull/[0-9]+' | tr -d '#' | sed 's#^/pull/##' | sort -un
 }
 
 OPEN="[]"
@@ -164,6 +165,13 @@ for n in $(printf '%s' "$OPEN" | jq -r '[.[] | .stated[]] | unique | .[]'); do
   [ "$s" != "OPEN" ] || EXTERNAL="$EXTERNAL $n"
 done
 
+# A PR based on the branch of an OPEN PR that is not in the set is an open stack dependency too.
+for b in $(printf '%s' "$OPEN" | jq -r --argjson heads "$(printf '%s' "$OPEN" | jq -c 'map(.head)')" \
+  '[.[] | .base | select(. as $b | $heads | index($b) | not)] | unique | .[]'); do
+  m="$(gh pr list -R "$REPO" --head "$b" --state open --json number -q '.[0].number // empty' </dev/null 2>/dev/null)" || continue
+  [ -z "$m" ] || EXTERNAL="$EXTERNAL $m"
+done
+
 ORDER_LINE="$(printf '%s' "$PLAN" | jq -r 'map("#\(.number)") | join(" ")')"
 skipped_notes() {
   for n in $MERGED; do printf '  already merged: #%s\n' "$n"; done
@@ -187,8 +195,8 @@ printf '%s' "$PLAN" | jq -r '
        (if (.files | length) > 3 then ", +\(.files | length - 3) more" else "" end) + "]") | join("; "))
    else empty end)'
 skipped_notes
-for n in $EXTERNAL; do
-  printf '  note: a stated dependency, #%s, is open and outside this set\n' "$n"
+for n in $(printf '%s\n' $EXTERNAL | sort -un); do
+  printf '  note: #%s is open, outside this set, and a PR in it depends on it\n' "$n"
 done
 [ "$WATCH" = "1" ] || exit 0
 
@@ -230,12 +238,12 @@ poll_watch() {
   done
   LEFT="${still# }"
   for base in $BASES; do
-    q="$(fetch_queue "$REPO" "$base" </dev/null)" || {
+    fetch_queue "$REPO" "$base" </dev/null || {
       LAST_ERR="$QUEUE_ERR"
       continue
     }
     lines="$lines
-$q"
+$QUEUE_LINES"
   done
   for n in $LEFT; do
     pos="$(printf '%s\n' "$lines" | awk -v n="$n" '$1 == n { print $2; exit }')"

@@ -52,7 +52,7 @@ serve() {
 }
 echo "$*" >>"$STUB_DIR/.calls"
 case "$1 $2" in
-  "pr list") serve prlist ;;
+  "pr list") serve prlist "$@" ;;
   "pr view") serve "pv$3" "$@" ;;
   "api graphql") case "$*" in *mergeQueue*) serve queue ;; *) serve threads ;; esac ;;
   "run view") serve joblog ;;
@@ -153,6 +153,7 @@ new_case prq-table
   pr_item 8 "unreadable review"
   pr_item 9 "ci running"
   pr_item 10 "skip labelled" false MERGEABLE BEHIND
+  pr_item 11 "protection unmet" false MERGEABLE BLOCKED
 } | jq -s -c . >"$STUB_DIR/prlist"
 verdicts 1 approved green
 verdicts 2 approved "failed:build"
@@ -164,6 +165,7 @@ verdicts 8 "" green
 printf '3' >"$STUB_DIR/review.rc.8"
 verdicts 9 approved timeout
 verdicts 10 no-review-scheduled green
+verdicts 11 approved green
 echo '{"data":{"repository":{"mergeQueue":{"entries":{"nodes":[{"position":2,"state":"UNMERGEABLE","pullRequest":{"number":5}}]}}}}}' >"$STUB_DIR/queue"
 run_prq_fake o/r
 expect_rc "the table prints and exits 0" 0
@@ -180,7 +182,8 @@ expect_row "a tool that could not run is an error, not a verdict" 8 "could not r
 expect_row "checks still running" 9 "checks still running"
 expect_row "no-review-scheduled counts as reviewed; behind is shown but not blocking" 10 "behind"
 expect_row "a skip-labelled PR can be ready" 10 "ready"
-expect_contains "a footer counts ready PRs" "10 open PRs; 2 ready, 1 in the merge queue."
+expect_row "GitHub BLOCKED is not ready even when the verdicts pass" 11 "GitHub reports the merge blocked"
+expect_contains "a footer counts ready PRs" "11 open PRs; 2 ready, 1 in the merge queue."
 no_writes "observe only: no merge/enqueue/label/comment call"
 
 new_case prq-json
@@ -287,8 +290,22 @@ mo_pr 50 b50 main "Stacked on #99. Requires #98." ""
 echo '{"state":"OPEN"}' >"$STUB_DIR/pv99"
 echo '{"state":"MERGED"}' >"$STUB_DIR/pv98"
 run_tool "$MO" 50 -R o/r
-expect_contains "an open dependency outside the set is noted" "#99, is open and outside this set"
+expect_contains "an open dependency outside the set is noted" "#99 is open, outside this set"
 expect_not_contains "a merged one is not" "#98"
+
+new_case mo-dep-wording
+mo_pr 80 b80 main "Depends on PR #82 and [#83](https://github.com/o/r/pull/83)." ""
+mo_pr 81 b81 main "Requires https://github.com/o/r/pull/82" ""
+mo_pr 82 b82 main "" ""
+mo_pr 83 b83 main "" ""
+run_tool "$MO" 80 81 82 83 -R o/r
+expect "'PR #n', markdown links and PR URLs are dependencies too" "order: #82 #81 #83 #80" 0
+
+new_case mo-external-stack
+mo_pr 70 child feat-parent "" "x"
+echo '[{"number":71}]' >"$STUB_DIR/prlist"
+run_tool "$MO" 70 -R o/r
+expect_contains "a PR based on an open PR's branch outside the set is noted" "#71 is open, outside this set"
 
 new_case mo-already-merged
 mo_pr 60 b60 main "" "" MERGED
@@ -359,6 +376,30 @@ echo "$NOQ" >"$STUB_DIR/queue"
 run_tool "$MO" 10 11 -R o/r --watch --interval-seconds 0 --timeout-seconds 30
 expect_contains "a PR closed unmerged is reported" "closed: #11"
 [ "$(printf '%s\n' "$OUT" | tail -n 1)" = "done: 1 landed, 1 closed unmerged" ] && [ "$RC" = "1" ] && ok "verdict done:..., exit 1" || bad "closed verdict" "rc=$RC $OUT"
+
+new_case mo-watch-queue-unreadable
+mo_pr 10 b10 main "" ""
+cp "$STUB_DIR/pv10" "$STUB_DIR/pv10.1"
+cp "$STUB_DIR/pv10" "$STUB_DIR/pv10.2"
+jq -c '.state = "MERGED"' "$STUB_DIR/pv10" >"$STUB_DIR/pv10.3"
+echo '{}' >"$STUB_DIR/queue"
+touch "$STUB_DIR/queue.fail"
+run_tool "$MO" 10 -R o/r --watch --interval-seconds 0 --timeout-seconds 30
+expect_rc "an unreadable merge queue does not abort the watch" 3
+case "$ERR" in *"gh api graphql failed"*) ok "and the first-read failure names the queue error" ;; *) bad "queue error text" "rc=$RC err=$ERR" ;; esac
+
+new_case mo-watch-queue-flaky
+mo_pr 10 b10 main "" ""
+cp "$STUB_DIR/pv10" "$STUB_DIR/pv10.1"
+cp "$STUB_DIR/pv10" "$STUB_DIR/pv10.2"
+cp "$STUB_DIR/pv10" "$STUB_DIR/pv10.3"
+jq -c '.state = "MERGED"' "$STUB_DIR/pv10" >"$STUB_DIR/pv10.4"
+echo "$NOQ" >"$STUB_DIR/queue.1"
+echo "$NOQ" >"$STUB_DIR/queue.2"
+touch "$STUB_DIR/queue.2.fail"
+echo "$NOQ" >"$STUB_DIR/queue.3"
+run_tool "$MO" 10 -R o/r --watch --interval-seconds 0 --timeout-seconds 30
+[ "$(printf '%s\n' "$OUT" | tail -n 1)" = "all-landed" ] && ok "a transient queue-read failure mid-watch is tolerated" || bad "flaky queue" "rc=$RC out=$OUT err=$ERR"
 
 new_case mo-watch-timeout
 mo_pr 10 b10 main "" ""

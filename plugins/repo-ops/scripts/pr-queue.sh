@@ -104,8 +104,8 @@ for repo in "${REPOS[@]}"; do
   QUEUES=""
   QUEUE_FAILED=""
   for base in $(printf '%s' "$list" | jq -r '[.[].baseRefName] | unique | .[]'); do
-    if q="$(fetch_queue "$repo" "$base" </dev/null)"; then
-      [ -z "$q" ] || QUEUES="$QUEUES$(printf '%s\n' "$q" | awk -v b="$base" '{ print b, $0 }')
+    if fetch_queue "$repo" "$base" </dev/null; then
+      [ -z "$QUEUE_LINES" ] || QUEUES="$QUEUES$(printf '%s\n' "$QUEUE_LINES" | awk -v b="$base" '{ print b, $0 }')
 "
     else
       QUEUE_FAILED="$QUEUE_FAILED $base"
@@ -130,6 +130,7 @@ for repo in "${REPOS[@]}"; do
     merge="ok"
     case "$(printf '%s' "$p" | jq -r '"\(.mergeable) \(.mergeStateStatus)"')" in
       CONFLICTING* | *" DIRTY") merge="conflict" ;;
+      *" BLOCKED") merge="blocked" ;;
       *" BEHIND") merge="behind" ;;
       UNKNOWN* | *" UNKNOWN") merge="unknown" ;;
     esac
@@ -174,6 +175,8 @@ for repo in "${REPOS[@]}"; do
         elif [ -n "$qpos" ]; then
           blocking="in the merge queue"
           [ "$qstate" != "UNMERGEABLE" ] || blocking="in the merge queue, entry UNMERGEABLE"
+        elif [ "$merge" = "blocked" ]; then
+          blocking="GitHub reports the merge blocked: a protection requirement the verdicts do not cover is unmet"
         else
           blocking="ready"
           ready=true
@@ -204,13 +207,14 @@ if [ "$total" = "0" ]; then
   echo "no open PRs"
   exit 0
 fi
+command -v column >/dev/null 2>&1 || die 3 "the column utility is required to print the table (use --json without it)"
 {
   printf 'REPO\tPR\tAUTHOR\tREVIEW\tCHECKS\tMERGE\tQUEUE\tBLOCKING\tTITLE\n'
   printf '%s' "$RECORDS" | jq -r '.[] | [
     .repo, "#\(.number)", .author, .review, .checks, .merge,
     (if .queue then "q\(.queue.position)" + (if .queue.state == "UNMERGEABLE" then "!" else "" end) else "-" end),
     .blocking, (.title | .[0:60])] | @tsv'
-} | column -t -s "$(printf '\t')"
+} | column -t -s "$(printf '\t')" || die 3 "could not format the table"
 printf '\n%s open PRs; %s ready, %s in the merge queue.\n' "$total" \
   "$(printf '%s' "$RECORDS" | jq '[.[] | select(.ready)] | length')" \
   "$(printf '%s' "$RECORDS" | jq '[.[] | select(.queue != null)] | length')"
