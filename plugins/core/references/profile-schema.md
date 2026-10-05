@@ -384,7 +384,7 @@ Three consequences worth stating, because each is a case where the obvious imple
   optional integer there and `null` is the response's spelling. A warning printed above a call that
   still loses the thing is a warning read after the paste.
 
-### Floors: stricter than the profile is not drift
+### Floors
 
 `defaults.protection.*` is otherwise an exact value, so a profile saying `enforceAdmins: false`
 would generate a PUT that switches `enforce_admins` **off** on a repo that has it on deliberately.
