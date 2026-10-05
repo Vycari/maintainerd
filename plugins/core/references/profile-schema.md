@@ -55,7 +55,7 @@ belongs to a person at a keyboard. See **Who applies what** below.
     }
   },
 
-  // Per language. ONLY the four resolvable keys may appear here.
+  // Per language. ONLY the six resolvable keys may appear here.
   "languages": {
     "python-service": {
       "requiredChecks": ["ci", "docs"],
@@ -81,11 +81,13 @@ belongs to a person at a keyboard. See **Who applies what** below.
     }
   },
 
-  // Per repo. The pressure-relief valve. Same four keys, same rules.
+  // Per repo. The pressure-relief valve. Same six keys, same rules.
   "repoOverrides": {
     "app":  { "requiredChecks": ["migration-collision"] },   // ADDED to the language's list
     "site": { "coverage": null,
-              "commands": { "test": "npm run build && npm run linkcheck", "coverage": null } }
+              "commands": { "test": "npm run build && npm run linkcheck", "coverage": null },
+              "mergeQueue": { "enabled": false },        // merges by key: only `enabled` changes
+              "protection": { "enforceAdmins": true } }  // stricter than the fleet, declared in the open
   }
 }
 ```
@@ -107,9 +109,9 @@ the skills call the script rather than re-implementing the merge in prose.
 plugins/core/scripts/profile-resolve.sh --profile repo-profile.json --repo my-org/site --language typescript-web
 ```
 
-### The four resolvable keys
+### The six resolvable keys
 
-Exactly four keys may vary between repos:
+Exactly six keys may vary between repos:
 
 | Key | Why it varies |
 | --- | --- |
@@ -117,13 +119,22 @@ Exactly four keys may vary between repos:
 | `coverage` | Some repos have nothing under test. |
 | `commands` | Format/lint/typecheck/test/coverage are language-shaped. |
 | `dependabot` | Ecosystems differ per repo. |
+| `mergeQueue` | A repo's deployment shape can make a queue pure latency (a push to the default branch *is* the deploy, with no staging and nothing to parallelize). Object; merges key by key. |
+| `protection` | A repo may deliberately be stricter than the fleet (e.g. it enforces admins). Object; merges key by key, so an override names only the sub-key it changes. |
+
+`mergeQueue` and `protection` must be objects — there is no `null` exemption for them. Turning the
+queue off is `{"mergeQueue": {"enabled": false}}`, which still states the decision in the open. Neither
+is an exemption from the standard: both are *declared*, in a block a reviewer reads, and that is the
+difference between an override and an exemption. `settings-diff.sh` reads both from the effective
+object, so an override changes what `doctor --profile` check 15 compares against and what `new-repo`
+writes, with no other change.
 
 **A `languages` or `repoOverrides` block containing any other key is an error, not a warning.** That
 is how "fixed org-wide" is mechanized: if `private` were settable per repo, the profile would
 document a standard nobody is held to. `profile-resolve.sh` fails on it, naming the key and the
 block it appeared in.
 
-`defaults` may also carry the four resolvable keys, as the base layer for every language. Most
+`defaults` may also carry the resolvable keys, as the base layer for every language. Most
 profiles don't need to; the layer exists so the merge has one rule rather than two.
 
 ### The rules, in order
@@ -229,7 +240,7 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `profileVersion` | yes | Integer. The shape of this file. A reader that sees a version above the one it knows **refuses** rather than guessing. Currently `1`. |
 | `org` | yes | GitHub org or user. Informational for maintainerd — every repo is addressed by full slug — but it is what a fleet tool uses to build calls the profile doesn't spell out. |
 | `defaults` | yes | The fixed, org-wide half of the standard. |
-| `languages` | yes | Non-empty object; each value carries only the four resolvable keys. |
+| `languages` | yes | Non-empty object; each value carries only the six resolvable keys. |
 | `repoOverrides` | no | Defaults to `{}`. Same restriction as `languages`. |
 
 ### `defaults`

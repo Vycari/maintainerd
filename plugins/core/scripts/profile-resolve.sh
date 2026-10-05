@@ -36,7 +36,7 @@ KNOWN_VERSION=1
 
 # The only keys a `languages` or `repoOverrides` block may carry. Everything else in a
 # profile is fixed org-wide, and that is not a convention — it is this list.
-RESOLVABLE='["requiredChecks","coverage","commands","dependabot"]'
+RESOLVABLE='["requiredChecks","coverage","commands","dependabot","mergeQueue","protection"]'
 
 usage() {
   cat >&2 <<'USAGE'
@@ -108,6 +108,10 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
               else [] end )
         + ( if ($b | has("dependabot")) and (($b.dependabot | is_str_array) | not)
               then ["\($where).dependabot must be an array of strings"] else [] end )
+        + ( if ($b | has("mergeQueue")) and (($b.mergeQueue | type) != "object")
+              then ["\($where).mergeQueue must be an object"] else [] end )
+        + ( if ($b | has("protection")) and (($b.protection | type) != "object")
+              then ["\($where).protection must be an object"] else [] end )
         end );
 
   [ ( if (.profileVersion | type) != "number" or (.profileVersion | floor) != .profileVersion
