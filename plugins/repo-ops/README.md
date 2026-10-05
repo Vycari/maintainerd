@@ -202,7 +202,7 @@ names its repository, and contradicting it with `-R` is an error.
 | `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A job with no start time yet is aged from the Actions job record's `created_at`. A queued job whose assignment cannot be confirmed is not reported this way. |
 | `timeout` | No verdict by the deadline. An empty rollup keeps waiting, since checks register shortly after a push. |
 
-## Tools
+## Migration tools
 
 Scripts, not skills: bounded, one verdict on the first line of stdout, exit status mirroring it
 (3 is "the tool could not run" and is never a verdict). Run by path:
