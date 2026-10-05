@@ -100,6 +100,9 @@ jobs:
       - name: The repo-ops wait-for-review and wait-for-checks tools report each outcome, and never act
         run: ./scripts/test-wait-tools.sh
 
+      - name: The repo-ops renumber-migration tool re-parents onto the base head, idempotently, and refuses what it cannot do safely
+        run: ./scripts/test-renumber-migration.sh
+
       - name: The research-radar harvester fails closed, windows from its mark, and dedupes
         run: python3 scripts/test-research-radar.py
 

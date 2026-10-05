@@ -202,6 +202,40 @@ names its repository, and contradicting it with `-R` is an error.
 | `queued-no-runner` | A job has been queued past `--queue-threshold-seconds` (default 600) and the Actions API says no runner was assigned. A job with no start time yet is aged from the Actions job record's `created_at`. A queued job whose assignment cannot be confirmed is not reported this way. |
 | `timeout` | No verdict by the deadline. An empty rollup keeps waiting, since checks register shortly after a push. |
 
+## Tools
+
+Scripts, not skills: bounded, one verdict on the first line of stdout, exit status mirroring it
+(3 is "the tool could not run" and is never a verdict). Run by path:
+`${CLAUDE_PLUGIN_ROOT}/scripts/<name>.sh`. Tests: `scripts/test-renumber-migration.sh` in the
+maintainerd repo root, against real throwaway git repos with no network.
+
+### `renumber-migration.sh [--base REF] [--dry-run] [--no-fetch]`
+
+After a migration collision, re-parents the branch's migrations onto the live head of the base
+(`origin/<defaultBranch>`): `git mv` to head+1, head+2, ... in chain order, rewrite `revision` and
+`down_revision` (and a docstring's `Revision ID:` / `Revises:` header), then re-run the repo's
+`commands.migrationGraph`. Changes are staged, never committed or pushed. Merge or rebase the base
+into the branch first: the graph check can only judge a tree that holds the base's migrations.
+
+**Inert unless the repo opts in.** `commands.migrationGraph` unset or `null` yields `not-configured`
+and exit 0. Once it is set, `paths.migrations` (no default) names the directory. Both keys are in
+`config-schema.md`. It assumes sequential numeric ids, `<id>_<slug>.<ext>` file names, and
+`revision = "<id>"` / `down_revision = "<id>"` assignments (annotated or not): a differently shaped
+repo gets a `refused:` verdict rather than a guess.
+
+| Output | Meaning |
+| --- | --- |
+| `renumbered:<n>` | `<n>` migrations moved or re-chained, staged; the graph check passed. Stale references to an old id or file name elsewhere are listed, not edited. |
+| `would-renumber:<n>` | `--dry-run`: the plan, nothing changed. |
+| `up-to-date` | Already chained off the live head with the right numbers; the graph check passed. A re-run after success lands here, before or after committing — it is idempotent. |
+| `no-migrations` | The branch adds no migration file. |
+| `not-configured` | `commands.migrationGraph` is unset. |
+| `graph-failed` | Renumbered (or already current) but the graph check still fails; its output tail follows. Exit 1. |
+| `refused:<reason>` | Changed nothing, a person resolves it. Exit 2. Reasons: `behind-base`, `uncommitted-changes`, `base-head-ambiguous`, `not-a-linear-chain`, `merge-migration`, `non-numeric-id`, `name-mismatch`, `no-revision`, `target-exists`, `no-revisions-on-base`. |
+
+It sees only the base head. An id claimed by another *open* PR is invisible to it; if the graph
+check names such a collision, renumber again once that PR lands.
+
 ## Note on code review
 
 This plugin used to ship a `code-review` skill. It was dropped in favour of Claude Code's built-in
