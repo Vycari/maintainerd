@@ -139,9 +139,10 @@ maintainerd/
   scripts/bump-version.py
   scripts/test-coverage.sh
   scripts/test-wait-tools.sh
+  scripts/test-renumber-migration.sh
   plugins/
     core/      .claude-plugin/plugin.json  plugin.json  skills/{bootstrap,doctor,new-repo}/  references/{config-schema,model-tiers,profile-schema,gh-rest-fallbacks}.md  scripts/{coverage-adapt,coverage-check,profile-resolve,settings-diff}.sh
-    repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/  hooks/{hooks.json,scripts/{pr-template-guard,skip-label-race-guard,merge-guard}.sh}  scripts/{wait-for-review,wait-for-checks}.sh
+    repo-ops/  .claude-plugin/plugin.json  plugin.json  skills/{create-pr,address-review,release,daily-changelog,daily-update}/  hooks/{hooks.json,scripts/{pr-template-guard,skip-label-race-guard,merge-guard}.sh}  scripts/{wait-for-review,wait-for-checks,renumber-migration}.sh
     audits/    .claude-plugin/plugin.json  plugin.json  skills/{audit-architecture,audit-tests,audit-security,audit-deps,audit-design-docs,audit-product-docs}/  references/pattern-promotion.md
     research/  .claude-plugin/plugin.json  plugin.json  skills/{research-radar}/
     journal/   .claude-plugin/plugin.json  plugin.json  skills/{worklog}/

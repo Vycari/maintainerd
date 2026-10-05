@@ -56,7 +56,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "build":    null,                           // e.g. "npm run build"; null for interpreted repos
     "test":     "uv run pytest",                // the test suite
     "coverage": "uv run pytest --cov --cov-report=json", // optional; used by audit-tests
-    "typecheck": null                           // e.g. "npm run typecheck:test"; null if covered elsewhere
+    "typecheck": null,                          // e.g. "npm run typecheck:test"; null if covered elsewhere
+    "migrationGraph": "uv run python scripts/check_migrations.py" // optional; exits non-zero when the migration chain is broken. null/absent = no migrations, renumber-migration is inert
   },
 
   // ── Coverage ratchet (optional; ABSENT = not yet adopted, never "no floor") ──
@@ -75,7 +76,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "changelogDir": "planning/changelog/",       // where daily-changelog writes YYYY-MM-DD.md
     "researchRadarDir": "planning/research-radar/", // where research-radar writes its digests
     "prTemplate":   ".github/PULL_REQUEST_TEMPLATE.md", // PR body template create-pr enforces; null = repo uses no template
-    "skillsDir":    ".claude/skills/"            // local skill scaffolding dir; pre-flight clean-tree exception
+    "skillsDir":    ".claude/skills/",           // local skill scaffolding dir; pre-flight clean-tree exception
+    "migrations":   "migrations/versions/"       // migration files directory; required when commands.migrationGraph is set
   },
 
   // ── Guidelines (free-form rule files; see below) ─────────────────────────
@@ -297,6 +299,7 @@ Each value is a shell command or `null`. A skill that needs a step whose command
 | `test` | create-pr, audit-tests, auto-dev | The suite that gates PRs. |
 | `coverage` | audit-tests, the CI ratchet gate | Optional; `null` = this repo is exempt from the coverage ratchet. Non-null **must** leave `coverage-summary.json` in the repo root — the contract below. |
 | `typecheck` | create-pr, auto-dev | Optional separate type-check pass. |
+| `migrationGraph` | renumber-migration | Optional. Exits non-zero when the repo's migration chain is broken (two heads, a duplicate id). Run from the repo root after a renumber. **Its presence is what turns `renumber-migration` on:** `null` or absent = the repo has no migration graph, and the tool reports `not-configured` and exits 0. Needs `paths.migrations`. |
 
 ### `paths`
 
@@ -304,6 +307,11 @@ All paths are repo-root-relative. `designDocs` and `productDocs` are **arrays** 
 several doc roots; entries may be directories or individual files). `skillsDir` names the directory
 where untracked skill scaffolding may legitimately appear — the audits treat untracked files there
 as benign rather than "a human is mid-work."
+
+`migrations` is the directory `renumber-migration` renumbers within. It has **no default**: it is
+required once `commands.migrationGraph` is set (the tool refuses to guess a framework's layout) and
+ignored otherwise. The tool assumes sequential numeric revision ids, files named `<id>_<slug>.<ext>`,
+and `revision` / `down_revision` assignments in the file — see `repo-ops`' README.
 
 `prTemplate` may be `null`: the repo deliberately uses no PR template, and `create-pr` (and
 anything else that writes PR bodies) falls back to its built-in Summary / Changes / Checklist
