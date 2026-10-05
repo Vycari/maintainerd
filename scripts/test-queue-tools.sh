@@ -307,6 +307,17 @@ mo_pr 86 b86 main "" ""
 run_tool "$MO" 85 86 -R o/r
 expect "another repository's PR number is not a dependency" "order: #85 #86" 0
 
+new_case mo-link-target
+mo_pr 91 b91 main "Depends on [#92](https://github.com/o/r/pull/93)" ""
+mo_pr 92 b92 main "" ""
+mo_pr 93 b93 main "" ""
+run_tool "$MO" 91 92 93 -R o/r
+expect "a markdown link is read by its target, not its text" "order: #92 #93 #91" 0
+mo_pr 94 b94 main "Requires https://github.com/O/R/pull/95" ""
+mo_pr 95 b95 main "" ""
+run_tool "$MO" 94 95 -R o/r
+expect "the repository in a URL compares case-insensitively" "order: #95 #94" 0
+
 new_case mo-fork-head
 mo_pr 87 child fork-branch "" ""
 mo_pr 88 fork-branch main "" ""

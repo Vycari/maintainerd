@@ -114,13 +114,17 @@ stated_deps() {
   local el='(\[?#[0-9]+\]?(\([^)]*\))?|https?://[^ )]*/pull/[0-9]+)' chunks
   chunks="$(printf '%s' "$1" |
     grep -oiE "(depends on|stacked on|blocked by|requires)[: ]+((prs?|pull requests?)[: ]+)?$el(,? *(and )?$el)*")"
+  # A markdown link is read by its TARGET, never its text (`[#12](.../pull/13)` is PR 13): collapse
+  # each link to its URL first.
+  chunks="$(printf '%s\n' "$chunks" | sed -E 's/\[[^]]*\]\(([^)]*)\)/\1/g')"
   {
-    # A URL counts only when it names THIS repository: another repo's PR #12 is not this repo's #12.
-    printf '%s\n' "$chunks" | grep -oE 'https?://[^ )]*/pull/[0-9]+' | grep -F "/$REPO/pull/" | sed 's#.*/pull/##'
-    # Bare #N, once markdown links (whose target may be another repo) and raw URLs are set aside.
-    printf '%s\n' "$chunks" | sed -E 's/\[[^]]*\]\([^)]*\)//g; s#https?://[^ )]*##g' | grep -oE '#[0-9]+' | tr -d '#'
-    # A markdown link whose visible text is #N and whose target is this repository's PR N.
-    printf '%s\n' "$chunks" | grep -oE '\[#[0-9]+\]\(https?://[^)]*/pull/[0-9]+\)' | grep -F "/$REPO/pull/" | grep -oE '^\[#[0-9]+' | tr -d '[#'
+    # A URL counts only when it names THIS repository (owner and name compare case-insensitively):
+    # another repository's PR #12 is not this repository's #12.
+    printf '%s\n' "$chunks" | grep -oE 'https?://[^ ),]*/pull/[0-9]+' |
+      sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pull/([0-9]+)$#\1 \2#' |
+      awk -v r="$REPO" 'tolower($1) == tolower(r) { print $2 }'
+    # Bare #N, once the URLs are set aside.
+    printf '%s\n' "$chunks" | sed -E 's#https?://[^ ),]*##g' | grep -oE '#[0-9]+' | tr -d '#'
   } | sort -un
 }
 
