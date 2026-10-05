@@ -111,17 +111,24 @@ fi
 
 # stated_deps <body> — PR numbers a description says it depends on, one per line.
 stated_deps() {
-  local el='(\[?#[0-9]+\]?(\([^)]*\))?|https?://[^ )]*/pull/[0-9]+)'
-  printf '%s' "$1" |
-    grep -oiE "(depends on|stacked on|blocked by|requires)[: ]+((prs?|pull requests?)[: ]+)?$el(,? *(and )?$el)*" |
-    grep -oE '#[0-9]+|/pull/[0-9]+' | tr -d '#' | sed 's#^/pull/##' | sort -un
+  local el='(\[?#[0-9]+\]?(\([^)]*\))?|https?://[^ )]*/pull/[0-9]+)' chunks
+  chunks="$(printf '%s' "$1" |
+    grep -oiE "(depends on|stacked on|blocked by|requires)[: ]+((prs?|pull requests?)[: ]+)?$el(,? *(and )?$el)*")"
+  {
+    # A URL counts only when it names THIS repository: another repo's PR #12 is not this repo's #12.
+    printf '%s\n' "$chunks" | grep -oE 'https?://[^ )]*/pull/[0-9]+' | grep -F "/$REPO/pull/" | sed 's#.*/pull/##'
+    # Bare #N, once markdown links (whose target may be another repo) and raw URLs are set aside.
+    printf '%s\n' "$chunks" | sed -E 's/\[[^]]*\]\([^)]*\)//g; s#https?://[^ )]*##g' | grep -oE '#[0-9]+' | tr -d '#'
+    # A markdown link whose visible text is #N and whose target is this repository's PR N.
+    printf '%s\n' "$chunks" | grep -oE '\[#[0-9]+\]\(https?://[^)]*/pull/[0-9]+\)' | grep -F "/$REPO/pull/" | grep -oE '^\[#[0-9]+' | tr -d '[#'
+  } | sort -un
 }
 
 OPEN="[]"
 MERGED=""
 CLOSED=""
 for n in $PRS; do
-  v="$(gh pr view "$n" -R "$REPO" --json number,title,state,body,headRefName,baseRefName,files </dev/null 2>&1)" ||
+  v="$(gh pr view "$n" -R "$REPO" --json number,title,state,body,headRefName,baseRefName,isCrossRepository,files </dev/null 2>&1)" ||
     die 3 "could not read PR #$n in $REPO: $v"
   printf '%s' "$v" | jq -e 'type == "object"' >/dev/null 2>&1 || die 3 "PR #$n: gh pr view returned non-JSON"
   case "$(printf '%s' "$v" | jq -r '.state')" in
@@ -131,7 +138,7 @@ for n in $PRS; do
       stated="$(stated_deps "$(printf '%s' "$v" | jq -r '.body // ""')" | jq -R 'tonumber' | jq -s -c .)"
       OPEN="$(printf '%s' "$OPEN" | jq -c --argjson v "$v" --argjson st "$stated" '. + [{
         number: $v.number, title: ($v.title | gsub("[\n\t]"; " ")), head: $v.headRefName, base: $v.baseRefName,
-        files: [$v.files[]?.path], stated: $st}]')"
+        files: [$v.files[]?.path], stated: $st, fork: ($v.isCrossRepository // false)}]')"
       ;;
   esac
 done
@@ -143,7 +150,7 @@ PLAN="$(printf '%s' "$OPEN" | jq -c '
   | ($prs | map(.number)) as $all
   | ($prs | map(. as $p | {number: $p.number, title: $p.title, base: $p.base,
       needs: ([$p.stated[] | select(. != $p.number) | select(. as $d | $all | index($d)) | {pr: ., why: "stated"}]
-              + [$prs[] | select(.head == $p.base and .number != $p.number) | {pr: .number, why: "stacked: its base is this PR branch"}]),
+              + [$prs[] | select(.head == $p.base and (.fork | not) and .number != $p.number) | {pr: .number, why: "stacked: its base is this PR branch"}]),
       overlaps: [$prs[] | select(.number != $p.number) | . as $o
                  | ([$p.files[] | select(. as $f | $o.files | index($f))]) as $c
                  | select($c | length > 0) | {pr: $o.number, files: $c}]})) as $nodes
@@ -166,9 +173,9 @@ for n in $(printf '%s' "$OPEN" | jq -r '[.[] | .stated[]] | unique | .[]'); do
 done
 
 # A PR based on the branch of an OPEN PR that is not in the set is an open stack dependency too.
-for b in $(printf '%s' "$OPEN" | jq -r --argjson heads "$(printf '%s' "$OPEN" | jq -c 'map(.head)')" \
+for b in $(printf '%s' "$OPEN" | jq -r --argjson heads "$(printf '%s' "$OPEN" | jq -c 'map(select(.fork | not) | .head)')" \
   '[.[] | .base | select(. as $b | $heads | index($b) | not)] | unique | .[]'); do
-  m="$(gh pr list -R "$REPO" --head "$b" --state open --json number -q '.[0].number // empty' </dev/null 2>/dev/null)" || continue
+  m="$(gh pr list -R "$REPO" --head "$b" --state open --json number,isCrossRepository -q '[.[] | select(.isCrossRepository | not)][0].number // empty' </dev/null 2>/dev/null)" || continue
   [ -z "$m" ] || EXTERNAL="$EXTERNAL $m"
 done
 

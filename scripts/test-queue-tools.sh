@@ -301,9 +301,26 @@ mo_pr 83 b83 main "" ""
 run_tool "$MO" 80 81 82 83 -R o/r
 expect "'PR #n', markdown links and PR URLs are dependencies too" "order: #82 #81 #83 #80" 0
 
+new_case mo-foreign-url
+mo_pr 85 b85 main "Requires https://github.com/other/repo/pull/86 and [#86](https://github.com/other/repo/pull/86)" ""
+mo_pr 86 b86 main "" ""
+run_tool "$MO" 85 86 -R o/r
+expect "another repository's PR number is not a dependency" "order: #85 #86" 0
+
+new_case mo-fork-head
+mo_pr 87 child fork-branch "" ""
+mo_pr 88 fork-branch main "" ""
+jq -c '.isCrossRepository = true' "$STUB_DIR/pv88" >"$STUB_DIR/pv88.tmp" && mv "$STUB_DIR/pv88.tmp" "$STUB_DIR/pv88"
+run_tool "$MO" 87 88 -R o/r
+expect "a fork PR whose head branch name matches is not the stack parent" "order: #87 #88" 0
+echo '[{"number":90,"isCrossRepository":true}]' >"$STUB_DIR/prlist"
+mo_pr 89 child2 other-branch "" ""
+run_tool "$MO" 89 -R o/r
+expect_not_contains "a fork PR with the parent's branch name is not reported as the stack parent" "#90"
+
 new_case mo-external-stack
 mo_pr 70 child feat-parent "" "x"
-echo '[{"number":71}]' >"$STUB_DIR/prlist"
+echo '[{"number":71,"isCrossRepository":false}]' >"$STUB_DIR/prlist"
 run_tool "$MO" 70 -R o/r
 expect_contains "a PR based on an open PR's branch outside the set is noted" "#71 is open, outside this set"
 
