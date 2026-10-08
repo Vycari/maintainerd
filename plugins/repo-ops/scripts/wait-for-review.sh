@@ -29,8 +29,17 @@
 # counts as "no review yet" — it never satisfies the gate, whatever the number says, and a score
 # whose commit cannot be read is treated the same way.
 #
+# Rung 0 (opt-in): when review.checkName AND review.checkApp are both set, a check run of that name
+# on the PR's head commit, created by the App with that slug (the name alone proves nothing: any App
+# can create a check run with any name), is the verdict. Its `output.text` carries a fenced JSON
+# object `{score, max, reviewed_sha, ...}`; a reviewed_sha that is not the head is STALE (keep
+# waiting), a run still in progress keeps the wait going (the newest run by creation counts, so a
+# queued re-run hides an older completed one), check data truncated by GitHub's page limits keeps
+# the wait going too, and a run whose text cannot be parsed is ignored so the lower rungs decide. Unset = exactly the behaviour without rung 0.
+#
 # Config (.claude/maintainerd.json, see references/config-schema.md): review.waitTimeoutMinutes,
-# review.approvalThreshold, review.bots, review.skipLabel.
+# review.approvalThreshold, review.bots, review.skipLabel, review.checkName, review.checkApp,
+# review.blockMarker.
 # Flags for tests and tuning: --timeout-seconds N, --interval-seconds N (default 180, the floor a
 # polite poller keeps against the API), --config FILE.
 #
@@ -58,16 +67,30 @@ load_config
 THRESHOLD="$(cfg '.review.approvalThreshold' 'approved')"
 SKIP_LABEL="$(cfg '.review.skipLabel' '')"
 TIMEOUT_MIN="$(cfg '.review.waitTimeoutMinutes' '20')"
+CHECK_NAME="$(cfg '.review.checkName' '')"
+CHECK_APP="$(cfg '.review.checkApp' '')"
+BLOCK_MARKER="$(cfg '.review.blockMarker' '<!-- greptile_comment -->')"
+[ -n "$BLOCK_MARKER" ] || BLOCK_MARKER='<!-- greptile_comment -->'
+# A name without an App is the name-only match rung 0 exists to refuse; an App without a name matches
+# nothing. Either alone is a configuration error, not a silent fallback.
+if [ -n "$CHECK_NAME" ] && [ -z "$CHECK_APP" ]; then
+  die 3 "review.checkName needs review.checkApp: a check run is never trusted by name alone"
+fi
+if [ -z "$CHECK_NAME" ] && [ -n "$CHECK_APP" ]; then
+  die 3 "review.checkApp needs review.checkName"
+fi
 is_uint "$TIMEOUT_MIN" || die 3 "review.waitTimeoutMinutes must be a non-negative integer"
 TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-$((TIMEOUT_MIN * 60))}"
 INTERVAL="${WAIT_INTERVAL_SECONDS:-180}"
 
 # review.bots: an absent key means the schema default; an explicit empty array means "no bot".
-# Logins are compared with the [bot] suffix stripped: REST says greptile-apps[bot], GraphQL says
-# greptile-apps, and a config naming one form must match the other.
+# Logins are compared with a leading "app/" (gh's spelling of an App actor) and the [bot] suffix
+# stripped: REST says greptile-apps[bot], GraphQL says greptile-apps, `gh` can say app/greptile-apps,
+# and a config naming one form must match the others.
+NORM_LOGIN='sub("^app/"; "") | sub("\\[bot\\]$"; "")'
 BOTS_JSON="$(printf '%s' "$WAIT_CONFIG_JSON" | jq -c '
   if (.review // {}) | has("bots") then .review.bots else ["coderabbitai[bot]","gemini-code-assist[bot]"] end
-  | if type == "array" then map(sub("\\[bot\\]$"; "")) else error("bots") end')" ||
+  | if type == "array" then map('"$NORM_LOGIN"') else error("bots") end')" ||
   die 3 "review.bots must be an array of logins"
 
 case "$THRESHOLD" in
@@ -95,6 +118,68 @@ THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String
       pageInfo{hasNextPage endCursor}
       nodes{isResolved isOutdated path line originalLine comments(first:1){nodes{body author{login}}}}
     }}}}'
+
+# Rung 0 asks GitHub for the head commit's check suites alongside the threads, but only when
+# review.checkName is configured, so an unconfigured repo sends the query it always did. The App
+# slug lives on the check SUITE; the run's name is filtered server side. `--paginate` advances only
+# reviewThreads, so the check connections carry their own pageInfo: a truncated list could hide the
+# newest run, and rung 0 then reports INCOMPLETE (keep waiting) rather than decide on part of it.
+THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName:String!,$endCursor:String){
+  repository(owner:$owner,name:$name){pullRequest(number:$number){
+    userContentEdits(first:1){nodes{editor{login}}}
+    commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
+      checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
+        nodes{databaseId name status conclusion startedAt completedAt text}}}}}}}
+    reviewThreads(first:100,after:$endCursor){
+      pageInfo{hasNextPage endCursor}
+      nodes{isResolved isOutdated path line originalLine comments(first:1){nodes{body author{login}}}}
+    }}}}'
+
+# check_run_score <graphql-json-stream> <head> — rung 0. Prints one of:
+#   "checkrun:<app> <n>/<m> <reviewed_sha>"   a usable verdict (the caller still checks the sha)
+#   "PENDING"                                  the App's newest run for the head is not completed
+#   "INCOMPLETE"                               a check connection was truncated (hasNextPage), so
+#                                              the newest run may be unseen: keep waiting, never
+#                                              fall back to the lower rungs on partial data
+#   nothing                                    no such run, or its output.text is not the contract
+# Only a run on the head commit, created by the configured App slug, is looked at. The newest run
+# BY CREATION wins (a re-run supersedes the earlier one), and only then is its status read: a queued
+# re-run has neither startedAt nor completedAt, so ordering by those would let an older completed
+# run's score stand in for it. Check-run databaseIds are allocated in creation order, and GraphQL's
+# CheckRun exposes no createdAt, so the id is the creation order.
+check_run_score() {
+  local run text json
+  run="$(printf '%s' "$1" | jq -s -c --arg app "$CHECK_APP" --arg name "$CHECK_NAME" --arg head "$2" '
+    [.[0].data.repository.pullRequest.commits.nodes[]? | select(.commit.oid == $head) | .commit.checkSuites]
+    | if any(.[]; .pageInfo.hasNextPage == true
+                  or any(.nodes[]? | select((.app.slug // "") == $app); .checkRuns.pageInfo.hasNextPage == true))
+      then "INCOMPLETE"
+      else [.[] | .nodes[]? | select((.app.slug // "") == $app)
+            | .checkRuns.nodes[]? | select(.name == $name)]
+           | sort_by(.databaseId // 0) | last // empty
+      end' 2>/dev/null)" || return 0
+  [ -n "$run" ] || return 0
+  if [ "$run" = '"INCOMPLETE"' ]; then
+    printf 'INCOMPLETE'
+    return 0
+  fi
+  if [ "$(printf '%s' "$run" | jq -r '.status // ""')" != "COMPLETED" ]; then
+    printf 'PENDING'
+    return 0
+  fi
+  text="$(printf '%s' "$run" | jq -r '.text // ""')"
+  # The contract is a fenced JSON object; a bare JSON object is accepted too.
+  json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
+  [ -n "$json" ] || json="$text"
+  printf '%s' "$json" | jq -r --arg app "$CHECK_APP" '
+    select(type == "object"
+      and (.score | type == "number" and . >= 0 and . == floor)
+      and (.max | type == "number" and . > 0 and . == floor)
+      and .score <= .max
+      and (.reviewed_sha | type == "string" and test("^[0-9a-fA-F]{7,64}$")))
+    | "checkrun:\($app) \(.score)/\(.max) \(.reviewed_sha)"' 2>/dev/null | head -n 1
+  return 0
+}
 
 # score_from_text <text> — prints "<n>/<m> <sha>" (sha may be empty) when the text carries a
 # `Confidence Score: n/m` token, nothing otherwise. Tolerates markdown around the token.
@@ -129,7 +214,11 @@ find_scores() {
   local pr="$1" editor="$2" bot body block out cands cand kind
   body="$(printf '%s' "$pr" | jq -r '.body // ""')"
   # Scope to the marker block, so prose in the description that mentions "4/5" is never a verdict.
-  block="$(printf '%s' "$body" | awk '/<!-- greptile_comment -->/{f=1} f{print} /<!-- \/greptile_comment -->/{f=0}')"
+  # The opener is review.blockMarker (`<!-- name -->`); the closer is the same with a slash, matched
+  # as plain strings, never as a pattern.
+  block="$(printf '%s' "$body" | awk -v open="$BLOCK_MARKER" '
+    BEGIN { close_m = open; sub(/^<!-- ?/, "&/", close_m) }
+    index($0, open) { f = 1 } f { print } index($0, close_m) { f = 0 }')"
   for bot in $(printf '%s' "$BOTS_JSON" | jq -r '.[]'); do
     out=""
     if [ -n "$block" ] && [ "$editor" = "$bot" ]; then
@@ -138,7 +227,7 @@ find_scores() {
     for kind in comments reviews; do
       [ -z "$out" ] || break
       cands="$(printf '%s' "$pr" | jq -c --arg bot "$bot" "
-        [.${kind}[]? | select((.author.login // \"\" | sub(\"\\\\[bot\\\\]\$\"; \"\")) == \$bot)] | reverse | .[] | .body")"
+        [.${kind}[]? | select((.author.login // \"\" | $NORM_LOGIN) == \$bot)] | reverse | .[] | .body")"
       [ -n "$cands" ] || continue
       while IFS= read -r cand; do
         out="$(score_from_text "$(printf '%s' "$cand" | jq -r '.')")"
@@ -178,7 +267,7 @@ poll_once() {
     VERDICT="no-review-scheduled"
     return 0
   fi
-  if [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ]; then
+  if [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
     VERDICT="no-review-scheduled"
     return 0
   fi
@@ -194,7 +283,11 @@ poll_once() {
   }
   decision="$(printf '%s' "$pr" | jq -r '.reviewDecision // ""')"
 
-  gql="$(gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1)" || {
+  if [ -n "$CHECK_NAME" ]; then
+    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$CHECK_NAME" 2>&1)"
+  else
+    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1)"
+  fi || {
     LAST_ERR="gh api graphql failed: $gql"
     return 1
   }
@@ -203,14 +296,27 @@ poll_once() {
     LAST_ERR="could not parse review threads"
     return 1
   }
-  editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | sub("\\[bot\\]$"; "")')" || editor=""
+  editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
   unresolved="$threads"
   n="$(printf '%s' "$unresolved" | jq 'length')"
 
   # Is there a review of THIS head yet? Every configured bot that has published a score must have
   # scored the head (else its score is stale and we keep waiting), and — numeric threshold — every
   # one of them must meet the bar. Absence of any score is "not reviewed yet", never a pass.
-  scores="$(find_scores "$pr" "$editor")"
+  # Rung 0 first: the configured App's check run on this head, when it has a readable verdict. It
+  # replaces the bot ladder below; if the run exists but is unreadable, the ladder decides.
+  scores=""
+  if [ -n "$CHECK_NAME" ]; then
+    scores="$(check_run_score "$gql" "$head")"
+    [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
+    if [ "$scores" = "INCOMPLETE" ]; then
+      # More check suites or runs than one query returns: the configured run may be on a page not
+      # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
+      LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+      return 0
+    fi
+  fi
+  [ -n "$scores" ] || scores="$(find_scores "$pr" "$editor")"
   stale=0
   all_met=1
   if [ -z "$THR_NUM" ]; then

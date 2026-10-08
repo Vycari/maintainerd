@@ -223,6 +223,11 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // whether or not it agrees with each finding
     "waitTimeoutMinutes": 20,        // hard deadline for repo-ops' wait-for-review / wait-for-checks;
                                      // they print `timeout` rather than ever "still waiting"
+    "checkName":         null,       // optional. Name of a check run carrying the reviewer's verdict
+                                     // (rung 0 of repo-ops' wait-for-review). Requires checkApp.
+    "checkApp":          null,       // optional. Slug of the GitHub App that must have created that
+                                     // check run — a run is never trusted by name alone.
+    "blockMarker":       "<!-- greptile_comment -->", // opening marker of the PR-description score block
     "skipLabel":         null        // optional. A label that marks a PR as exempt from automated
                                      // review (a prose/config-only change). null/absent = no such
                                      // label in this repo. Read by the repo-ops `skip-label-race-guard`
@@ -449,6 +454,26 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   waiting on. A non-negative integer; anything else is a configuration error (exit 3), not a default.
   The tools also read `review.approvalThreshold`, `review.bots` and `review.skipLabel` as described
   above, and never fix, label, reply or merge — they only report.
+- `review.checkName` and `review.checkApp` *(optional; default `null`; set both or neither)* — opt in
+  to **rung 0** of `wait-for-review.sh`: a check run named `checkName` on the PR's head commit, whose
+  check suite belongs to the GitHub App with slug `checkApp`, is the verdict. Any App can create a
+  check run with any name, so the slug is matched as well and a name without an App (or an App
+  without a name) is a configuration error (exit 3), never a name-only match. The run's
+  `output.text` must carry a fenced JSON object `{"score", "max", "reviewed_sha", ...}`; `score/max`
+  is compared with `review.approvalThreshold` exactly as a bot's score is, open review threads still
+  yield `findings:<n>`, and it replaces the `review.bots` ladder for that poll. A `reviewed_sha`
+  that is not the head is stale (keep waiting), and the newest matching run *by creation* (its
+  check-run id) is the one read, so a queued re-run that is not yet completed keeps the wait going
+  even when an older run completed. Check suites or runs truncated by the query's page limits also
+  keep the wait going rather than letting the lower rungs decide. A run whose text is missing or does not parse (non-integer score, no sha, no JSON) is
+  ignored so the lower rungs — the body block, then the bot's comment, then its review — decide.
+  Unset = no check-run query is sent and behaviour is unchanged.
+- `review.blockMarker` *(optional; default `"<!-- greptile_comment -->"`)* — the opening marker of the
+  score block in the PR description that `wait-for-review.sh` scopes its
+  search to. The closing marker is derived by adding a slash (`<!-- /greptile_comment -->`). The
+  block still counts only when a configured bot last edited the description.
+- `review.bots` logins are compared with a leading `app/` and a trailing `[bot]` stripped, so
+  `greptile-apps`, `greptile-apps[bot]` and `app/greptile-apps` all name the same bot.
 - `review.skipLabel` *(optional; default `null`)* — the label a repo uses to mark a PR as exempt
   from automated review (a prose/config-only change, say). Purely declarative here: maintainerd
   never decides *when* a PR qualifies, and no maintainerd skill applies or removes it. It exists so

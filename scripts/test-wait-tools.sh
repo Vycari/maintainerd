@@ -426,6 +426,257 @@ run_tool "$WFR" https://github.com/o/r/pull/7 "${FAST[@]}"
 expect "a PR URL is accepted" no-review-scheduled 0
 
 echo
+# --- rung 0: the check run, blockMarker, and the app/ normalizer ---------------------------------
+
+CFG_CR='{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Vycari Review","checkApp":"vycari-review"}}'
+# write_checks <app-slug> <status> <text> [oid] — adds the head commit's check suites to the threads fixture
+write_checks() {
+  jq -c --arg slug "$1" --arg status "$2" --arg text "$3" --arg oid "${4:-$HEAD_SHA}" '
+    .data.repository.pullRequest.commits = {nodes: [{commit: {oid: $oid, checkSuites: {nodes: [
+      {app: {slug: $slug}, checkRuns: {nodes: [{name: "Vycari Review", status: $status, conclusion: "SUCCESS",
+        startedAt: "2026-10-08T00:00:00Z", completedAt: "2026-10-08T00:01:00Z", text: $text}]}}]}}}]}' \
+    "$STUB_DIR/threads" >"$STUB_DIR/threads.tmp" && mv "$STUB_DIR/threads.tmp" "$STUB_DIR/threads"
+}
+cr_text() { # <score> <max> <sha>
+  printf 'Round 1\n```json\n{"score": %s, "max": %s, "reviewed_sha": "%s", "round": 1, "open": {"p0": 0, "p1": 0, "p2": 0}, "findings": []}\n```\n' "$1" "$2" "$3"
+}
+
+new_case cr-valid
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "rung 0: 5/5 check run from the configured App on head -> approved" approved 0
+
+new_case cr-below-threshold
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 3 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "rung 0: 3/5 with no open thread -> findings:0" "findings:0" 1
+
+new_case cr-beats-greptile
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 2 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "rung 0 is the verdict: a Greptile 5/5 does not override a 2/5 check run" "findings:0" 1
+
+new_case cr-open-thread
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[{"resolved":false,"path":"a.sh","line":1,"body":"P1: bug"}]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "rung 0: 5/5 with an unresolved thread is still findings" "findings:1" 1
+
+new_case cr-wrong-app
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks evil-app COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a same-named check run from another App is ignored -> timeout" timeout 2
+
+new_case cr-wrong-app-falls-to-comment
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 4/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks evil-app COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "with a forged check run ignored, the lower rungs decide" "findings:0" 1
+
+new_case cr-stale-sha
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$OLD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a check run whose reviewed_sha is not the head is stale -> timeout" timeout 2
+
+new_case cr-stale-then-current
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$OLD_SHA")"
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.2"
+rm -f "$STUB_DIR/threads"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "stale on poll 1, current on poll 2 -> approved" approved 0
+
+new_case cr-in-progress
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review IN_PROGRESS "" 
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "an in-progress check run keeps waiting, lower rungs do not pre-empt it" timeout 2
+
+# write_suites <suites-json> [suites-hasNextPage] — the head commit's checkSuites connection, raw,
+# for the cases that need several runs, ids, or page flags.
+write_suites() {
+  jq -c --argjson suites "$1" --argjson more "${2:-false}" --arg oid "$HEAD_SHA" '
+    .data.repository.pullRequest.commits = {nodes: [{commit: {oid: $oid,
+      checkSuites: {pageInfo: {hasNextPage: $more}, nodes: $suites}}}]}' \
+    "$STUB_DIR/threads" >"$STUB_DIR/threads.tmp" && mv "$STUB_DIR/threads.tmp" "$STUB_DIR/threads"
+}
+cr_run() { # <databaseId> <status> [text] — a "Vycari Review" run; QUEUED carries no timestamps
+  if [ "$2" = "COMPLETED" ]; then
+    jq -n -c --argjson id "$1" --arg t "${3:-}" '{databaseId: $id, name: "Vycari Review", status: "COMPLETED",
+      conclusion: "SUCCESS", startedAt: "2026-10-08T00:00:00Z", completedAt: "2026-10-08T00:01:00Z", text: $t}'
+  else
+    jq -n -c --argjson id "$1" --arg s "$2" '{databaseId: $id, name: "Vycari Review", status: $s,
+      conclusion: null, startedAt: null, completedAt: null, text: null}'
+  fi
+}
+cr_suite() { # <slug> <runs-json-array> [runs-hasNextPage]
+  jq -n -c --arg slug "$1" --argjson runs "$2" --argjson more "${3:-false}" \
+    '{app: {slug: $slug}, checkRuns: {pageInfo: {hasNextPage: $more}, nodes: $runs}}'
+}
+
+new_case cr-queued-rerun-hides-older-pass
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+# The queued re-run is listed AFTER the completed one, and has no timestamp to sort by: only its
+# creation order (databaseId) says it is the newer one.
+write_suites "[$(cr_suite vycari-review "[$(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"), $(cr_run 200 QUEUED)]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "an older completed 5/5 plus a newer queued re-run keeps waiting -> timeout" timeout 2
+
+new_case cr-queued-rerun-listed-first
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(cr_run 200 QUEUED), $(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a newer queued re-run wins whatever the list order -> timeout" timeout 2
+
+new_case cr-newer-completed-beats-older-queued
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(cr_run 100 QUEUED), $(cr_run 200 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a newer completed run supersedes an older stuck one -> approved" approved 0
+
+new_case cr-newest-by-id-across-suites
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(cr_run 300 COMPLETED "$(cr_text 2 5 "$HEAD_SHA")")]"), $(cr_suite vycari-review "[$(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "the newest run by id across suites decides (2/5 over an older 5/5) -> findings:0" "findings:0" 1
+
+new_case cr-suites-truncated
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_suites "[$(cr_suite other-app '[]')]" true
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "check suites truncated: never fall back to the lower rungs -> timeout" timeout 2
+grep -q 'truncated' "$CASE/stderr" && ok "check suites truncated: the timeout says why" ||
+  bad "truncation reason" "stderr: $(cat "$CASE/stderr")"
+
+new_case cr-runs-truncated
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]" true)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "the App's check runs truncated: a newer run may be unseen -> timeout" timeout 2
+
+new_case cr-other-app-runs-truncated
+write_config "$CFG_CR"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite other-app '[]' true), $(cr_suite vycari-review "[$(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "another App's truncated run list does not block rung 0 -> approved" approved 0
+
+new_case cr-malformed-text
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED 'not json at all {{'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "malformed output.text falls back to the comment rung" approved 0
+
+new_case cr-malformed-fields
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 4/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED '```json
+{"score": "five", "max": 5, "reviewed_sha": "aaaaaaa"}
+```'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "well-formed JSON with a bad score field falls back to the lower rungs" "findings:0" 1
+
+new_case cr-unconfigured
+write_config "$CFG_5"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 1 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "unconfigured: a check run is never read, behaviour is unchanged" approved 0
+if grep -q 'checkName' "$STUB_DIR/.calls"; then
+  bad "unconfigured query" "sent the check-run query: $(cat "$STUB_DIR/.calls")"
+else
+  ok "unconfigured: the check-run query is not even sent"
+fi
+
+new_case cr-name-without-app
+write_config '{"review":{"checkName":"Vycari Review"}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "checkName without checkApp is a config error (never name-only)" "" 3
+
+new_case cr-empty-bots-with-check
+write_config '{"review":{"approvalThreshold":"5/5","bots":[],"checkName":"Vycari Review","checkApp":"vycari-review"}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA")"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "bots:[] with a check run configured still reads the check run" approved 0
+
+new_case marker-custom
+write_config '{"review":{"approvalThreshold":"5/5","bots":["vycari-review[bot]"],"blockMarker":"<!-- vycari_review -->"}}'
+write_prview "" ".body = $(jq -Rs . <<<"intro<!-- vycari_review -->
+$(greptile_text 5/5 aaaaaaa)
+<!-- /vycari_review -->")"
+BODY_EDITOR=vycari-review write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "review.blockMarker scopes the body block" approved 0
+
+new_case marker-custom-ignores-default
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"<!-- vycari_review -->"}}'
+write_prview "" ".body = $(jq -Rs . <<<"<!-- greptile_comment -->
+$(greptile_text 5/5 aaaaaaa)
+<!-- /greptile_comment -->")"
+BODY_EDITOR=greptile-apps write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "with a custom marker the old literal marker no longer counts" timeout 2
+
+new_case bot-app-prefix
+write_config '{"review":{"approvalThreshold":"5/5","bots":["app/greptile-apps"]}}'
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a configured app/<slug> login matches the GraphQL spelling" approved 0
+
+new_case bot-app-prefix-actor
+write_config "$CFG_5"
+write_prview "" ".comments = [$(jq -n --arg b "$(greptile_text 5/5 aaaaaaa)" '{author: {login: "app/greptile-apps"}, body: $b}')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "an author spelled app/<slug> matches a configured <slug>[bot]" approved 0
+
 echo "wait-for-checks"
 
 CHECK_URL="https://github.com/o/r/actions/runs/900/job/4242"
