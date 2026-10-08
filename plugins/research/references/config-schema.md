@@ -472,7 +472,7 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   ignored so the lower rungs — the body block, then the bot's comment, then its review — decide.
   Unset = no check-run query is sent and behaviour is unchanged.
 - `review.blockMarker` *(optional; default `"<!-- greptile_comment -->"`)* — the opening marker of the
-  score block in the PR description that `wait-for-review.sh` (and `address-review`) scope their
+  score block in the PR description that `wait-for-review.sh` scopes its
   search to. The closing marker is derived by adding a slash (`<!-- /greptile_comment -->`). The
   block still counts only when a configured bot last edited the description.
 - `review.bots` logins are compared with a leading `app/` and a trailing `[bot]` stripped, so
