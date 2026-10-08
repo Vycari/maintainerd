@@ -462,8 +462,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `output.text` must carry a fenced JSON object `{"score", "max", "reviewed_sha", ...}`; `score/max`
   is compared with `review.approvalThreshold` exactly as a bot's score is, open review threads still
   yield `findings:<n>`, and it replaces the `review.bots` ladder for that poll. A `reviewed_sha`
-  that is not the head is stale (keep waiting), a run that is not yet completed keeps the wait
-  going, and a run whose text is missing or does not parse (non-integer score, no sha, no JSON) is
+  that is not the head is stale (keep waiting), and the newest matching run *by creation* (its
+  check-run id) is the one read, so a queued re-run that is not yet completed keeps the wait going
+  even when an older run completed. Check suites or runs truncated by the query's page limits also
+  keep the wait going rather than letting the lower rungs decide. A run whose text is missing or does not parse (non-integer score, no sha, no JSON) is
   ignored so the lower rungs — the body block, then the bot's comment, then its review — decide.
   Unset = no check-run query is sent and behaviour is unchanged.
 - `review.blockMarker` *(optional; default `"<!-- greptile_comment -->"`)* — the opening marker of the

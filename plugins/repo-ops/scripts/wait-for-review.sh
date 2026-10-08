@@ -33,8 +33,9 @@
 # on the PR's head commit, created by the App with that slug (the name alone proves nothing: any App
 # can create a check run with any name), is the verdict. Its `output.text` carries a fenced JSON
 # object `{score, max, reviewed_sha, ...}`; a reviewed_sha that is not the head is STALE (keep
-# waiting), a run still in progress keeps the wait going, and a run whose text cannot be parsed is
-# ignored so the lower rungs below decide. Unset = exactly the behaviour without rung 0.
+# waiting), a run still in progress keeps the wait going (the newest run by creation counts, so a
+# queued re-run hides an older completed one), check data truncated by GitHub's page limits keeps
+# the wait going too, and a run whose text cannot be parsed is ignored so the lower rungs decide. Unset = exactly the behaviour without rung 0.
 #
 # Config (.claude/maintainerd.json, see references/config-schema.md): review.waitTimeoutMinutes,
 # review.approvalThreshold, review.bots, review.skipLabel, review.checkName, review.checkApp,
@@ -120,12 +121,15 @@ THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String
 
 # Rung 0 asks GitHub for the head commit's check suites alongside the threads, but only when
 # review.checkName is configured, so an unconfigured repo sends the query it always did. The App
-# slug lives on the check SUITE; the run's name is filtered server side.
+# slug lives on the check SUITE; the run's name is filtered server side. `--paginate` advances only
+# reviewThreads, so the check connections carry their own pageInfo: a truncated list could hide the
+# newest run, and rung 0 then reports INCOMPLETE (keep waiting) rather than decide on part of it.
 THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName:String!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
     userContentEdits(first:1){nodes{editor{login}}}
-    commits(last:1){nodes{commit{oid checkSuites(first:50){nodes{app{slug}
-      checkRuns(first:20,filterBy:{checkName:$checkName}){nodes{name status conclusion startedAt completedAt text}}}}}}}
+    commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
+      checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
+        nodes{databaseId name status conclusion startedAt completedAt text}}}}}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
       nodes{isResolved isOutdated path line originalLine comments(first:1){nodes{body author{login}}}}
@@ -133,18 +137,32 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
 
 # check_run_score <graphql-json-stream> <head> — rung 0. Prints one of:
 #   "checkrun:<app> <n>/<m> <reviewed_sha>"   a usable verdict (the caller still checks the sha)
-#   "PENDING"                                  the App's run for the head is not completed yet
+#   "PENDING"                                  the App's newest run for the head is not completed
+#   "INCOMPLETE"                               a check connection was truncated (hasNextPage), so
+#                                              the newest run may be unseen: keep waiting, never
+#                                              fall back to the lower rungs on partial data
 #   nothing                                    no such run, or its output.text is not the contract
-# Only a run on the head commit, created by the configured App slug, is looked at. The newest
-# matching run wins (a re-run supersedes the earlier one).
+# Only a run on the head commit, created by the configured App slug, is looked at. The newest run
+# BY CREATION wins (a re-run supersedes the earlier one), and only then is its status read: a queued
+# re-run has neither startedAt nor completedAt, so ordering by those would let an older completed
+# run's score stand in for it. Check-run databaseIds are allocated in creation order, and GraphQL's
+# CheckRun exposes no createdAt, so the id is the creation order.
 check_run_score() {
   local run text json
   run="$(printf '%s' "$1" | jq -s -c --arg app "$CHECK_APP" --arg name "$CHECK_NAME" --arg head "$2" '
-    [.[0].data.repository.pullRequest.commits.nodes[]? | select(.commit.oid == $head)
-     | .commit.checkSuites.nodes[]? | select((.app.slug // "") == $app)
-     | .checkRuns.nodes[]? | select(.name == $name)]
-    | sort_by(.completedAt // .startedAt // "") | last // empty' 2>/dev/null)" || return 0
+    [.[0].data.repository.pullRequest.commits.nodes[]? | select(.commit.oid == $head) | .commit.checkSuites]
+    | if any(.[]; .pageInfo.hasNextPage == true
+                  or any(.nodes[]? | select((.app.slug // "") == $app); .checkRuns.pageInfo.hasNextPage == true))
+      then "INCOMPLETE"
+      else [.[] | .nodes[]? | select((.app.slug // "") == $app)
+            | .checkRuns.nodes[]? | select(.name == $name)]
+           | sort_by(.databaseId // 0) | last // empty
+      end' 2>/dev/null)" || return 0
   [ -n "$run" ] || return 0
+  if [ "$run" = '"INCOMPLETE"' ]; then
+    printf 'INCOMPLETE'
+    return 0
+  fi
   if [ "$(printf '%s' "$run" | jq -r '.status // ""')" != "COMPLETED" ]; then
     printf 'PENDING'
     return 0
@@ -291,6 +309,12 @@ poll_once() {
   if [ -n "$CHECK_NAME" ]; then
     scores="$(check_run_score "$gql" "$head")"
     [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
+    if [ "$scores" = "INCOMPLETE" ]; then
+      # More check suites or runs than one query returns: the configured run may be on a page not
+      # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
+      LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+      return 0
+    fi
   fi
   [ -n "$scores" ] || scores="$(find_scores "$pr" "$editor")"
   stale=0
