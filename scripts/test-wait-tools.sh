@@ -429,11 +429,11 @@ echo
 # --- rung 0: the check run, blockMarker, and the app/ normalizer ---------------------------------
 
 CFG_CR='{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Vycari Review","checkApp":"vycari-review"}}'
-# write_checks <app-slug> <status> <text> [oid] — adds the head commit's check suites to the threads fixture
+# write_checks <app-slug> <status> <text> [oid] [conclusion] — adds the head commit's check suites to the threads fixture
 write_checks() {
-  jq -c --arg slug "$1" --arg status "$2" --arg text "$3" --arg oid "${4:-$HEAD_SHA}" '
+  jq -c --arg conclusion "${5:-SUCCESS}" --arg slug "$1" --arg status "$2" --arg text "$3" --arg oid "${4:-$HEAD_SHA}" '
     .data.repository.pullRequest.commits = {nodes: [{commit: {oid: $oid, checkSuites: {nodes: [
-      {app: {slug: $slug}, checkRuns: {nodes: [{name: "Vycari Review", status: $status, conclusion: "SUCCESS",
+      {app: {slug: $slug}, checkRuns: {nodes: [{name: "Vycari Review", status: $status, conclusion: $conclusion,
         startedAt: "2026-10-08T00:00:00Z", completedAt: "2026-10-08T00:01:00Z", text: $text}]}}]}}}]}' \
     "$STUB_DIR/threads" >"$STUB_DIR/threads.tmp" && mv "$STUB_DIR/threads.tmp" "$STUB_DIR/threads"
 }
@@ -598,6 +598,22 @@ write_threads "" '[]'
 write_suites "[$(cr_suite other-app '[]' true), $(cr_suite vycari-review "[$(cr_run 100 COMPLETED "$(cr_text 5 5 "$HEAD_SHA")")]")]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "another App's truncated run list does not block rung 0 -> approved" approved 0
+
+new_case cr-shadow-json
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA" | sed 's/"score"/"mode": "shadow", "score"/')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a shadow-mode (JSON mode) 5/5 check run is not a verdict; the 3/5 comment decides" "findings:0" 1
+
+new_case cr-shadow-neutral
+write_config "$CFG_CR"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+write_checks vycari-review COMPLETED "$(cr_text 5 5 "$HEAD_SHA")" "$HEAD_SHA" NEUTRAL
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a NEUTRAL-conclusion 5/5 check run is not a verdict; the 3/5 comment decides" "findings:0" 1
 
 new_case cr-malformed-text
 write_config "$CFG_CR"

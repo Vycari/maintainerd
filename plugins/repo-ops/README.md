@@ -244,7 +244,7 @@ name on the head commit, created by the App with that slug, is read first and re
 ladder: its `output.text` carries a fenced JSON `{score, max, reviewed_sha, ...}` whose `score/max`
 is held to `review.approvalThreshold`. A `reviewed_sha` other than the head, a newest run (by
 creation, so a queued re-run counts) still in progress, or check data truncated by page limits,
-keeps waiting; a run from another App is ignored; text that does not parse falls back to
+keeps waiting; a run from another App is ignored; a shadow-mode run (`NEUTRAL` conclusion or `"mode": "shadow"`) is ignored; text that does not parse falls back to
 the rungs above. `review.blockMarker` (default `<!-- greptile_comment -->`) names the description
 block those lower rungs read. See `config-schema.md`.
 

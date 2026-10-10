@@ -33,7 +33,8 @@
 # on the PR's head commit, created by the App with that slug (the name alone proves nothing: any App
 # can create a check run with any name), is the verdict. Its `output.text` carries a fenced JSON
 # object `{score, max, reviewed_sha, ...}`; a reviewed_sha that is not the head is STALE (keep
-# waiting), a run still in progress keeps the wait going (the newest run by creation counts, so a
+# waiting), a shadow-mode run (conclusion NEUTRAL, or JSON "mode": "shadow") is never a verdict and is
+# ignored like an unparseable one, a run still in progress keeps the wait going (the newest run by creation counts, so a
 # queued re-run hides an older completed one), check data truncated by GitHub's page limits keeps
 # the wait going too, and a run whose text cannot be parsed is ignored so the lower rungs decide. Unset = exactly the behaviour without rung 0.
 #
@@ -167,12 +168,16 @@ check_run_score() {
     printf 'PENDING'
     return 0
   fi
+  # A NEUTRAL conclusion is never a gate verdict: shadow-mode runs publish neutral and must not be
+  # read as a score. (A run still in progress was handled above.)
+  [ "$(printf '%s' "$run" | jq -r '.conclusion // ""')" != "NEUTRAL" ] || return 0
   text="$(printf '%s' "$run" | jq -r '.text // ""')"
   # The contract is a fenced JSON object; a bare JSON object is accepted too.
   json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
   [ -n "$json" ] || json="$text"
   printf '%s' "$json" | jq -r --arg app "$CHECK_APP" '
     select(type == "object"
+      and (.mode // "") != "shadow"
       and (.score | type == "number" and . >= 0 and . == floor)
       and (.max | type == "number" and . > 0 and . == floor)
       and .score <= .max
