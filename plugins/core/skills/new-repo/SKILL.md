@@ -295,7 +295,8 @@ Then, in this order:
 and matches it; it is not a difference and has no call. The reverse — an override that says public
 on a repo that is still private — is a `FAIL` with no `PATCH` printed, so it never enters the batch.
 Changing a repo's visibility to public stays a separate, deliberate human step taken after review,
-outside this skill; resolve it by publishing the repo yourself or by removing the override.
+outside this skill; resolve it by publishing the repo yourself or by setting the override to
+`"private"` (removing it is enough only where `defaults.private` is true).
 
 If `settings-diff.sh` reports **couldn't verify** for a section (the read needed admin and the token
 doesn't have it), do not apply that section blind. A write computed from a failed read is a guess.

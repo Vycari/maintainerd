@@ -520,8 +520,9 @@ Four things the helper encodes that a hand-rolled diff gets wrong:
   override is still a **FAIL**, and its finding names two fixes: make the repo private, or declare it
   with a `visibility` override. An override that says public on a repo that is private is also a
   **FAIL**, and it carries **no** `gh api` call: publishing exposes the full history and cannot be
-  undone, so the finding names the resolutions in words (publish deliberately, or remove the
-  override) and the doctor never prints the command that flips a repo to public.
+  undone, so the finding names the resolutions in words (publish deliberately, or set the
+  override to `"private"`; removing it is enough only where `defaults.private` is true) and the
+  doctor never prints the command that flips a repo to public.
 - **`protection.requiredReviews.countsBotApproval` is not checked**, because GitHub has no setting
   behind it. It records the fleet's intent for the review skills. Say so in the report rather than
   passing it silently — an unchecked key that reads as a pass is how a report loses its meaning.
