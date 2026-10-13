@@ -259,6 +259,8 @@ A workspace's repos should be configured the same way, and "the same way" should
 than a habit. A **repo profile** is that file: one versioned JSON holding the standard — private or
 public, merge methods, branch protection, required checks by name, labels, the CI shape per language,
 the coverage policy — with per-language blocks and a per-repo override valve.
+Visibility is fixed fleet-wide, with one named exception: a repo's override may declare it public, and
+the tools report that as "public by override" rather than as drift.
 
 Maintainerd ships the mechanism and no values. The profile is an argument; nothing here names an org.
 
