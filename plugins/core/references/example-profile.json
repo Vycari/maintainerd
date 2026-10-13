@@ -98,6 +98,8 @@
     "site": {
       "coverage": null,
       "commands": { "test": "npm run build && npm run linkcheck", "coverage": null }
-    }
+    },
+
+    "cli": { "visibility": "public" }
   }
 }
