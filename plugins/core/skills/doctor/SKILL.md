@@ -481,7 +481,8 @@ plugins/core/scripts/settings-diff.sh --repo <config.repo> --effective "$tmp/eff
   --rulesets "$tmp/rules.json" --labels "$tmp/labels.json"
 ```
 
-Report its output as findings — each difference a **FAIL**, each `couldn't verify` as exactly that.
+Report its output as findings — each difference a **FAIL**, each `couldn't verify` as exactly that,
+each `NOTE` a **PASS** that carries the note's text and is surfaced by name, not folded into a count.
 Four things the helper encodes that a hand-rolled diff gets wrong:
 
 - **A read that failed is `couldn't verify`, not a finding.** Protection and rulesets need admin on
@@ -512,6 +513,16 @@ Four things the helper encodes that a hand-rolled diff gets wrong:
   because an org-level parent ruleset can be what supplies it. The fix is a ruleset `POST`.
   A ruleset can also supply required checks that classic protection doesn't list; a requirement from
   either satisfies this check.
+- **Visibility is a declared exception, not drift.** A `repoOverrides` entry may carry `visibility`;
+  when the live repo matches it, the helper prints a `NOTE` ("public by override") instead of a
+  difference, so the report shows which repos are public by declaration, and every other setting is
+  still diffed. A `NOTE` is not counted and does not fail the check. A public repo with **no**
+  override is still a **FAIL**, and its finding names two fixes: make the repo private, or declare it
+  with a `visibility` override. An override that says public on a repo that is private is also a
+  **FAIL**, and it carries **no** `gh api` call: publishing exposes the full history and cannot be
+  undone, so the finding names the resolutions in words (publish deliberately, or set the
+  override to `"private"`; removing it is enough only where `defaults.private` is true) and the
+  doctor never prints the command that flips a repo to public.
 - **`protection.requiredReviews.countsBotApproval` is not checked**, because GitHub has no setting
   behind it. It records the fleet's intent for the review skills. Say so in the report rather than
   passing it silently — an unchecked key that reads as a pass is how a report loses its meaning.

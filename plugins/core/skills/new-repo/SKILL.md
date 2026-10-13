@@ -103,7 +103,12 @@ Show the call, confirm, run it:
 gh repo create <owner/name> --<private|public> --description "<one line the user gives you>"
 ```
 
-`private` comes from the profile — don't ask, and don't infer it from the org's other repos. Then
+`private` comes from the profile — don't ask, and don't infer it from the org's other repos. When
+`effective.visibility` is present, the profile's `repoOverrides` entry is declaring this repo public
+(or private, in a fleet whose default is public): say so in the confirmation and name the key
+(`repoOverrides.<key>.visibility`), so that creating a public repo is never a silent consequence of a
+flag derived from the layers. Publishing is the one change here that can't be undone, so this skill
+never flips an existing repo to public (see step 9). Then
 clone it, make the initial commit on `<effective.defaultBranch>`, and push, so that there is a
 default branch for protection to attach to. **Branch protection cannot be applied to a branch that
 doesn't exist**, and the API's error for it is unhelpful; a repo with no commits is the commonest
@@ -285,6 +290,13 @@ Then, in this order:
    profile instead if that is the right answer.
 5. **A failed call stops the batch.** Report what succeeded, what didn't, and the exact call to
    retry. Never retry a settings write in a loop.
+
+**A `NOTE` line is nothing to apply.** It records a repo that is public (or private) by override
+and matches it; it is not a difference and has no call. The reverse — an override that says public
+on a repo that is still private — is a `FAIL` with no `PATCH` printed, so it never enters the batch.
+Changing a repo's visibility to public stays a separate, deliberate human step taken after review,
+outside this skill; resolve it by publishing the repo yourself or by setting the override to
+`"private"` (removing it is enough only where `defaults.private` is true).
 
 If `settings-diff.sh` reports **couldn't verify** for a section (the read needed admin and the token
 doesn't have it), do not apply that section blind. A write computed from a failed read is a guess.
