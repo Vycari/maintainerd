@@ -716,7 +716,8 @@ run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/
 expect_status "public by override, live private: FAIL" 1
 expect_match  "reported as a difference" "FAIL  repos/my-org/cli private is true, profile wants false"
 expect_match  "names the way to publish, in words" "publish the repo deliberately"
-expect_match  "and the way to remove the override" "remove repoOverrides.cli.visibility from the profile"
+expect_match  "and the profile-side resolution, worded to hold under either fleet default" \
+  'set repoOverrides.cli.visibility to "private" in the profile (removing it is enough only where defaults.private is true)'
 expect_no_match "no publish call is printed" "private=false"
 expect_no_match "and no fix line at all" "fix:"
 expect_no_match "and no NOTE" "NOTE"
@@ -745,7 +746,34 @@ expect_no_match "and no pointer to declaring it public" "or, if this repo is mea
 "$RESOLVE" --profile "$d/vis-privdef.json" --repo my-org/worker --language typescript-web > "$d/eff-worker-pub.json"
 run "$DIFF" --repo my-org/worker --effective "$d/eff-worker-pub.json" --repo-settings "$d/repo-priv.json"
 expect_status "wants public, is private, no override: FAIL" 1
+expect_match  "reported as a difference" "FAIL  repos/my-org/worker private is true, profile wants false"
+expect_match  "names the override that would declare it private" \
+  'declare it private: repoOverrides.worker.visibility = "private" in the profile'
 expect_no_match "and no publish call is printed" "private=false"
+expect_no_match "and no fix line at all" "fix:"
+
+# Fleet default public AND a (redundant) public override, live private. Removing the override
+# would still resolve to public, so the report must not offer removal as the fix.
+"$RESOLVE" --profile "$d/vis-privdef.json" --repo my-org/cli --language shell > "$d/eff-cli-pubdef.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-pubdef.json" --repo-settings "$d/repo-priv.json"
+expect_status "public override in a public-by-default fleet, live private: FAIL" 1
+expect_match  "the advice is the one that resolves it there too" \
+  'set repoOverrides.cli.visibility to "private" in the profile'
+expect_match  "removal is qualified by the fleet default" "removing it is enough only where defaults.private is true"
+expect_no_match "removal is never offered unconditionally" "remove repoOverrides.cli.visibility from the profile"
+expect_no_match "and no publish call is printed" "private=false"
+# ...and following that advice does resolve it.
+jq '.repoOverrides["cli"].visibility = "private"' "$d/vis-privdef.json" > "$d/vis-privdef-fixed.json"
+"$RESOLVE" --profile "$d/vis-privdef-fixed.json" --repo my-org/cli --language shell > "$d/eff-cli-pubdef-fixed.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-pubdef-fixed.json" --repo-settings "$d/repo-priv.json"
+expect_status "setting the override to private, as advised, clears the difference" 0
+expect_match  "leaving the NOTE" "NOTE  repos/my-org/cli is private by override (repoOverrides.cli.visibility)"
+
+# A bare effective object has no override key to name; the advice stays accurate.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-bare.json" --repo-settings "$d/repo-priv.json"
+expect_status "bare effective object, public by override, live private: FAIL" 1
+expect_match  "with the generic wording" \
+  'set "visibility" to "private" in its repoOverrides entry in the profile'
 
 # Settings not read: couldn't verify, and neither a NOTE nor a FAIL.
 run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json"

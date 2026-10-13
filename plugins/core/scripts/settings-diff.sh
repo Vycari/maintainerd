@@ -38,7 +38,7 @@
 # Requires: bash 3.2+, jq.
 #
 # Severities: FAIL (a difference), WARN, SKIP (couldn't verify) and NOTE. A NOTE is a fact
-# worth saying that is not a difference — a repo that is public by a declared override. It
+# worth saying that is not a difference — a repo that is public (or private) by a declared override. It
 # is printed, counted nowhere in the summary, and never changes the exit status.
 #
 # Exit status: 0 conformant (as far as it could see), 1 differences found, 2 usage/parse.
@@ -128,11 +128,19 @@ findings="$(jq -n \
         # The profile wants the repo public and it is private. Publishing exposes the whole
         # history and cannot be undone, so no paste-ready call is printed: a person does it
         # deliberately, outside this tool.
+        # The other resolution is worded so that it holds whatever the fleet default is, since
+        # only the resolved value is visible here: an override set to "private" always
+        # resolves to private, while removing a "public" one only does where
+        # defaults.private is true.
         [{ sev: "FAIL", section: "repo",
-           msg: "repos/\($slug) private is true, profile wants false",
+           msg: "repos/\($slug) private is \($repo.private | tojson), profile wants false",
            also: ["no call is printed: changing a repo to public is a deliberate act, done outside this report",
                   "either publish the repo deliberately, or "
-                  + (if $vis != null then "remove \($where) from the profile" else "change the profile so it no longer wants this repo public" end)] }]
+                  + (if $vis == null
+                       then "declare it private: repoOverrides.\($skey).visibility = \"private\" in the profile"
+                     elif $okey != ""
+                       then "set \($where) to \"private\" in the profile (removing it is enough only where defaults.private is true)"
+                     else "set \"visibility\" to \"private\" in its repoOverrides entry in the profile (removing it is enough only where defaults.private is true)" end)] }]
       else
         [{ sev: "FAIL", section: "repo",
            msg: "repos/\($slug) private is \($repo.private | tojson), profile wants true",

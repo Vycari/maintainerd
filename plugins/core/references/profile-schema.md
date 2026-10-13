@@ -170,6 +170,8 @@ setting as usual.
   `FAIL`. When the profile wants the repo public and it is private (override or fleet default), the
   `FAIL` names the two resolutions in words and prints **no** `gh api` call: publishing a repo
   exposes its full history and cannot be undone, so it stays a deliberate act outside the tool.
+  The profile-side resolution it names is an override of `"private"`, which holds under either
+  fleet default; removing a `"public"` override is enough only where `defaults.private` is `true`.
   A public repo with no override stays a `FAIL` with today's `PATCH`, plus a line naming the
   override as the other fix.
 - **Upgrade order.** An older `profile-resolve.sh` rejects a profile carrying `visibility`, for
