@@ -179,7 +179,7 @@ whose `defaults.private` is `true`.
 | Override | Live repo | Report |
 | --- | --- | --- |
 | `visibility: "public"` | public | `NOTE  repos/<slug> is public by override (repoOverrides.<key>.visibility)` |
-| `visibility: "public"` | private | `FAIL` — see below and [Q1](#open-questions) |
+| `visibility: "public"` | private | `FAIL`, with no publish call — see below and [Q1](#decided-questions) |
 | absent | public | `FAIL`, as today, with one added line naming the override as the other fix |
 | absent | private | Nothing, as today |
 | `visibility: "private"` (fleet default public) | private | `NOTE  repos/<slug> is private by override (…)` |
@@ -203,8 +203,8 @@ FAIL  repos/my-org/cli private is false, profile wants true
 repo, so it is reported as a `FAIL`, not ignored. A private repo carrying a public override is not
 "stricter and therefore fine": the override is a standing permission, and while it sits unused the
 repo could be made public by anyone with admin and no report would notice. The finding names both
-resolutions (publish the repo, or remove the override). Whether it also prints a paste-ready call
-that publishes the repo is [Q1](#open-questions).
+resolutions (publish the repo, or remove the override) in words and prints no paste-ready call
+that publishes the repo ([Q1](#decided-questions), decided (a)).
 
 **Naming the override.** `overrideKey` is in the resolver's full output but not in a bare effective
 object. `settings-diff.sh` reads it when it was handed the full output and prints
@@ -369,7 +369,8 @@ Diff, one case per row of the table in [The cases](#the-cases):
   `PATCH` call printed for `private`.
 - The same repo with a merge-method difference: exit `1`, the merge-method `FAIL` and its `PATCH`
   present. This is the assertion that the override does not mute anything else.
-- Public by override, live private: `FAIL`, exit `1`, with the output [Q1](#open-questions) settles.
+- Public by override, live private: `FAIL`, exit `1`, both resolutions named and no `PATCH` call
+  printed for `private` ([Q1](#decided-questions)).
 - No override, live public: `FAIL`, today's `PATCH` call, and the added line naming the override.
 - Private by override, live private and live public.
 - Repo settings not read: `SKIP`, no `NOTE` and no `FAIL`.
@@ -411,10 +412,10 @@ split, B must not merge before A.
 
 Neither PR touches `KNOWN_VERSION`. Plugin versions are bumped by the merge workflow, not in the PR.
 
-## Open questions
+## Decided questions
 
 **Q1. When the profile wants a repo public and the live repo is private, does the report print a
-paste-ready call that publishes it?**
+paste-ready call that publishes it? Decided (maintainer, 2026-10-13): (a).**
 
 Context: this arises with the override (`visibility: "public"`, repo still private) and, already
 today, in a fleet whose `defaults.private` is `false`. In both, `settings-diff.sh` as written would
@@ -429,7 +430,7 @@ run it in its batch. Publishing a repo exposes its full history and cannot be me
 - **(c)** `WARN`, with no call: an unused permission is worth saying but is not drift, so it does not
   hold the weekly issue open.
 
-Recommendation: **(a)**. It keeps the mismatch visible and the weekly issue open until someone
+The recommendation was **(a)**, and it is what was decided. It keeps the mismatch visible and the weekly issue open until someone
 resolves it, and it keeps the one irreversible repo-level change out of a batch of calls a person
 approves with a single answer. (b) is consistent with "report-only, a human pastes", but the
 labelling precedent is for a change that can be reversed by pasting the previous value. (c) leaves
