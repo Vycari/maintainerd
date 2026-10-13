@@ -30,8 +30,9 @@ belongs to a person at a keyboard. See **Who applies what** below.
   "profileVersion": 1,             // shape of this file; readers refuse a major they don't know
   "org": "my-org",                 // GitHub org or user the standard covers — informational
 
-  // Fixed org-wide. These keys appear ONLY here: a standard that lets one repo be public,
-  // or skip reviews, is not a standard.
+  // Fixed org-wide. These keys appear ONLY here: a standard that lets one repo quietly be
+  // public, or skip reviews, is not a standard. The one named exception is `visibility`,
+  // which a repoOverrides entry may declare — see "Visibility is a declared exception".
   "defaults": {
     "private": true,
     "defaultBranch": "main",
@@ -81,13 +82,14 @@ belongs to a person at a keyboard. See **Who applies what** below.
     }
   },
 
-  // Per repo. The pressure-relief valve. Same six keys, same rules.
+  // Per repo. The pressure-relief valve. The same six keys, same rules, plus `visibility`.
   "repoOverrides": {
     "app":  { "requiredChecks": ["migration-collision"] },   // ADDED to the language's list
     "site": { "coverage": null,
               "commands": { "test": "npm run build && npm run linkcheck", "coverage": null },
               "mergeQueue": { "enabled": false },        // merges by key: only `enabled` changes
-              "protection": { "enforceAdmins": true } }  // stricter than the fleet, declared in the open
+              "protection": { "enforceAdmins": true } },  // stricter than the fleet, declared in the open
+    "cli":  { "visibility": "public" }                       // a declared exception to defaults.private
   }
 }
 ```
@@ -137,10 +139,44 @@ difference between an override and an exemption. `settings-diff.sh` reads both f
 object, so an override changes what `doctor --profile` check 15 compares against and what `new-repo`
 writes, with no other change.
 
-**A `languages` or `repoOverrides` block containing any other key is an error, not a warning.** That
-is how "fixed org-wide" is mechanized: if `private` were settable per repo, the profile would
-document a standard nobody is held to. `profile-resolve.sh` fails on it, naming the key and the
-block it appeared in.
+**A `languages` or `repoOverrides` block containing any other key is an error, not a warning**,
+with one exception described below. That is how "fixed org-wide" is mechanized: if `private` were
+settable per repo, the profile would document a standard nobody is held to. `profile-resolve.sh`
+fails on it, naming the key and the block it appeared in.
+
+**Visibility is a declared exception.** A `repoOverrides` entry, and only a `repoOverrides` entry,
+may carry `"visibility": "public"` (or `"private"`, in a fleet whose default is public). It is not
+a seventh resolvable key: it has no language form and no `defaults` form, and `private` itself is
+still rejected in every block. A repo that is public by accident is drift, and is still reported
+as drift. A repo that is public by override is *declared*, in a block a reviewer reads, and that is
+the difference between an override and an exemption. The standard still names every public repo;
+what it no longer does is force a fleet to choose between a false drift report and no drift
+report at all. `doctor --profile` reports such a repo as public by override and diffs every other
+setting as usual.
+
+- **Validation.** `visibility` must be the string `"public"` or `"private"` (`"internal"` is not
+  accepted: `defaults.private` is a boolean and `settings-diff.sh` reads only the live `private`
+  boolean). In a `languages` block or in `defaults` it is an error with its own message. `private`
+  in an override stays an error, and the message points at `visibility`.
+- **Resolution.** If the override carries `visibility`, `effective.private` is set to
+  `visibility == "private"` and `effective.visibility` is kept. Without it, `effective` has no
+  `visibility` key. `effective.private` therefore stays the single answer to "should this repo be
+  private"; read it from the effective object, never from `defaults.private` directly, which is
+  wrong for an overridden repo.
+- **Reporting.** `settings-diff.sh` has a fourth severity, `NOTE`, for a repo whose live visibility
+  matches its override: `repos/<slug> is public by override (repoOverrides.<key>.visibility)`. A
+  `NOTE` is not counted in the summary and does not change the exit status, so a repo with only
+  `NOTE` lines is conformant. A live visibility that disagrees with the resolved value is a
+  `FAIL`. When the profile wants the repo public and it is private (override or fleet default), the
+  `FAIL` names the two resolutions in words and prints **no** `gh api` call: publishing a repo
+  exposes its full history and cannot be undone, so it stays a deliberate act outside the tool.
+  The profile-side resolution it names is an override of `"private"`, which holds under either
+  fleet default; removing a `"public"` override is enough only where `defaults.private` is `true`.
+  A public repo with no override stays a `FAIL` with today's `PATCH`, plus a line naming the
+  override as the other fix.
+- **Upgrade order.** An older `profile-resolve.sh` rejects a profile carrying `visibility`, for
+  every repo, with `carries "visibility", which is fixed org-wide`. Upgrade maintainerd in
+  every consumer before adding the key to a profile.
 
 `defaults` may also carry the resolvable keys, as the base layer for every language. Most
 profiles don't need to; the layer exists so the merge has one rule rather than two.
@@ -181,7 +217,7 @@ For `site` (`typescript-web`) in the profile above:
 
 | Effective key | Value | From |
 | --- | --- | --- |
-| `private` | `true` | `defaults` |
+| `private` | `true` | `defaults` (an override's `visibility` would replace it) |
 | `requiredChecks` | `["ci"]` | language (override adds nothing) |
 | `coverage` | `null` | override's explicit `null` beats the language's ratchet |
 | `commands.lint` | `npm run lint` | language (override didn't name it) |
@@ -249,13 +285,13 @@ repo, that is a request for a profile key that doesn't exist yet, not a reason t
 | `org` | yes | GitHub org or user. Informational for maintainerd — every repo is addressed by full slug — but it is what a fleet tool uses to build calls the profile doesn't spell out. |
 | `defaults` | yes | The fixed, org-wide half of the standard. |
 | `languages` | yes | Non-empty object; each value carries only the six resolvable keys. |
-| `repoOverrides` | no | Defaults to `{}`. Same restriction as `languages`. |
+| `repoOverrides` | no | Defaults to `{}`. The same six keys as `languages`, plus the optional `visibility` (`"public"` or `"private"`), which is legal here and nowhere else. |
 
 ### `defaults`
 
 | Key | Type | Meaning and where it lands |
 | --- | --- | --- |
-| `private` | bool | `PATCH repos/{slug}` `private`. |
+| `private` | bool | `PATCH repos/{slug}` `private`. A single repo may declare an exception with `repoOverrides.<key>.visibility`; this key itself is never settable per repo. |
 | `defaultBranch` | string | The branch protection is applied to, and what `bootstrap` writes as `defaultBranch`. |
 | `merge.squash` / `.mergeCommit` / `.rebase` | bool | `allow_squash_merge` / `allow_merge_commit` / `allow_rebase_merge`. |
 | `merge.deleteBranchOnMerge` | bool | `delete_branch_on_merge`. |
@@ -498,8 +534,9 @@ also offers. Settings live outside that boundary permanently.
   is how a standard gets applied wrong to every repo at once.
 
 **Version 1 guarantees:** `profileVersion`, `org`, `defaults` and `languages` are present;
-`languages` is a non-empty object; `languages` and `repoOverrides` values carry only
-`requiredChecks`, `coverage`, `commands` and `dependabot`; `coverage` is either `null` or an object
+`languages` is a non-empty object; `languages` values carry only the six resolvable keys
+(`requiredChecks`, `coverage`, `commands`, `dependabot`, `mergeQueue`, `protection`) and
+`repoOverrides` values carry those six plus the optional `visibility`; `coverage` is either `null` or an object
 with `mode: "ratchet"`; `requiredChecks` is an array of strings.
 
 ---

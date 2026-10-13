@@ -124,13 +124,24 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
                   else [] end ) )
             else [] end );
 
-  def block_errors($where):
+  # `$kind` is "languages" or "override". One allow-list serves both, with `visibility`
+  # legal only in an override: adding it to $resolvable would legalize it per language.
+  def block_errors($where; $kind):
     . as $b
     | ( if type != "object" then ["\($where) is \(type), expected an object"] else [] end )
     + ( if type != "object" then [] else
           ( ($b | keys_unsorted) - $resolvable
-            | map("\($where) carries \"\(.)\", which is fixed org-wide — only "
-                  + ($resolvable | join(", ")) + " may vary per language or repo") )
+            | map(select(. != "visibility" or $kind != "override"))
+            | map(if . == "visibility"
+                    then "\($where) carries \"visibility\", which is legal only in a repoOverrides entry — visibility is a per-repo exception, not a property of a language"
+                  else "\($where) carries \"\(.)\", which is fixed org-wide — only "
+                       + ($resolvable | join(", ")) + " may vary per language or repo"
+                       + ( if . == "private" and $kind == "override"
+                             then ". To declare this one repo public, use \"visibility\": \"public\""
+                             else "" end ) end) )
+        + ( if $kind == "override" and ($b | has("visibility"))
+                and (($b.visibility | type) != "string" or (["public","private"] | index([$b.visibility]) | not))
+              then ["\($where).visibility is \($b.visibility | tojson), expected \"public\" or \"private\""] else [] end )
         + ( if ($b | has("requiredChecks")) and (($b.requiredChecks | is_str_array) | not)
               then ["\($where).requiredChecks must be an array of strings"] else [] end )
         + ( if ($b | has("coverage")) and ($b.coverage != null)
@@ -161,6 +172,8 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
   , ( if (.org | type) != "string" or (.org | length) == 0 then ["org must be a non-empty string"] else [] end )
   , ( if (.defaults | type) != "object" then ["defaults must be an object"] else [] end )
   , ( if (.defaults | type) == "object" then (.defaults | nested_errors("defaults")) else [] end )
+  , ( if (.defaults | type) == "object" and (.defaults | has("visibility"))
+        then ["defaults carries \"visibility\" — the fleet-wide value is defaults.private; visibility is legal only in a repoOverrides entry"] else [] end )
   # `files.prTemplateHeadings`/`files.prTemplateSource` are the two keys pr-template-check.sh
   # reads by value type rather than by presence, so a malformed one cannot pass silently
   # through resolution and be read as "not set" downstream (jq treats `false` the same as
@@ -192,10 +205,10 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
   , ( if has("repoOverrides") and ((.repoOverrides | type) != "object")
         then ["repoOverrides must be an object"] else [] end )
   , ( if (.languages | type) == "object"
-        then [ .languages | to_entries[] | .key as $k | .value | block_errors("languages.\($k)") ] | add // []
+        then [ .languages | to_entries[] | .key as $k | .value | block_errors("languages.\($k)"; "languages") ] | add // []
         else [] end )
   , ( if (.repoOverrides? | type) == "object"
-        then [ .repoOverrides | to_entries[] | .key as $k | .value | block_errors("repoOverrides.\($k)") ] | add // []
+        then [ .repoOverrides | to_entries[] | .key as $k | .value | block_errors("repoOverrides.\($k)"; "override") ] | add // []
         else [] end )
   ] | add | .[]
 ' "$profile")"
@@ -262,6 +275,12 @@ jq --arg repo "$repo" --arg lang "$language" '
   # nulled here rather than left for each consumer to remember.
   | (if $merged.coverage == null and (($merged.commands? | type) == "object")
        then $merged | .commands.coverage = null
+       else $merged end) as $merged
+  # An override'\''s `visibility` is the one declared exception to the fixed `private`:
+  # effective.private stays the single answer to "should this repo be private", and
+  # effective.visibility is present exactly when that answer came from an override.
+  | (if ($merged | has("visibility"))
+       then $merged | .private = (.visibility == "private")
        else $merged end) as $merged
   | { repo: $repo, name: $name, language: $lang, overrideKey: $key, effective: $merged }
 ' "$profile"

@@ -37,6 +37,10 @@
 #
 # Requires: bash 3.2+, jq.
 #
+# Severities: FAIL (a difference), WARN, SKIP (couldn't verify) and NOTE. A NOTE is a fact
+# worth saying that is not a difference — a repo that is public (or private) by a declared override. It
+# is printed, counted nowhere in the summary, and never changes the exit status.
+#
 # Exit status: 0 conformant (as far as it could see), 1 differences found, 2 usage/parse.
 
 set -euo pipefail
@@ -91,6 +95,8 @@ read_json() {  # read_json FILE FALLBACK_JSON — a passed file must parse; abse
 effective="$(jq -c 'if has("effective") then .effective else . end' "$eff" 2>/dev/null)" \
   || { echo "settings-diff: $eff is not valid JSON" >&2; exit 2; }
 [ -n "$effective" ] || { echo "settings-diff: $eff is empty" >&2; exit 2; }
+# The override's key is in the resolver's full output only; a bare effective object has none.
+override_key="$(jq -r 'if type == "object" and has("effective") then (.overrideKey // "") else "" end' "$eff" 2>/dev/null || true)"
 
 [ -n "$branch" ] || branch="$(printf '%s' "$effective" | jq -r '.defaultBranch // "main"')"
 
@@ -100,18 +106,56 @@ j_rules="$(read_json "$rulesets"     'null')"
 j_labels="$(read_json "$labels"      'null')"
 
 findings="$(jq -n \
-  --argjson e "$effective" --arg slug "$repo" --arg branch "$branch" \
+  --argjson e "$effective" --arg slug "$repo" --arg branch "$branch" --arg okey "$override_key" \
   --argjson repo "$j_repo" --argjson prot "$j_prot" --argjson rules "$j_rules" --argjson labels "$j_labels" '
 
   def q: @sh;
+
+  # ── visibility: the one repo-level key with a declared exception ───────────
+  # `effective.visibility` is present exactly when an override set it (profile-resolve.sh
+  # derives effective.private from it), so its presence is the whole signal.
+  def visibility_findings:
+    ($e.visibility // null) as $vis
+    | (if $okey != "" then "repoOverrides.\($okey).visibility" else "a repoOverrides entry" end) as $where
+    | ($slug | split("/") | last) as $name
+    | (if $okey != "" then $okey else $name end) as $skey
+    | if $e.private == null then []
+      elif $e.private == $repo.private then
+        (if $vis != null
+           then [{ sev: "NOTE", section: "repo", msg: "repos/\($slug) is \($vis) by override (\($where))" }]
+           else [] end)
+      elif $e.private == false then
+        # The profile wants the repo public and it is private. Publishing exposes the whole
+        # history and cannot be undone, so no paste-ready call is printed: a person does it
+        # deliberately, outside this tool.
+        # The other resolution is worded so that it holds whatever the fleet default is, since
+        # only the resolved value is visible here: an override set to "private" always
+        # resolves to private, while removing a "public" one only does where
+        # defaults.private is true.
+        [{ sev: "FAIL", section: "repo",
+           msg: "repos/\($slug) private is \($repo.private | tojson), profile wants false",
+           also: ["no call is printed: changing a repo to public is a deliberate act, done outside this report",
+                  "either publish the repo deliberately, or "
+                  + (if $vis == null
+                       then "declare it private: repoOverrides.\($skey).visibility = \"private\" in the profile"
+                     elif $okey != ""
+                       then "set \($where) to \"private\" in the profile (removing it is enough only where defaults.private is true)"
+                     else "set \"visibility\" to \"private\" in its repoOverrides entry in the profile (removing it is enough only where defaults.private is true)" end)] }]
+      else
+        [{ sev: "FAIL", section: "repo",
+           msg: "repos/\($slug) private is \($repo.private | tojson), profile wants true",
+           fix: "gh api --method PATCH \"repos/\($slug)\" -F private=true" }
+         + (if $vis == null
+              then { also: ["or, if this repo is meant to be public, declare it: repoOverrides.\($skey).visibility = \"public\" in the profile"] }
+              else {} end)]
+      end;
 
   # ── repo-level settings: a real PATCH, so each key gets its own call ────────
   def repo_findings:
     if $repo == null then
       [{ sev: "SKIP", section: "repo", msg: "repo settings not read — couldn'"'"'t verify private / merge methods / delete-branch-on-merge" }]
     else
-      [ { key: "private",                 want: $e.private,                  got: $repo.private }
-      , { key: "allow_squash_merge",      want: $e.merge.squash,             got: $repo.allow_squash_merge }
+      [ { key: "allow_squash_merge",      want: $e.merge.squash,             got: $repo.allow_squash_merge }
       , { key: "allow_merge_commit",      want: $e.merge.mergeCommit,        got: $repo.allow_merge_commit }
       , { key: "allow_rebase_merge",      want: $e.merge.rebase,             got: $repo.allow_rebase_merge }
       , { key: "delete_branch_on_merge",  want: $e.merge.deleteBranchOnMerge, got: $repo.delete_branch_on_merge }
@@ -121,6 +165,7 @@ findings="$(jq -n \
             | { sev: "FAIL", section: "repo",
                 msg: "repos/\($slug) \(.key) is \(.got | tojson), profile wants \(.want | tojson)",
                 fix: "gh api --method PATCH \"repos/\($slug)\" -F \(.key)=\(.want | tojson)" })
+      | visibility_findings + .
     end;
 
   # ── the required-check contexts a ruleset supplies, on top of protection ────
@@ -381,7 +426,8 @@ printf 'settings-diff — %s (branch %s)\n\n' "$repo" "$branch"
 
 printf '%s' "$findings" | jq -r '
   .findings[] | select(((.loosens // false) and .sev == "FAIL") | not)
-  | "\(.sev)  \(.msg)" + (if .fix then "\n      fix: \(.fix)" else "" end) + "\n"
+  | "\(.sev)  \(.msg)" + (if .fix then "\n      fix: \(.fix)" else "" end)
+    + (if .also then (.also | map("\n      " + .) | join("")) else "" end) + "\n"
 '
 
 # A diff whose fix WEAKENS the branch reads, in a plain list, exactly like one that

@@ -178,6 +178,48 @@ jq 'del(.defaults.files.prTemplateHeadings, .defaults.files.prTemplateSource)' "
 run "$RESOLVE" --profile "$d/nokeys.json" --validate
 expect_status "neither key set at all is still valid — both are optional" 0
 
+echo "profile-resolve.sh — shape: repoOverrides visibility"
+
+jq '.repoOverrides["site"].visibility = "private"' "$EXAMPLE" > "$d/vis-private.json"
+run "$RESOLVE" --profile "$d/vis-private.json" --validate
+expect_status "visibility \"private\" in a repoOverrides entry validates" 0
+run "$RESOLVE" --profile "$EXAMPLE" --validate
+expect_status "and so does \"public\", as the shipped example carries it" 0
+
+for bad_value in '"internal"' 'true' 'null' '{"a":1}'; do
+  jq --argjson v "$bad_value" '.repoOverrides["site"].visibility = $v' "$EXAMPLE" > "$d/vis-bad.json"
+  run "$RESOLVE" --profile "$d/vis-bad.json" --validate
+  expect_status "visibility $bad_value is rejected" 1
+  expect_match  "naming the block and the value" \
+    "repoOverrides.site.visibility is $(printf '%s' "$bad_value" | jq -c .), expected \"public\" or \"private\""
+done
+
+jq '.languages["shell"].visibility = "public"' "$EXAMPLE" > "$d/vis-lang.json"
+run "$RESOLVE" --profile "$d/vis-lang.json" --validate
+expect_status "visibility in a language block is rejected" 1
+expect_match  "with the language-specific message" \
+  'languages.shell carries "visibility", which is legal only in a repoOverrides entry'
+expect_no_match "and not the generic fixed-org-wide one" 'languages.shell carries "visibility", which is fixed'
+
+jq '.defaults.visibility = "public"' "$EXAMPLE" > "$d/vis-defaults.json"
+run "$RESOLVE" --profile "$d/vis-defaults.json" --validate
+expect_status "visibility in defaults is rejected" 1
+expect_match  "naming defaults.private as the fleet-wide value" 'defaults carries "visibility" — the fleet-wide value is defaults.private'
+
+jq '.repoOverrides["site"].private = false' "$EXAMPLE" > "$d/vis-private-key.json"
+run "$RESOLVE" --profile "$d/vis-private-key.json" --validate
+expect_status "private in an override is still rejected" 1
+expect_match  "with today's message" 'repoOverrides.site carries "private", which is fixed org-wide'
+expect_match  "and a pointer to visibility" 'To declare this one repo public, use "visibility": "public"'
+run "$RESOLVE" --profile "$d/fixedkey.json" --validate
+expect_no_match "private in a language block gets no pointer" 'To declare this one repo public'
+
+jq '.languages["shell"].visibility = "x" | .defaults.visibility = "x" | .repoOverrides["site"].visibility = "x"' "$EXAMPLE" > "$d/vis-all.json"
+run "$RESOLVE" --profile "$d/vis-all.json" --validate
+expect_match  "all problems are reported in one pass (language)" 'languages.shell carries "visibility"'
+expect_match  "(defaults)" 'defaults carries "visibility"'
+expect_match  "(override)" 'repoOverrides.site.visibility is "x"'
+
 echo "profile-resolve.sh — resolution"
 
 run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/worker --language typescript-web
@@ -238,6 +280,28 @@ expect_status "and a profile that omits them resolves too" 0
 expect_jq "prTemplateHeadings stays absent rather than defaulting to something" \
   '(.effective.files | has("prTemplateHeadings")) | not'
 expect_jq "so does prTemplateSource" '(.effective.files | has("prTemplateSource")) | not'
+
+# repoOverrides.visibility: effective.private follows it, effective.visibility is present
+# exactly when an override set it.
+run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/cli --language shell
+expect_status "a repo with a visibility override resolves" 0
+expect_jq "private follows the override" '.effective.private == false'
+expect_jq "and visibility is carried" '.effective.visibility == "public"'
+run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/worker --language typescript-web
+expect_jq "a repo without the override keeps defaults.private" '.effective.private == true'
+expect_jq "and has no visibility key at all" '.effective | has("visibility") | not'
+run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/site --language typescript-web
+expect_jq "an override without visibility leaves it absent" '.effective | has("visibility") | not'
+jq '.defaults.private = false | .repoOverrides["site"].visibility = "private"' "$EXAMPLE" > "$d/vis-privdef.json"
+run "$RESOLVE" --profile "$d/vis-privdef.json" --repo my-org/site --language typescript-web
+expect_jq "private by override in a public-by-default fleet resolves to private" \
+  '.effective.private == true and .effective.visibility == "private"'
+jq '.repoOverrides["my-org/cli"] = {"visibility": "private"}' "$EXAMPLE" > "$d/vis-slug.json"
+run "$RESOLVE" --profile "$d/vis-slug.json" --repo my-org/cli --language shell
+expect_jq "the full-slug override key wins over the short name" \
+  '.overrideKey == "my-org/cli" and .effective.private == true'
+run "$RESOLVE" --profile "$d/vis-slug.json" --repo other-org/cli --language shell
+expect_jq "and the short-name key still applies to a different org's repo" '.overrideKey == "cli"'
 
 # A `languages` or `repoOverrides` block is not allowed to carry `files` at all — the same
 # mechanism the `private` case above exercises, just naming the block these two keys
@@ -609,6 +673,114 @@ expect_status "protectionFloors must be an array" 1
 # An exempt repo still has settings; the exemption is about coverage, not conformance.
 run "$DIFF" --repo my-org/site --effective "$d/eff-site.json" --repo-settings "$d/repo-ok.json"
 expect_status "a coverage-exempt repo is still held to the settings standard" 0
+
+# ── visibility override ──────────────────────────────────────────────────────
+echo "settings-diff.sh — visibility override"
+
+"$RESOLVE" --profile "$EXAMPLE" --repo my-org/cli --language shell > "$d/eff-cli.json"
+cat > "$d/repo-pub.json" <<'JSON'
+{"private": false, "allow_squash_merge": true, "allow_merge_commit": false,
+ "allow_rebase_merge": false, "delete_branch_on_merge": true}
+JSON
+cat > "$d/repo-pub-mc.json" <<'JSON'
+{"private": false, "allow_squash_merge": true, "allow_merge_commit": true,
+ "allow_rebase_merge": false, "delete_branch_on_merge": true}
+JSON
+
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/repo-pub.json"
+expect_status "public by override, live public: exit 0" 0
+expect_match  "reported as a NOTE naming the override" \
+  "NOTE  repos/my-org/cli is public by override (repoOverrides.cli.visibility)"
+expect_match  "not counted anywhere: the 3 are the unread protection, rulesets and labels" \
+  "Summary: 0 difference(s), 0 warning(s), 3 not verified."
+expect_no_match "no call touching private is printed" "private="
+
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/repo-pub-mc.json"
+expect_status "the same repo with a merge-method difference still fails" 1
+expect_match  "the NOTE is still there" "is public by override"
+expect_match  "and the merge-method difference carries its PATCH call" \
+  'gh api --method PATCH "repos/my-org/cli" -F allow_merge_commit=false'
+expect_match  "counting only that difference" "Summary: 1 difference(s)"
+
+jq '.effective' "$d/eff-cli.json" > "$d/eff-cli-bare.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-bare.json" --repo-settings "$d/repo-pub.json"
+expect_status "a bare effective object still produces the NOTE" 0
+expect_match  "with the generic wording" "is public by override (a repoOverrides entry)"
+
+# Live private, override says public: FAIL, and nothing that publishes it.
+cat > "$d/repo-priv.json" <<'JSON'
+{"private": true, "allow_squash_merge": true, "allow_merge_commit": false,
+ "allow_rebase_merge": false, "delete_branch_on_merge": true}
+JSON
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/repo-priv.json"
+expect_status "public by override, live private: FAIL" 1
+expect_match  "reported as a difference" "FAIL  repos/my-org/cli private is true, profile wants false"
+expect_match  "names the way to publish, in words" "publish the repo deliberately"
+expect_match  "and the profile-side resolution, worded to hold under either fleet default" \
+  'set repoOverrides.cli.visibility to "private" in the profile (removing it is enough only where defaults.private is true)'
+expect_no_match "no publish call is printed" "private=false"
+expect_no_match "and no fix line at all" "fix:"
+expect_no_match "and no NOTE" "NOTE"
+
+# No override, live public: FAIL as today, with the added pointer.
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --repo-settings "$d/repo-pub.json"
+expect_status "no override, live public: still a FAIL" 1
+expect_match  "with today's PATCH call" 'fix: gh api --method PATCH "repos/my-org/app" -F private=true'
+expect_match  "and the override named as the other fix" \
+  'repoOverrides.app.visibility = "public" in the profile'
+run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --repo-settings "$d/repo-ok.json"
+expect_no_match "no override, live private: nothing about visibility" "visibility"
+
+# Private by override, in a fleet whose default is public.
+jq '.defaults.private = false | .repoOverrides["site"].visibility = "private"' "$EXAMPLE" > "$d/vis-privdef2.json"
+"$RESOLVE" --profile "$d/vis-privdef2.json" --repo my-org/site --language typescript-web > "$d/eff-site-priv.json"
+run "$DIFF" --repo my-org/site --effective "$d/eff-site-priv.json" --repo-settings "$d/repo-ok.json"
+expect_status "private by override, live private: exit 0" 0
+expect_match  "NOTE rendered" "NOTE  repos/my-org/site is private by override (repoOverrides.site.visibility)"
+run "$DIFF" --repo my-org/site --effective "$d/eff-site-priv.json" --repo-settings "$d/repo-pub.json"
+expect_status "private by override, live public: FAIL" 1
+expect_match  "with the usual PATCH call" 'fix: gh api --method PATCH "repos/my-org/site" -F private=true'
+expect_no_match "and no pointer to declaring it public" "or, if this repo is meant to be public"
+
+# Fleet default public, live private, no override: publishing is never offered as a call.
+"$RESOLVE" --profile "$d/vis-privdef.json" --repo my-org/worker --language typescript-web > "$d/eff-worker-pub.json"
+run "$DIFF" --repo my-org/worker --effective "$d/eff-worker-pub.json" --repo-settings "$d/repo-priv.json"
+expect_status "wants public, is private, no override: FAIL" 1
+expect_match  "reported as a difference" "FAIL  repos/my-org/worker private is true, profile wants false"
+expect_match  "names the override that would declare it private" \
+  'declare it private: repoOverrides.worker.visibility = "private" in the profile'
+expect_no_match "and no publish call is printed" "private=false"
+expect_no_match "and no fix line at all" "fix:"
+
+# Fleet default public AND a (redundant) public override, live private. Removing the override
+# would still resolve to public, so the report must not offer removal as the fix.
+"$RESOLVE" --profile "$d/vis-privdef.json" --repo my-org/cli --language shell > "$d/eff-cli-pubdef.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-pubdef.json" --repo-settings "$d/repo-priv.json"
+expect_status "public override in a public-by-default fleet, live private: FAIL" 1
+expect_match  "the advice is the one that resolves it there too" \
+  'set repoOverrides.cli.visibility to "private" in the profile'
+expect_match  "removal is qualified by the fleet default" "removing it is enough only where defaults.private is true"
+expect_no_match "removal is never offered unconditionally" "remove repoOverrides.cli.visibility from the profile"
+expect_no_match "and no publish call is printed" "private=false"
+# ...and following that advice does resolve it.
+jq '.repoOverrides["cli"].visibility = "private"' "$d/vis-privdef.json" > "$d/vis-privdef-fixed.json"
+"$RESOLVE" --profile "$d/vis-privdef-fixed.json" --repo my-org/cli --language shell > "$d/eff-cli-pubdef-fixed.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-pubdef-fixed.json" --repo-settings "$d/repo-priv.json"
+expect_status "setting the override to private, as advised, clears the difference" 0
+expect_match  "leaving the NOTE" "NOTE  repos/my-org/cli is private by override (repoOverrides.cli.visibility)"
+
+# A bare effective object has no override key to name; the advice stays accurate.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-bare.json" --repo-settings "$d/repo-priv.json"
+expect_status "bare effective object, public by override, live private: FAIL" 1
+expect_match  "with the generic wording" \
+  'set "visibility" to "private" in its repoOverrides entry in the profile'
+
+# Settings not read: couldn't verify, and neither a NOTE nor a FAIL.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json"
+expect_status "repo settings not read: not a difference" 0
+expect_match  "reported as unverified" "repo settings not read"
+expect_no_match "no NOTE" "NOTE"
+expect_no_match "no FAIL" "FAIL"
 
 run "$DIFF" --repo my-org/app --effective "$d/broken.json"
 expect_status "a malformed effective object is a usage error, not a clean report" 2
