@@ -23,7 +23,8 @@ is_uint() {
 }
 
 # parse_common_args "$@" — sets WAIT_PR, WAIT_REPO (may be empty), WAIT_TIMEOUT_SECONDS (may be empty),
-# WAIT_INTERVAL_SECONDS (may be empty), WAIT_CONFIG (may be empty), and leaves any flag it does
+# WAIT_INTERVAL_SECONDS (may be empty), WAIT_CONFIG (may be empty), WAIT_STAGE (may be empty; only
+# wait-for-review.sh accepts one), and leaves any flag it does
 # not recognise in WAIT_REST (space-joined) for the caller. Usage errors exit 3.
 parse_common_args() {
   WAIT_PR=""
@@ -31,6 +32,7 @@ parse_common_args() {
   WAIT_TIMEOUT_SECONDS=""
   WAIT_INTERVAL_SECONDS=""
   WAIT_CONFIG=""
+  WAIT_STAGE=""
   WAIT_REST=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -56,6 +58,11 @@ parse_common_args() {
       --config)
         [ "$#" -ge 2 ] || die 3 "$1 needs a value"
         WAIT_CONFIG="$2"
+        shift 2
+        ;;
+      --stage)
+        [ "$#" -ge 2 ] || die 3 "$1 needs a value"
+        WAIT_STAGE="$2"
         shift 2
         ;;
       -h | --help)

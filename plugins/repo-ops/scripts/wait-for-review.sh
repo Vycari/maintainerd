@@ -2,7 +2,7 @@
 #
 # wait-for-review.sh — block until a PR's automated review reaches a verdict, then print it.
 #
-#   wait-for-review.sh <pr> [-R owner/repo]
+#   wait-for-review.sh <pr> [-R owner/repo] [--stage vr]
 #
 # Prints a verdict on the first line of stdout, and nothing is ever "still waiting":
 #
@@ -16,6 +16,34 @@
 #   no-review-scheduled    nothing will review this PR: it is a draft, carries review.skipLabel,
 #                          or review.bots is configured empty.
 #   timeout                no verdict by the deadline (review.waitTimeoutMinutes, default 20).
+#
+# First-line stage (only with review.mode "first-line"; --stage vr is an error otherwise). The
+# first-line reviewer's check run (review.firstLine.checkName / checkApp) is read, and its verdict
+# JSON is reported, never recomputed:
+#
+#   vr-happy               the reviewer says it is happy with the head (JSON "happy": true).
+#   vr-handoff             not happy, but the reviewer has handed the head to the final reviewer
+#                          (its round cap was reached): "greptile_requested" is the head. Findings
+#                          still open are listed; they are no longer this stage's to chase.
+#   vr-findings:<n>        a round for the head is in and <n> findings are open; one indented line
+#                          per finding id follows ("(disputed)" marks one already disputed).
+#   vr-escalated           a P0 dispute the reviewer still holds ("escalated" non-empty, or the
+#                          title says "Needs maintainer: P0 dispute"). Stop and escalate.
+#   vr-unavailable         the reviewer concluded "Review unavailable": it asked the final
+#                          reviewer itself. Carry on with the final stage.
+#
+# Waiting continues for a queued/in-progress/superseded/"Round incomplete" run, for a verdict whose
+# reviewed_sha is not the head (an "unchanged since <sha>" re-post is the exception: it is terminal
+# for the head it sits on), and for check data truncated by page limits. The deadline defaults to
+# review.firstLine.unavailableMinutes + 5 (45 + 5), or review.waitTimeoutMinutes when that is set.
+# Exit status of the stage: 0 vr-happy / vr-handoff / vr-unavailable / no-review-scheduled,
+# 1 vr-findings / vr-escalated, 2 timeout, 3 the tool could not run.
+#
+# In first-line mode the DEFAULT stage is still the final reviewer, with one addition, covered
+# staleness: a score at or above the threshold on an ANCESTOR of the head (so every later commit
+# was a fix to a passing review) still yields `approved`, when no review thread is open and the
+# first-line reviewer is happy on the head itself. A second detail line says so. Judging whether
+# that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
 # Exit status: 0 approved / no-review-scheduled, 1 findings, 2 timeout, 3 the tool could not run
 # (bad usage, gh failure on the first read, invalid config). A verdict is never an error text and an
@@ -40,7 +68,8 @@
 #
 # Config (.claude/maintainerd.json, see references/config-schema.md): review.waitTimeoutMinutes,
 # review.approvalThreshold, review.bots, review.skipLabel, review.checkName, review.checkApp,
-# review.blockMarker.
+# review.blockMarker (a bare name such as `greptile_comment` is read as `<!-- greptile_comment -->`),
+# review.mode, review.firstLine.checkName / checkApp / unavailableMinutes.
 # Flags for tests and tuning: --timeout-seconds N, --interval-seconds N (default 180, the floor a
 # polite poller keeps against the API), --config FILE.
 #
@@ -72,6 +101,28 @@ CHECK_NAME="$(cfg '.review.checkName' '')"
 CHECK_APP="$(cfg '.review.checkApp' '')"
 BLOCK_MARKER="$(cfg '.review.blockMarker' '<!-- greptile_comment -->')"
 [ -n "$BLOCK_MARKER" ] || BLOCK_MARKER='<!-- greptile_comment -->'
+# A bare marker name (the repo profile spells it that way) is the same marker as its comment form.
+case "$BLOCK_MARKER" in
+  '<!--'*) ;;
+  *) BLOCK_MARKER="<!-- $BLOCK_MARKER -->" ;;
+esac
+# First-line mode. Anything but the exact string "first-line" leaves every line below this block
+# inert: no first-line key is read, no extra query is sent.
+STAGE="${WAIT_STAGE:-final}"
+case "$STAGE" in
+  final | vr) ;;
+  *) die 3 "--stage must be 'vr' or 'final' (final is the default)" ;;
+esac
+FIRST_LINE=0
+if [ "$(cfg '.review.mode' '')" = "first-line" ]; then
+  FIRST_LINE=1
+  FL_NAME="$(cfg '.review.firstLine.checkName' 'Vycari Review')"
+  FL_APP="$(cfg '.review.firstLine.checkApp' 'vycari-review')"
+  FL_UNAVAILABLE_MIN="$(cfg '.review.firstLine.unavailableMinutes' '45')"
+  is_uint "$FL_UNAVAILABLE_MIN" || die 3 "review.firstLine.unavailableMinutes must be a non-negative integer"
+fi
+[ "$STAGE" != "vr" ] || [ "$FIRST_LINE" = "1" ] ||
+  die 3 "--stage vr needs review.mode \"first-line\" in the repository's config"
 # A name without an App is the name-only match rung 0 exists to refuse; an App without a name matches
 # nothing. Either alone is a configuration error, not a silent fallback.
 if [ -n "$CHECK_NAME" ] && [ -z "$CHECK_APP" ]; then
@@ -81,6 +132,10 @@ if [ -z "$CHECK_NAME" ] && [ -n "$CHECK_APP" ]; then
   die 3 "review.checkApp needs review.checkName"
 fi
 is_uint "$TIMEOUT_MIN" || die 3 "review.waitTimeoutMinutes must be a non-negative integer"
+if [ "$STAGE" = "vr" ] &&
+  ! printf '%s' "$WAIT_CONFIG_JSON" | jq -e '(.review // {}).waitTimeoutMinutes != null' >/dev/null 2>&1; then
+  TIMEOUT_MIN=$((FL_UNAVAILABLE_MIN + 5)) # the reviewer's own bound, plus the sweep's slack
+fi
 TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-$((TIMEOUT_MIN * 60))}"
 INTERVAL="${WAIT_INTERVAL_SECONDS:-180}"
 
@@ -130,7 +185,7 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
     userContentEdits(first:1){nodes{editor{login}}}
     commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
-        nodes{databaseId name status conclusion startedAt completedAt text}}}}}}}
+        nodes{databaseId name status conclusion startedAt completedAt title text}}}}}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
       nodes{isResolved isOutdated path line originalLine comments(first:1){nodes{body author{login}}}}
@@ -148,9 +203,11 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
 # re-run has neither startedAt nor completedAt, so ordering by those would let an older completed
 # run's score stand in for it. Check-run databaseIds are allocated in creation order, and GraphQL's
 # CheckRun exposes no createdAt, so the id is the creation order.
-check_run_score() {
-  local run text json
-  run="$(printf '%s' "$1" | jq -s -c --arg app "$CHECK_APP" --arg name "$CHECK_NAME" --arg head "$2" '
+# newest_check_run <graphql-json-stream> <head> <app-slug> <name> — prints the newest run (by
+# creation) named <name> on <head> from the App <app-slug> as one JSON object, or "INCOMPLETE" (a
+# JSON string) when a check connection was truncated, or nothing when there is no such run.
+newest_check_run() {
+  printf '%s' "$1" | jq -s -c --arg app "$3" --arg name "$4" --arg head "$2" '
     [.[0].data.repository.pullRequest.commits.nodes[]? | select(.commit.oid == $head) | .commit.checkSuites]
     | if any(.[]; .pageInfo.hasNextPage == true
                   or any(.nodes[]? | select((.app.slug // "") == $app); .checkRuns.pageInfo.hasNextPage == true))
@@ -158,7 +215,22 @@ check_run_score() {
       else [.[] | .nodes[]? | select((.app.slug // "") == $app)
             | .checkRuns.nodes[]? | select(.name == $name)]
            | sort_by(.databaseId // 0) | last // empty
-      end' 2>/dev/null)" || return 0
+      end' 2>/dev/null
+}
+
+# run_json_text <run-json> — the fenced (or bare) JSON object in the run's output.text.
+run_json_text() {
+  local text json
+  text="$(printf '%s' "$1" | jq -r '.text // ""')"
+  # The contract is a fenced JSON object; a bare JSON object is accepted too.
+  json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
+  [ -n "$json" ] || json="$text"
+  printf '%s' "$json"
+}
+
+check_run_score() {
+  local run json
+  run="$(newest_check_run "$1" "$2" "$CHECK_APP" "$CHECK_NAME")" || return 0
   [ -n "$run" ] || return 0
   if [ "$run" = '"INCOMPLETE"' ]; then
     printf 'INCOMPLETE'
@@ -171,10 +243,7 @@ check_run_score() {
   # A NEUTRAL conclusion is never a gate verdict: shadow-mode runs publish neutral and must not be
   # read as a score. (A run still in progress was handled above.)
   [ "$(printf '%s' "$run" | jq -r '.conclusion // ""')" != "NEUTRAL" ] || return 0
-  text="$(printf '%s' "$run" | jq -r '.text // ""')"
-  # The contract is a fenced JSON object; a bare JSON object is accepted too.
-  json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
-  [ -n "$json" ] || json="$text"
+  json="$(run_json_text "$run")"
   printf '%s' "$json" | jq -r --arg app "$CHECK_APP" '
     select(type == "object"
       and (.mode // "") != "shadow"
@@ -183,6 +252,132 @@ check_run_score() {
       and .score <= .max
       and (.reviewed_sha | type == "string" and test("^[0-9a-fA-F]{7,64}$")))
     | "checkrun:\($app) \(.score)/\(.max) \(.reviewed_sha)"' 2>/dev/null | head -n 1
+  return 0
+}
+
+# vr_read <graphql-json-stream> <head> — the first-line reviewer's check run for <head>. Sets
+# VR_KIND to one of: none (no such run yet), pending (keep waiting), happy, handoff, findings,
+# escalated, unavailable; and VR_N / VR_DETAIL for findings. It reads the reviewer's verdict JSON and
+# never works out happiness itself.
+VR_KIND=""
+VR_N=0
+VR_DETAIL=""
+vr_read() {
+  local run title json head="$2" reviewed requested
+  VR_KIND="none"
+  VR_N=0
+  VR_DETAIL=""
+  run="$(newest_check_run "$1" "$head" "$FL_APP" "$FL_NAME")" || return 0
+  [ -n "$run" ] || return 0
+  if [ "$run" = '"INCOMPLETE"' ]; then
+    VR_KIND="pending"
+    LAST_ERR="first-line: the head commit's check suites/runs were truncated (hasNextPage); the check run may be unseen"
+    return 0
+  fi
+  if [ "$(printf '%s' "$run" | jq -r '.status // ""')" != "COMPLETED" ]; then
+    VR_KIND="pending"
+    return 0
+  fi
+  title="$(printf '%s' "$run" | jq -r '.title // ""')"
+  case "$title" in
+    Superseded* | "Round incomplete"*)
+      VR_KIND="pending" # a newer round is coming / the judge retries
+      return 0
+      ;;
+    "Review unavailable"*)
+      VR_KIND="unavailable"
+      VR_DETAIL="  $title"
+      return 0
+      ;;
+  esac
+  json="$(run_json_text "$run")"
+  if ! printf '%s' "$json" | jq -e 'type == "object" and (.mode // "") == "first-line"' >/dev/null 2>&1; then
+    case "$title" in
+      "Needs maintainer: P0 dispute"*)
+        VR_KIND="escalated"
+        VR_DETAIL="  $title"
+        return 0
+        ;;
+    esac
+    VR_KIND="pending" # unreadable: never guess a verdict
+    LAST_ERR="first-line: the check run's output.text is not the first-line JSON contract"
+    return 0
+  fi
+  # A pure-rebase re-post carries the earlier round's JSON on the new head: terminal for this head.
+  # Any other verdict must name the head, or it is the previous head's.
+  reviewed="$(printf '%s' "$json" | jq -r '.reviewed_sha // ""')"
+  case "$title" in
+    "unchanged since"*) ;;
+    *)
+      if ! is_head_sha "$reviewed" "$head"; then
+        VR_KIND="pending"
+        return 0
+      fi
+      ;;
+  esac
+  if [ "$(printf '%s' "$json" | jq '(.escalated // []) | length')" -gt 0 ] ||
+    case "$title" in "Needs maintainer: P0 dispute"*) true ;; *) false ;; esac; then
+    VR_KIND="escalated"
+    VR_DETAIL="$(printf '%s' "$json" | jq -r '(.escalated // [])[] | "  \(.) (escalated)"')"
+    [ -n "$VR_DETAIL" ] || VR_DETAIL="  $title"
+    return 0
+  fi
+  if [ "$(printf '%s' "$json" | jq -r '.happy == true')" = "true" ]; then
+    VR_KIND="happy"
+    return 0
+  fi
+  VR_N="$(printf '%s' "$json" | jq -r '((.open.p0 // 0) + (.open.p1 // 0) + (.open.p2 // 0))')"
+  is_uint "$VR_N" || VR_N=0
+  VR_DETAIL="$(printf '%s' "$json" | jq -r '. as $j | ($j.findings // [])[] |
+    "  \(.)" + (if (($j.disputed // []) | index(.)) != null then " (disputed)" else "" end)')"
+  requested="$(printf '%s' "$json" | jq -r '.greptile_requested // ""')"
+  if [ -n "$requested" ] && is_head_sha "$requested" "$head"; then
+    VR_KIND="handoff"
+    return 0
+  fi
+  VR_KIND="findings"
+  return 0
+}
+
+# fetch_gql [check-name] — the PR's review threads, plus the head commit's check runs of that name
+# when one is given. The one place the GraphQL query is sent.
+fetch_gql() {
+  if [ -n "$1" ]; then
+    gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$1" 2>&1
+  else
+    gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1
+  fi
+}
+
+# covered_by_first_line <scores> <head> — covered staleness (first-line mode only). True when every
+# published score is at the bar, names an ANCESTOR of the head (or the head), and the first-line
+# reviewer has a completed, happy round on the head. Anything unreadable is "not covered".
+COVERED_NOTE=""
+covered_by_first_line() {
+  local scores="$1" head="$2" line bot score reviewed num den status vr_gql first=""
+  COVERED_NOTE=""
+  [ -n "$scores" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    bot="${line%% *}"
+    score="$(printf '%s' "$line" | cut -d' ' -f2)"
+    reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+    [ -n "$reviewed" ] || return 1
+    num="${score%%/*}"
+    den="${score##*/}"
+    if [ "$den" != "$THR_DEN" ] || [ "$num" -lt "$THR_NUM" ]; then
+      return 1
+    fi
+    if ! is_head_sha "$reviewed" "$head"; then
+      status="$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" --jq .status 2>/dev/null)" || return 1
+      case "$status" in ahead | identical) ;; *) return 1 ;; esac
+    fi
+    [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
+  done <<<"$scores"
+  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  vr_read "$vr_gql" "$head"
+  [ "$VR_KIND" = "happy" ] || return 1
+  COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
   return 0
 }
 
@@ -272,7 +467,7 @@ poll_once() {
     VERDICT="no-review-scheduled"
     return 0
   fi
-  if [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
+  if [ "$STAGE" = "final" ] && [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
     VERDICT="no-review-scheduled"
     return 0
   fi
@@ -288,11 +483,34 @@ poll_once() {
   }
   decision="$(printf '%s' "$pr" | jq -r '.reviewDecision // ""')"
 
-  if [ -n "$CHECK_NAME" ]; then
-    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$CHECK_NAME" 2>&1)"
-  else
-    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1)"
-  fi || {
+  if [ "$STAGE" = "vr" ]; then
+    gql="$(fetch_gql "$FL_NAME")" || {
+      LAST_ERR="gh api graphql failed: $gql"
+      return 1
+    }
+    vr_read "$gql" "$head"
+    case "$VR_KIND" in
+      happy) VERDICT="vr-happy" ;;
+      handoff)
+        VERDICT="vr-handoff"
+        DETAIL="$VR_DETAIL"
+        ;;
+      findings)
+        VERDICT="vr-findings:$VR_N"
+        DETAIL="$VR_DETAIL"
+        ;;
+      escalated)
+        VERDICT="vr-escalated"
+        DETAIL="$VR_DETAIL"
+        ;;
+      unavailable)
+        VERDICT="vr-unavailable"
+        DETAIL="$VR_DETAIL"
+        ;;
+    esac
+    return 0 # none / pending: keep waiting
+  fi
+  gql="$(fetch_gql "$CHECK_NAME")" || {
     LAST_ERR="gh api graphql failed: $gql"
     return 1
   }
@@ -350,6 +568,14 @@ poll_once() {
         DETAIL="  $bot scored $score, below review.approvalThreshold $THRESHOLD on the head commit"
       fi
     done <<<"$scores"
+    # Covered staleness (first-line mode only): the bar was met on an ancestor of the head, nothing
+    # is open, and the first-line reviewer is happy on the head itself.
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+      covered_by_first_line "$scores" "$head"; then
+      stale=0
+    else
+      COVERED_NOTE=""
+    fi
     [ "$stale" = "0" ] || return 0
   fi
 
@@ -374,7 +600,7 @@ poll_once() {
   fi
   if [ "$all_met" = "1" ]; then
     VERDICT="approved"
-    DETAIL=""
+    DETAIL="$COVERED_NOTE"
   else
     VERDICT="findings:0"
   fi
@@ -395,7 +621,7 @@ while :; do
     printf '%s\n' "$VERDICT"
     [ -z "$DETAIL" ] || printf '%s\n' "$DETAIL"
     case "$VERDICT" in
-      approved | no-review-scheduled) exit 0 ;;
+      approved | no-review-scheduled | vr-happy | vr-handoff | vr-unavailable) exit 0 ;;
       *) exit 1 ;;
     esac
   fi

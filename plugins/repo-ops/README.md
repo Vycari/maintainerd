@@ -221,7 +221,7 @@ The first line of stdout is the verdict; exit status mirrors it (0 good, 1 needs
 `review.waitTimeoutMinutes` (default 20) and poll every 3 minutes unless `--interval-seconds` says
 otherwise; `--timeout-seconds` and `--config FILE` exist for tests and one-off use.
 
-### `wait-for-review.sh <pr> [-R owner/repo]`
+### `wait-for-review.sh <pr> [-R owner/repo] [--stage vr]`
 
 | Output | Meaning |
 | --- | --- |
@@ -252,6 +252,24 @@ Policy comes from the repository being waited on: the checkout's `.claude/mainta
 the checkout is that repo, otherwise the target's file read from its default branch (so `-R` or a
 PR URL for another repo is never judged by this checkout's bots, threshold or skip label). A PR URL
 names its repository, and contradicting it with `-R` is an error.
+
+**First-line mode (opt-in).** With `review.mode: "first-line"` (see `config-schema.md`):
+
+- `--stage vr` waits on the first-line reviewer's check run (`review.firstLine.checkName` /
+  `checkApp`) instead of the final reviewer, and reports the verdict the reviewer published; it
+  never works out "happy" itself. Verdicts: `vr-happy` (0), `vr-handoff` (0; the round cap was
+  reached and the head went to the final reviewer, open findings listed), `vr-unavailable` (0; the
+  reviewer asked the final reviewer itself), `vr-findings:<n>` (1; one indented finding id per
+  line, disputed ones marked), `vr-escalated` (1; a P0 dispute the reviewer holds). A queued,
+  in-progress, superseded or "Round incomplete" run, a verdict for another commit, and truncated
+  check data keep waiting. The default deadline is `firstLine.unavailableMinutes` + 5 (50), unless
+  `review.waitTimeoutMinutes` is set. Without first-line mode, `--stage vr` is a tool error (exit 3).
+- Without `--stage`, the verdicts above are unchanged, with one addition (**covered staleness**): a
+  score at or above the threshold on an *ancestor* of the head still yields `approved` when no
+  review thread is open and the first-line reviewer has a completed, happy round on the head. A
+  `covered:` line says so. The script cannot see whether that score carried a P1; the merge gate
+  judges that, as it does for a score on the head.
+- `review.blockMarker` may be a bare name (`greptile_comment`), read as `<!-- greptile_comment -->`.
 
 ### `wait-for-checks.sh <pr> [-R owner/repo]`
 

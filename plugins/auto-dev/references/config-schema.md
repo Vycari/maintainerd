@@ -239,9 +239,26 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // hook, which warns when `gh pr create` carries this label
                                      // without `--draft` — the bot schedules its review on the open
                                      // event, before a label applied in the same command lands.
-    "replyNamesCommit":  false       // opt-in. true = the repo-ops `review-reply-postcondition` hook
+    "replyNamesCommit":  false,      // opt-in. true = the repo-ops `review-reply-postcondition` hook
                                      // requires a review reply that claims a fix to name a commit
                                      // reachable from HEAD. false/absent = the hook says nothing.
+
+    // First-line review (two-stage address-review). Everything below is inert until "mode" is
+    // "first-line": absent or any other value = the single-stage loop above, unchanged.
+    "mode":              null,       // "first-line" = a first-line reviewer answers first, then ONE final
+                                     // scored review (review.bots / approvalThreshold). null/absent = off.
+    "rereviewCommand":   "@greptileai review", // the final reviewer's re-review mention. In first-line the
+                                     // first-line reviewer or a human posts it; address-review never does.
+    "onOpen":            true,       // read by the first-line reviewer's dispatcher, not by any skill here
+    "pushCooldownMinutes": 5,        // likewise (dispatcher). Documented so the config has one home.
+    "firstLine": {                   // read only when mode == "first-line"
+      "bots":               ["vycari-review[bot]"], // first-line reviewer logins (threads to answer)
+      "checkName":          "Vycari Review",        // its check run; carries the verdict JSON
+      "checkApp":           "vycari-review",        // slug of the App that must own that check run
+      "maxRounds":          3,       // first-line rounds on a PR before the reviewer hands off anyway
+      "unavailableMinutes": 45,      // how long a due round may stay unconcluded before "unavailable"
+      "disputePrefix":      "Disputed:" // a reply starting with this is a dispute of a P0/P1 finding
+    }
   },
 
   // ── release (the `release` skill) — null/omitted = repo ships continuously, no versioned release ──
@@ -442,7 +459,8 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `review.responderTier` *(optional; default `null`)* — the `models.*` tier the review-response loop
   wants (see [`model-tiers.md`](model-tiers.md)). It exists because responding to review is
   judgment-heavy — adjudicating whether a finding is right — even when the PR it is responding on was
-  built by a cheaper tier, and a repo shouldn't have to re-decide that in prose every time. Same
+  built by a cheaper tier, and a repo shouldn't have to re-decide that in prose every time. In
+  `review.mode: "first-line"` it covers **both** stages. Same
   honest limit as every other tier: a running skill cannot change its own model, so this binds the
   **subagents** the loop spawns and is otherwise a recommendation the skill reports. `null` = inherit.
 - `review.impasseRounds` *(optional; default `2`)* — how many rounds one **disputed** finding may
@@ -502,6 +520,37 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   read as a misconfiguration, so `address-review` treats a non-positive number as `null` and says
   so. Disabling is not recommended in either direction: an uncapped loop is the failure mode both
   keys exist for.
+- `review.mode` *(optional; default `null`)* — `"first-line"` turns `address-review` into a **two-stage
+  loop**: a first-line reviewer (an automated reviewer that reviews every push, configured under
+  `review.firstLine`) is answered first, then one final scored review (`review.bots`,
+  `review.approvalThreshold`) is answered as before. `null`, absent, or any other value leaves the
+  single-stage loop exactly as it was; none of the keys in this group is read in that case. In
+  first-line mode `address-review` **never requests the final review itself** (see
+  `review.rereviewCommand`) and reads the first-line reviewer's verdict from its check run rather than
+  computing it. `responderTier` covers both stages.
+- `review.rereviewCommand` *(optional; default `"@greptileai review"`)* — the one spelling of the
+  re-review mention for the final reviewer. In first-line mode only the first-line reviewer or a
+  human posts it. A skill reading this key to post it is a bug; it exists so every document and
+  tool names the same string.
+- `review.onOpen` *(optional; default `true`)* and `review.pushCooldownMinutes` *(optional; default
+  `5`)* — when the first-line reviewer's dispatcher starts a round. No skill or script in this
+  repository reads them; they are listed so a repo's `review` block has one documented home.
+- `review.firstLine.*` *(optional; read only when `review.mode` is `"first-line"`)*:
+  `bots` *(default `["vycari-review[bot]"]`)* are the logins whose inline threads `address-review`'s
+  first stage answers (compared with `app/` and `[bot]` stripped, like `review.bots`);
+  `checkName` *(default `"Vycari Review"`)* and `checkApp` *(default `"vycari-review"`)* name the
+  check run `wait-for-review.sh --stage vr` reads — matched by the App slug as well as the name,
+  never by name alone; `maxRounds` *(default `3`)* is the number of first-line rounds after which the
+  reviewer hands the PR on with findings still open; `unavailableMinutes` *(default `45`)* is how
+  long a due round may go unconcluded before the reviewer reports itself unavailable (and
+  `wait-for-review.sh --stage vr` uses it plus five minutes as its default deadline);
+  `disputePrefix` *(default `"Disputed:"`)* is what a reply on a P0/P1 thread starts with to dispute
+  the finding. The verdict JSON in the check run's `output.text` is
+  `{score, max, reviewed_sha, round, mode: "first-line", open: {p0,p1,p2}, findings: [ids],
+  disputed: [ids], escalated: [ids], happy: bool, greptile_requested: sha|null}`; a title beginning
+  `Needs maintainer: P0 dispute` also marks an escalation, `Review unavailable` an unavailable
+  reviewer, and `unchanged since` a pure-rebase re-post that counts as the earlier round's verdict.
+  **Happy is the reviewer's to compute**; nothing here recomputes it.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to
