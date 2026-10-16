@@ -873,6 +873,15 @@ run_tool "$WFR" 7 "${FAST[@]}" --stage vr
 expect "vr stage: not happy, nothing handed off -> vr-findings:3" "vr-findings:3" 1
 expect_contains "vr stage: finding ids are listed" "VR-aaaa1111"
 expect_contains "vr stage: a disputed finding is marked" "VR-bbbb2222 (disputed)"
+expect_not_contains "vr stage: an undisputed finding is not marked" "VR-aaaa1111 (disputed)"
+expect_not_contains "vr stage: no other undisputed finding is marked" "VR-cccc3333 (disputed)"
+
+# An id that is a prefix of a disputed one is a different finding: the match is exact, not substring.
+vr_case vr-disputed-exact "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 2 0 '["VR-ffff","VR-ffff6666"]' '["VR-ffff6666"]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: two findings, one disputed -> vr-findings:2" "vr-findings:2" 1
+expect_contains "vr stage: the disputed id is marked" "VR-ffff6666 (disputed)"
+expect_not_contains "vr stage: a prefix of a disputed id is not marked" "VR-ffff (disputed)"
 
 vr_case vr-escalated "$CFG_FL" "Needs maintainer: P0 dispute (VR-dddd4444)" "$(vr_json "$HEAD_SHA" false 1 0 0 '["VR-dddd4444"]' '["VR-dddd4444"]' '["VR-dddd4444"]' null)"
 run_tool "$WFR" 7 "${FAST[@]}" --stage vr

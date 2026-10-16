@@ -328,8 +328,10 @@ vr_read() {
   fi
   VR_N="$(printf '%s' "$json" | jq -r '((.open.p0 // 0) + (.open.p1 // 0) + (.open.p2 // 0))')"
   is_uint "$VR_N" || VR_N=0
-  VR_DETAIL="$(printf '%s' "$json" | jq -r '. as $j | ($j.findings // [])[] |
-    "  \(.)" + (if (($j.disputed // []) | index(.)) != null then " (disputed)" else "" end)')"
+  # Bind each finding id before the lookup: inside `($j.disputed // []) | ...`, `.` is the disputed
+  # list itself, so `index(.)` would mark every finding once anything at all is disputed.
+  VR_DETAIL="$(printf '%s' "$json" | jq -r '. as $j | ($j.findings // [])[] | . as $id |
+    "  \($id)" + (if (($j.disputed // []) | index([$id])) != null then " (disputed)" else "" end)')"
   requested="$(printf '%s' "$json" | jq -r '.greptile_requested // ""')"
   if [ -n "$requested" ] && is_head_sha "$requested" "$head"; then
     VR_KIND="handoff"
