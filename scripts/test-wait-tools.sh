@@ -53,6 +53,7 @@ case "$1 $2" in
   "pr view") serve prview ;;
   "api graphql") serve threads ;;
   "api -H") serve remoteconfig ;;
+  "api repos/o/r/compare/"*) serve compare ;;
   "run view") serve joblog ;;
   "repo view") echo "o/r" ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
@@ -833,6 +834,211 @@ run_tool "$WFC" 7 "${FASTC[@]}"
 new_case checks-usage
 run_tool "$WFC"
 [ "$RC" = "3" ] && ok "missing PR argument is a usage error" || bad "usage" "rc=$RC"
+
+echo
+# --- first-line mode: the VR stage, and covered staleness ----------------------------------------
+
+CFG_FL='{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+# vr_run <databaseId> <title> <json-or-empty> [status] — the first-line reviewer's check run
+vr_run() {
+  jq -n -c --argjson id "$1" --arg title "$2" --arg t "$3" --arg status "${4:-COMPLETED}" '{databaseId: $id,
+    name: "Vycari Review", status: $status, conclusion: "NEUTRAL", startedAt: "2026-10-16T00:00:00Z",
+    completedAt: "2026-10-16T00:01:00Z", title: $title, text: (if $t == "" then null else ("```json\n" + $t + "\n```") end)}'
+}
+vr_json() { # <sha> <happy> <p0> <p1> <p2> <findings-json> <disputed-json> <escalated-json> <greptile_requested-json>
+  jq -n -c --arg sha "$1" --argjson happy "$2" --argjson p0 "$3" --argjson p1 "$4" --argjson p2 "$5" \
+    --argjson f "$6" --argjson d "$7" --argjson e "$8" --argjson g "$9" '{score: 4, max: 5, reviewed_sha: $sha,
+    round: 1, mode: "first-line", open: {p0: $p0, p1: $p1, p2: $p2}, findings: $f, disputed: $d, escalated: $e,
+    happy: $happy, greptile_requested: $g}'
+}
+vr_case() { # <case> <config> <title> <json> [status]
+  new_case "$1"
+  write_config "$2"
+  write_prview "" '.comments = []'
+  write_threads "" '[]'
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "$3" "$4" "${5:-COMPLETED}")]")]"
+}
+
+vr_case vr-happy "$CFG_FL" "Confidence Score: 5/5" "$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a happy verdict is reported, not recomputed -> vr-happy" vr-happy 0
+
+# A 3/5 that VR calls happy is happy: the script never works happiness out from the score.
+vr_case vr-happy-is-read "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" true 0 0 1 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: happy comes from the JSON flag even with open P2s" vr-happy 0
+
+vr_case vr-findings "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 2 1 '["VR-aaaa1111","VR-bbbb2222","VR-cccc3333"]' '["VR-bbbb2222"]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: not happy, nothing handed off -> vr-findings:3" "vr-findings:3" 1
+expect_contains "vr stage: finding ids are listed" "VR-aaaa1111"
+expect_contains "vr stage: a disputed finding is marked" "VR-bbbb2222 (disputed)"
+expect_not_contains "vr stage: an undisputed finding is not marked" "VR-aaaa1111 (disputed)"
+expect_not_contains "vr stage: no other undisputed finding is marked" "VR-cccc3333 (disputed)"
+
+# An id that is a prefix of a disputed one is a different finding: the match is exact, not substring.
+vr_case vr-disputed-exact "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 2 0 '["VR-ffff","VR-ffff6666"]' '["VR-ffff6666"]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: two findings, one disputed -> vr-findings:2" "vr-findings:2" 1
+expect_contains "vr stage: the disputed id is marked" "VR-ffff6666 (disputed)"
+expect_not_contains "vr stage: a prefix of a disputed id is not marked" "VR-ffff (disputed)"
+
+vr_case vr-escalated "$CFG_FL" "Needs maintainer: P0 dispute (VR-dddd4444)" "$(vr_json "$HEAD_SHA" false 1 0 0 '["VR-dddd4444"]' '["VR-dddd4444"]' '["VR-dddd4444"]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: an escalated P0 dispute -> vr-escalated" vr-escalated 1
+expect_contains "vr stage: the escalated id is named" "VR-dddd4444 (escalated)"
+
+vr_case vr-escalated-by-title "$CFG_FL" "Needs maintainer: P0 dispute (VR-dddd4444)" "$(vr_json "$HEAD_SHA" false 1 0 0 '["VR-dddd4444"]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: the title alone marks an escalation" vr-escalated 1
+
+vr_case vr-cap "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-eeee5555"]' '[]' '[]' "\"$HEAD_SHA\"")"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: round cap reached, head handed to the final reviewer -> vr-handoff" vr-handoff 0
+expect_contains "vr stage: the unresolved findings are still listed" "VR-eeee5555"
+
+vr_case vr-cap-other-head "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-eeee5555"]' '[]' '[]' "\"$OLD_SHA\"")"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a hand-off recorded for another commit is not this head's -> vr-findings:1" "vr-findings:1" 1
+
+vr_case vr-unavailable "$CFG_FL" "Review unavailable: model overloaded" ""
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: Review unavailable -> vr-unavailable, carry on with the final stage" vr-unavailable 0
+
+vr_case vr-in-progress "$CFG_FL" "" "" IN_PROGRESS
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a run still in progress keeps waiting -> timeout" timeout 2
+
+vr_case vr-round-incomplete "$CFG_FL" "Round incomplete: judge unavailable" ""
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: Round incomplete keeps waiting -> timeout" timeout 2
+
+vr_case vr-stale-head "$CFG_FL" "Confidence Score: 5/5" "$(vr_json "$OLD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a verdict for an earlier commit is not this head's -> timeout" timeout 2
+
+vr_case vr-unchanged-repost "$CFG_FL" "unchanged since bbbbbbb" "$(vr_json "$OLD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: an 'unchanged since' re-post is terminal for the head it sits on" vr-happy 0
+
+new_case vr-no-run
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: no VR run yet -> timeout (address-review owns the 60-minute escalation)" timeout 2
+
+new_case vr-default-timeout-from-config
+write_config '{"review":{"mode":"first-line","firstLine":{"unavailableMinutes":0},"waitTimeoutMinutes":0}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites '[]'
+run_tool "$WFR" 7 -R o/r --interval-seconds 1 --stage vr
+expect "vr stage: review.waitTimeoutMinutes still overrides the default deadline" timeout 2
+
+new_case vr-draft
+write_config "$CFG_FL"
+write_prview "" '.isDraft = true'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a draft PR has nothing to wait for" no-review-scheduled 0
+
+new_case vr-truncated
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" "$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)")]" true)]"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: truncated check data is never read as a verdict -> timeout" timeout 2
+
+# Inert unless the mode is first-line.
+new_case vr-stage-needs-mode
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "--stage vr without review.mode first-line is a tool error" "" 3
+
+new_case vr-stage-bad-value
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage bogus
+expect "--stage rejects an unknown stage" "" 3
+
+new_case vr-stage-on-checks
+write_config "$CFG_FL"
+echo '{}' >"$STUB_DIR/prview"
+run_tool "$WFC" 7 -R o/r --timeout-seconds 3 --interval-seconds 1 --stage vr
+expect "wait-for-checks.sh refuses --stage" "" 3
+
+# Covered staleness.
+cov_case() { # <case> <config> <greptile-score> <greptile-sha7> <compare-status> <vr-json> <threads-json>
+  new_case "$1"
+  write_config "$2"
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$3" "$4")")]"
+  write_threads "" "$7"
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" "$6")]")]"
+  printf '%s' "$5" >"$STUB_DIR/compare"
+}
+HAPPY="$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+UNHAPPY="$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-ffff6666"]' '[]' '[]' null)"
+THREAD_OPEN='[{"resolved":false,"path":"a.py","line":3,"body":"P1 something"}]'
+
+cov_case cov-ok "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: Greptile 5/5 on an ancestor + VR happy on head + no open thread -> approved" approved 0
+expect_contains "covered: the output says why the older score stands" "covered:"
+
+cov_case cov-vr-unhappy "$CFG_FL" 5/5 bbbbbbb ahead "$UNHAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: VR not happy on head -> the score stays stale (timeout)" timeout 2
+
+cov_case cov-open-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: an open Greptile thread blocks it -> still stale (timeout)" timeout 2
+
+cov_case cov-below-bar "$CFG_FL" 4/5 bbbbbbb ahead "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a score under the threshold is never covered -> timeout" timeout 2
+
+cov_case cov-not-ancestor "$CFG_FL" 5/5 bbbbbbb diverged "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a score on a commit that is not an ancestor of head -> timeout" timeout 2
+
+cov_case cov-compare-fails "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+touch "$STUB_DIR/compare.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: an unreadable ancestry check is not covered -> timeout" timeout 2
+
+cov_case cov-vr-fallback "$CFG_FL" 5/5 bbbbbbb ahead "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Review unavailable: x" "")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: VR unavailable on head is a fallback, not a completed round -> timeout" timeout 2
+
+cov_case cov-default-mode "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "inert: without review.mode first-line the same data stays stale (timeout)" timeout 2
+if grep -q compare "$STUB_DIR/.calls"; then bad "inert: no compare call" "$(cat "$STUB_DIR/.calls")"; else ok "inert: no compare call without first-line mode"; fi
+
+new_case fl-final-on-head
+write_config "$CFG_FL"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "first-line mode: a Greptile 5/5 on the head still approves with no VR call" approved 0
+expect_not_contains "first-line mode: no covered note when the score names the head" "covered:"
+
+new_case bare-marker
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
+write_prview "" ".body = $(jq -Rs . <<<"<!-- greptile_comment -->
+$(greptile_text 5/5 aaaaaaa)
+<!-- /greptile_comment -->")"
+BODY_EDITOR=greptile-apps write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a bare blockMarker name is read as its comment form" approved 0
 
 echo
 printf '%s\n' "----------------------------------------"

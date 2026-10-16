@@ -77,6 +77,7 @@ if [ -n "$WAIT_HELP" ]; then
 fi
 [ -n "$WAIT_PR" ] || die 3 "usage: wait-for-checks.sh <pr> [-R owner/repo]"
 [ -z "$WAIT_REST" ] || die 3 "unknown flag:$WAIT_REST"
+[ -z "$WAIT_STAGE" ] || die 3 "unknown flag: --stage (only wait-for-review.sh has stages)"
 
 resolve_repo
 load_config

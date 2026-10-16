@@ -45,6 +45,10 @@ Keys this skill uses:
   three, in that order.
 - `config.review.responderTier` *(optional; default `null`)* — the `config.models` tier this loop
   wants for the judgment it delegates.
+- `config.review.mode` *(optional; default `null`)* — `"first-line"` turns on the two-stage loop in
+  [First-line mode](#first-line-mode-reviewmode-first-line) below; anything else leaves this skill
+  exactly as it was. With it come `config.review.rereviewCommand` and
+  `config.review.firstLine.{bots,checkName,checkApp,maxRounds,unavailableMinutes,disputePrefix}`.
 - `config.review.impasseRounds` *(optional; default `2`)* and `config.review.sameFileRoundCap`
   *(optional; default `3`)* — the two circuit breakers that stop the loop churning.
 - `config.createPr.requireIssueForDeferredWork` *(optional; default `false`)* — when `true`, a
@@ -177,6 +181,10 @@ the bot is still grading the **previous** round's diff, and reading that number 
 in both directions: it can pass a gate the new commits never faced, or hold the loop at a number
 the last push already fixed.
 
+(In [first-line mode](#first-line-mode-reviewmode-first-line) you never post a re-review request: a
+stale score waits for the first-line reviewer or foreman to request it, and a score on an ancestor
+may count as *covered*. Read that section instead of this one.)
+
 Treat STALE as **not met**, and do not push edits to move the number — there is nothing to act on
 until the bot has seen the current head. Wait one poll cycle (Phase 6 cadence). If the sha still
 hasn't moved after roughly two cycles, request the re-review explicitly, and say which of these you
@@ -196,7 +204,9 @@ the fallback that needs a person.
 `responderTier` names a tier in `config.models` (see
 [`../../references/model-tiers.md`](../../references/model-tiers.md)). Adjudicating review feedback
 is judgment work — is this finding right? — so a repo may want it on a more capable tier than the
-one that built the PR.
+one that built the PR. In first-line mode the tier covers **both** stages: the first-line round's
+findings and Greptile's get the same responder, because a round cleared in one pass is what the
+mode is for.
 
 Honor it the one way a skill can: **when this loop spawns a subagent** — to draft a fix, to
 adjudicate a disputed finding, to delegate the pre-flight — pass
@@ -298,6 +308,73 @@ non-positive number (`0`, a negative) is a misconfiguration rather than a policy
 the first round is nobody's intent — so read it as `null` and say so in the round report. Both
 disabled means an uncapped loop, which is the failure mode the keys exist for, so don't pass over
 it silently: name the disabled breaker once per run.
+
+## First-line mode (`review.mode: "first-line"`)
+
+Applies only when `config.review.mode` is exactly `"first-line"`. Any other value, or no key, means
+none of this section applies and the loop above is unchanged. In this mode a first-line reviewer
+(the App named by `review.firstLine.checkApp`, check run `review.firstLine.checkName`, comments by
+`review.firstLine.bots`) reviews every push, and the final reviewer (the score-publishing bot in
+`review.bots`) is asked for its one review only when the first-line reviewer is done. The loop is
+two stages, run in order.
+
+**You never request the final review.** Not with `review.rereviewCommand`, not with a mention, not
+with a retrigger link: the first-line reviewer or the repo's automation posts it, and a human can.
+If the final reviewer seems idle, report that; do not nudge it. (The stale-score re-review request
+above is a first-line-off behavior.)
+
+**Read the verdict, never compute it.** Whether the first-line reviewer is "happy" is published in
+its check run's JSON (`happy`, `open`, `findings`, `disputed`, `escalated`, `greptile_requested`).
+Do not re-derive it from a score, a thread count or a title.
+
+### Stage 1: the first-line reviewer
+
+Wait with the stage flag (it exits on the first verdict):
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/wait-for-review.sh" <PR> -R <config.repo> --stage vr
+```
+
+| Verdict | Meaning | What you do |
+| --- | --- | --- |
+| `vr-happy` | happy with the head | Stage 1 is done; go to stage 2. |
+| `vr-findings:<n>` | a round for the head is in, `<n>` open | Triage and fix as in Phases 2-5, then push and wait again. |
+| `vr-handoff` | round cap (`firstLine.maxRounds`, default 3) reached; the head was handed to the final reviewer with the open findings listed | Stop chasing them in stage 1. Go to stage 2; the findings are part of what the final reviewer will see. |
+| `vr-unavailable` | the reviewer could not review and asked the final reviewer itself | Go to stage 2. |
+| `vr-escalated` | a P0 dispute the reviewer still holds (check title `Needs maintainer: P0 dispute`) | **Halt and escalate** (below). |
+| `timeout` | no verdict in `firstLine.unavailableMinutes` + slack | Keep waiting until 60 minutes have passed since the push with no final-review request on the PR, then halt and escalate: the first-line path is down and a person decides whether to request the final review. |
+
+Reply to each first-line finding on its thread, as in Phase 5. To contest one, begin the reply with
+`review.firstLine.disputePrefix` (default `Disputed:`) and give the reason. A P1 so disputed is
+cleared without escalation. A P0 you dispute and the reviewer holds across a round is escalated to
+the maintainer; you do not argue it a third time. Dispute only what you can argue from the code; a
+finding you cannot refute is fixed.
+
+**P0 escalation.** On `vr-escalated`, stop the loop unfinished. Do not push more edits, do not
+request the final review, and do not resolve the thread. Report the PR, the finding id, the reply
+you made and the reviewer's last word, and say the maintainer has to decide. The reviewer posts no
+final-review request while a P0 is escalated, so nothing else will move until they do.
+
+### Stage 2: the final reviewer
+
+Only after stage 1 ends in `vr-happy`, `vr-handoff` or `vr-unavailable`. Wait with the default
+stage (no flag); it reads the final reviewer's score exactly as in the policy section above, and
+the response loop is the one in Phases 1-6, with these differences:
+
+- You still never post the re-review request. After you push a fix for a final-review finding, the
+  first-line reviewer re-reviews the new head (back to stage 1 for that push); when it is happy it
+  or the automation requests the final review again.
+- **Covered staleness.** A final-review score on an *ancestor* of the head still counts when the
+  script reports `approved` with a `covered:` line: the score met the bar, no review thread is
+  open, and the first-line reviewer is happy on the head by a completed round. A stale score that is
+  not covered is waited on, not acted on. The script cannot see whether that older score named a
+  P1; treat one in the review text as open work.
+
+### Exit
+
+Done when stage 2 is `approved` by the usual exit conditions below, with the stage 1 verdict
+recorded in the round summary. The first-line mode never relaxes a condition; it adds the stage 1
+checks in front of them and removes your power to request a review.
 
 ## The principle: never leave silence
 
@@ -710,7 +787,8 @@ maintainer's.
 - **A scoring bot holds below the threshold with no new findings**: you have nothing to act on;
   don't invent edits to move the number. Report the score, the rung it came from, the last round's
   changes, and stop.
-- **The score is for an older commit than the head**: STALE, not met. Wait a cycle, then ask for a
+- **The score is for an older commit than the head**: STALE, not met. (First-line mode: never ask;
+  see [First-line mode](#first-line-mode-reviewmode-first-line).) Otherwise wait a cycle, then ask for a
   re-review (`@greptileai please re-review <sha>`, or the retrigger link in the bot's block) rather
   than pushing anything to provoke one.
 - **No score anywhere and `approvalThreshold` is set**: halt with the three-places message. A bot
