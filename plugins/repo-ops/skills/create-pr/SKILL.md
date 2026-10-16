@@ -1,6 +1,6 @@
 ---
 name: create-pr
-description: Create a pull request for the current repository the right way — enforce the repo's PR template, run every CI gate (format, lint, build, typecheck, tests) locally before pushing, require docs updates for user-facing changes, and write an honest, non-marketing PR body. Where the repo sets `createPr.requireIssueForDeferredWork`, it also refuses to open a PR whose body promises follow-up work without naming an issue. Use whenever the user wants to "create a PR", "open a pull request", "submit changes", "prepare changes for review", or "push this for review". Never bypasses verification, never auto-merges.
+description: Create a pull request for the current repository the right way — enforce the repo's PR template, run a `/simplify` pass and then every CI gate (format, lint, build, typecheck, tests) locally before pushing, require docs updates for user-facing changes, and write an honest, non-marketing PR body. Where the repo sets `createPr.requireIssueForDeferredWork`, it also refuses to open a PR whose body promises follow-up work without naming an issue. Use whenever the user wants to "create a PR", "open a pull request", "submit changes", "prepare changes for review", or "push this for review". Never bypasses verification, never auto-merges.
 ---
 
 # Create a Pull Request
@@ -34,20 +34,28 @@ Before creating a branch or pushing any code, run all of the applicable checks b
 order** and fix any failures. Run each command from `config.commands.*`; **skip any whose value is
 `null`** (that step does not apply to this repo).
 
-1. **Format** — run `config.commands.format`. If it fails, apply the repo's formatter and stage the
+1. **Simplify** — invoke the built-in `/simplify` skill (Skill tool, `skill: "simplify"`) on the
+   branch's changes. It runs **first** because it may edit code, and every later gate has to check
+   the simplified result, not the code as it stood before. Review what it changed with `git diff`
+   and keep only the edits that preserve behaviour and belong in this PR's scope; revert the rest.
+   Skip it for a diff that touches no code (docs-only or config-only, the same diffs that may skip
+   Build, Type check and Tests below), and say in the PR body that it was skipped and why. If the
+   `simplify` skill is not available in the session, say so in the PR body — never skip it silently
+   and never report it as run.
+2. **Format** — run `config.commands.format`. If it fails, apply the repo's formatter and stage the
    changes, then re-run until clean.
-2. **Lint** — run `config.commands.lint`. Fix every reported issue.
-3. **Build & type check** — run `config.commands.build`, then `config.commands.typecheck`. Fix any
+3. **Lint** — run `config.commands.lint`. Fix every reported issue.
+4. **Build & type check** — run `config.commands.build`, then `config.commands.typecheck`. Fix any
    type errors. (Some repos fold the type check into the build; if `typecheck` is `null`, the build
    covers it.)
-4. **Tests** — run `config.commands.test`. All tests must pass with no warnings or unexpected
+5. **Tests** — run `config.commands.test`. All tests must pass with no warnings or unexpected
    console output.
 
 **A docs-only or config-only diff still runs Format and Lint.** "No source file changed" is not a
 reason to mark them N/A: formatters increasingly reach into prose — `ruff format` rewrites Python
 code blocks *inside Markdown*, Prettier formats fenced code and the Markdown itself — and CI runs
 the same command over the whole tree. A design doc with one mis-spaced code sample passes every
-docs check and then fails the format gate. Only Build, Type check and Tests may be skipped for a
+docs check and then fails the format gate. Only Simplify, Build, Type check and Tests may be skipped for a
 diff that touches no code, and the PR body says which were skipped and why.
 
 **A command that cannot start is a failure to fix, not a step to skip.** A fresh worktree or
