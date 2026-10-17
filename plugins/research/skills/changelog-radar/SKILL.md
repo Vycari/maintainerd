@@ -39,7 +39,8 @@ The mechanical, deterministic steps live in `${CLAUDE_PLUGIN_ROOT}/scripts/chang
 - **`harvest`**: Fetches the RSS/Atom feed and parses items into normalized JSON records.
 - **`prefilter`**: Filters out seen items using `changelog-state.json`, scores relevance against
   the repo profile, and sorts survivors by relevance score.
-- **`advance`**: Advances the high-water mark and updates the list of seen record IDs.
+- **`mark`**: Prints the current high-water mark timestamp for the configured feed (for compare-and-set verification).
+- **`advance`**: Advances the high-water mark and updates the list of seen record IDs for the configured feed.
 
 ## Workflow
 
@@ -61,7 +62,7 @@ Locate or set the state file path:
 
 Read the existing high-water mark for compare-and-set protection:
 ```bash
-PREV_MARK=$(python3 -c 'import json, os, sys; p = sys.argv[1]; s = json.load(open(p)) if os.path.exists(p) else {}; print(s.get("highWater", {}).get("publishedDate") or "")' "<stateFilePath>")
+PREV_MARK=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" mark --state "<stateFilePath>" --cwd .)
 ```
 
 Run harvest and prefilter:
@@ -75,7 +76,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" harvest --cwd . > "$S
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" prefilter \
   --profile "$SCRATCH/profile.json" \
   --input "$SCRATCH/harvest.json" \
-  --state "<stateFilePath>" > "$SCRATCH/survivors.json" || {
+  --state "<stateFilePath>" \
+  --cwd . > "$SCRATCH/survivors.json" || {
   echo "PREFILTER FAILED — stop" >&2
   exit 1
 }
@@ -143,7 +145,8 @@ Only after issues have been evaluated and filed, advance the state file using th
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" advance \
   --state "<stateFilePath>" \
   --input "$SCRATCH/survivors.json" \
-  --expected-mark "$PREV_MARK"
+  --expected-mark "$PREV_MARK" \
+  --cwd .
 ```
 
 Commit the updated state file if `<changelogRadarDir>` is tracked in git.

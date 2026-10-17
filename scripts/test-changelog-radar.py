@@ -419,6 +419,91 @@ jobs:
         self.assertIn("recent-backdated", survivor_ids)
         self.assertNotIn("old-historical", survivor_ids)
 
+    def test_feed_switch_resets_highwater_date_cutoff(self):
+        # State saved highWater for Feed A is 2026-10-15
+        state_file = os.path.join(self.tmp.name, "s_feed_switch.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "feed": "https://feed-a.com/rss",
+                "highWater": {"publishedDate": "2026-10-15T12:00:00Z"},
+                "recentIds": ["feed-a-item-1"],
+            }, f)
+
+        profile = {"technologies": [], "terms": ["actions"]}
+        # Item from Feed B published on 2026-09-01 (>30 days before Feed A's highWater)
+        records = [
+            {
+                "id": "feed-b-sept-item",
+                "title": "GitHub Actions Feed B Announcement",
+                "link": "https://feed-b.com/item1",
+                "published": "2026-09-01T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Feed B update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_fs.json")
+        rec_file = os.path.join(self.tmp.name, "rec_fs.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Prefiltering with Feed B should not drop September post using Feed A's highWater
+        proc = run_script([
+            "prefilter",
+            "--profile", prof_file,
+            "--input", rec_file,
+            "--state", state_file,
+            "--feed", "https://feed-b.com/atom.xml",
+        ])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(survivors[0]["id"], "feed-b-sept-item")
+
+    def test_multi_feed_state_preservation(self):
+        state_file = os.path.join(self.tmp.name, "s_multi_feed.json")
+        feed_a = "https://feed-a.com/rss"
+        feed_b = "https://feed-b.com/rss"
+
+        input_a = os.path.join(self.tmp.name, "in_a.json")
+        with open(input_a, "w") as f:
+            json.dump([{"id": "a-1", "published": "2026-10-15T12:00:00Z"}], f)
+
+        input_b = os.path.join(self.tmp.name, "in_b.json")
+        with open(input_b, "w") as f:
+            json.dump([{"id": "b-1", "published": "2026-09-01T12:00:00Z"}], f)
+
+        # Advance feed A
+        proc = run_script(["advance", "--state", state_file, "--input", input_a, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        # Check mark for feed A
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-10-15T12:00:00Z")
+
+        # Check mark for feed B before any advance
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_b])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "")
+
+        # Advance feed B
+        proc = run_script(["advance", "--state", state_file, "--input", input_b, "--feed", feed_b, "--expected-mark", ""])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        # Check mark for feed B
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_b])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-09-01T12:00:00Z")
+
+        # Check feed A's mark is still intact!
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-10-15T12:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

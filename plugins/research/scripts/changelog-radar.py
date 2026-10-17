@@ -407,10 +407,60 @@ def score_record(rec, profile_terms):
     return score, sorted(matched)
 
 
-def prefilter(records, profile, state=None):
+def resolve_feed_url(feed=None, cwd="."):
+    """Resolve the target changelog feed URL from CLI argument, repo config, or default."""
+    if feed:
+        return feed
+    if cwd:
+        cfg_path = os.path.join(os.path.abspath(cwd), ".claude", "maintainerd.json")
+        if os.path.exists(cfg_path):
+            try:
+                cfg = read_json_file(cfg_path)
+                f = cfg.get("changelogRadar", {}).get("feed")
+                if f:
+                    return f
+            except Exception:
+                pass
+    return DEFAULT_FEED
+
+
+def get_feed_state(state, feed_url):
+    """Retrieve highWater and recentIds for feed_url from state.
+
+    Supports:
+    - Multi-feed tracking via state["feeds"][feed_url]
+    - Single-feed tracking via top-level state["feed"]
+    - Legacy state without feed key
+
+    If state recorded a specific feed and it is different from feed_url,
+    returns an empty state (resetting the high-water mark and seen IDs).
+    """
+    if not state:
+        return {"highWater": {"publishedDate": None}, "recentIds": []}
+
+    feeds = state.get("feeds")
+    if isinstance(feeds, dict) and feed_url in feeds:
+        entry = feeds[feed_url]
+        return {
+            "highWater": entry.get("highWater") or {"publishedDate": None},
+            "recentIds": list(entry.get("recentIds") or []),
+        }
+
+    saved_feed = state.get("feed")
+    if saved_feed and feed_url and saved_feed != feed_url:
+        return {"highWater": {"publishedDate": None}, "recentIds": []}
+
+    return {
+        "highWater": state.get("highWater") or {"publishedDate": None},
+        "recentIds": list(state.get("recentIds") or []),
+    }
+
+
+def prefilter(records, profile, state=None, feed_url=None):
     """Filter out seen/old records and score surviving records by relevance."""
-    recent_ids = set(state.get("recentIds", [])) if state else set()
-    high_water = state.get("highWater", {}).get("publishedDate") if state else None
+    feed_state = get_feed_state(state, feed_url)
+    recent_ids = set(feed_state.get("recentIds", []))
+    high_water = feed_state.get("highWater", {}).get("publishedDate")
     hw_dt = parse_iso_dt(high_water) if high_water else None
 
     profile_terms = set(profile.get("terms", []))
@@ -459,17 +509,7 @@ def cmd_profile(args):
 
 
 def cmd_harvest(args):
-    feed_url = args.feed
-    if not feed_url:
-        cwd = os.path.abspath(args.cwd) if hasattr(args, "cwd") and args.cwd else os.getcwd()
-        cfg_path = os.path.join(cwd, ".claude", "maintainerd.json")
-        if os.path.exists(cfg_path):
-            try:
-                cfg = read_json_file(cfg_path)
-                feed_url = cfg.get("changelogRadar", {}).get("feed")
-            except Exception:
-                pass
-    feed_url = feed_url or DEFAULT_FEED
+    feed_url = resolve_feed_url(args.feed, getattr(args, "cwd", "."))
     ua = args.user_agent or "maintainerd-changelog-radar/1.0"
     content = fetch_url(feed_url, ua)
     records = parse_feed_xml(content)
@@ -477,6 +517,7 @@ def cmd_harvest(args):
 
 
 def cmd_prefilter(args):
+    feed_url = resolve_feed_url(getattr(args, "feed", None), getattr(args, "cwd", "."))
     # Read harvested records from file or stdin
     if args.input:
         if not os.path.exists(args.input):
@@ -499,7 +540,7 @@ def cmd_prefilter(args):
     # Read state (optional)
     state = load_state(args.state) if args.state else None
 
-    survivors = prefilter(records, profile, state)
+    survivors = prefilter(records, profile, state, feed_url=feed_url)
     print(json.dumps(survivors, indent=2))
 
 
@@ -508,8 +549,11 @@ def cmd_advance(args):
     if not state_path:
         die("--state is required for advance")
 
+    feed_url = resolve_feed_url(getattr(args, "feed", None), getattr(args, "cwd", "."))
     state = load_state(state_path)
-    current_mark = state.get("highWater", {}).get("publishedDate") if state else None
+
+    feed_state = get_feed_state(state, feed_url)
+    current_mark = feed_state.get("highWater", {}).get("publishedDate")
 
     # Compare-and-set mark verification (VR-1ae7cacf)
     if args.expected_mark is not None:
@@ -522,8 +566,10 @@ def cmd_advance(args):
     if not state:
         state = {
             "version": STATE_VERSION,
+            "feed": feed_url,
             "highWater": {"publishedDate": None},
             "recentIds": [],
+            "feeds": {},
         }
 
     # Only mark seen the items passed in --input (the evaluated survivors, VR-64c20138)
@@ -532,7 +578,7 @@ def cmd_advance(args):
     else:
         items = json.load(sys.stdin)
 
-    seen_ids = list(state.get("recentIds", []))
+    seen_ids = list(feed_state.get("recentIds", []))
     latest_date = current_mark
 
     for it in items:
@@ -543,12 +589,35 @@ def cmd_advance(args):
         if pub and (not latest_date or pub > latest_date):
             latest_date = pub
 
+    trimmed_ids = seen_ids[:RECENT_IDS_KEEP]
+    feed_record = {
+        "highWater": {"publishedDate": latest_date},
+        "recentIds": trimmed_ids,
+    }
+
+    if "feeds" not in state or not isinstance(state["feeds"], dict):
+        state["feeds"] = {}
+    state["feeds"][feed_url] = feed_record
+
+    # Mirror active feed at top-level for backwards compatibility
     state["version"] = STATE_VERSION
+    state["feed"] = feed_url
     state["highWater"] = {"publishedDate": latest_date}
-    state["recentIds"] = seen_ids[:RECENT_IDS_KEEP]
+    state["recentIds"] = trimmed_ids
 
     save_state(state_path, state)
-    print(f"advanced state {state_path}: highWater={latest_date}, {len(state['recentIds'])} recentIds")
+    print(f"advanced state {state_path} (feed={feed_url}): highWater={latest_date}, {len(trimmed_ids)} recentIds")
+
+
+def cmd_mark(args):
+    state = load_state(args.state) if args.state else None
+    if not state:
+        print("")
+        return
+    feed_url = resolve_feed_url(getattr(args, "feed", None), getattr(args, "cwd", "."))
+    feed_state = get_feed_state(state, feed_url)
+    mark = feed_state.get("highWater", {}).get("publishedDate") or ""
+    print(mark)
 
 
 def main():
@@ -572,6 +641,8 @@ def main():
     p_pref.add_argument("--profile", required=True, help="Profile JSON file path")
     p_pref.add_argument("--input", default=None, help="Harvested JSON records file (or stdin)")
     p_pref.add_argument("--state", default=None, help="State JSON file path")
+    p_pref.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
+    p_pref.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
     p_pref.set_defaults(func=cmd_prefilter)
 
     # advance
@@ -579,7 +650,16 @@ def main():
     p_adv.add_argument("--state", required=True, help="State JSON file path")
     p_adv.add_argument("--input", default=None, help="JSON list of processed items (or stdin)")
     p_adv.add_argument("--expected-mark", default=None, help="Expected high-water mark timestamp for compare-and-set")
+    p_adv.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
+    p_adv.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
     p_adv.set_defaults(func=cmd_advance)
+
+    # mark
+    p_mark = sub.add_parser("mark", help="Print current high-water mark timestamp for compare-and-set")
+    p_mark.add_argument("--state", required=True, help="State JSON file path")
+    p_mark.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
+    p_mark.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
+    p_mark.set_defaults(func=cmd_mark)
 
     args = parser.parse_args()
     args.func(args)
