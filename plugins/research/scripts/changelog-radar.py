@@ -30,7 +30,8 @@ import xml.etree.ElementTree as ET
 STATE_VERSION = 1
 DEFAULT_FEED = "https://github.blog/changelog/feed/"
 DEFAULT_STATE_DIR = "planning/changelog-radar"
-RECENT_IDS_KEEP = 500
+RECENT_IDS_KEEP = 2000
+LOOKBACK_DAYS = 30
 BACKOFF = [5, 15, 30]
 
 WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -76,6 +77,20 @@ def parse_rfc822_or_iso(date_str):
     except Exception:
         pass
     return None
+
+
+def parse_iso_dt(date_str):
+    """Parse ISO UTC datetime string back into datetime object."""
+    if not date_str:
+        return None
+    try:
+        clean = date_str.replace("Z", "+00:00")
+        parsed = dt.datetime.fromisoformat(clean)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed
+    except Exception:
+        return None
 
 
 def clean_html(text):
@@ -396,6 +411,7 @@ def prefilter(records, profile, state=None):
     """Filter out seen/old records and score surviving records by relevance."""
     recent_ids = set(state.get("recentIds", [])) if state else set()
     high_water = state.get("highWater", {}).get("publishedDate") if state else None
+    hw_dt = parse_iso_dt(high_water) if high_water else None
 
     profile_terms = set(profile.get("terms", []))
 
@@ -405,6 +421,13 @@ def prefilter(records, profile, state=None):
         # Skip if already seen
         if rid in recent_ids:
             continue
+
+        # Drop historical records older than the lookback window relative to high-water mark,
+        # preventing old evicted items from looping indefinitely while preserving backdated entries.
+        if hw_dt and r.get("published"):
+            pub_dt = parse_iso_dt(r["published"])
+            if pub_dt and (hw_dt - pub_dt).total_seconds() > LOOKBACK_DAYS * 86400:
+                continue
 
         score, matched = score_record(r, profile_terms)
         if score > 0:

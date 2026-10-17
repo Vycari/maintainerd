@@ -373,6 +373,52 @@ jobs:
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("is empty", proc.stderr)
 
+    def test_historical_entries_outside_lookback_dropped(self):
+        # State high-water mark is 2026-10-15
+        state_file = os.path.join(self.tmp.name, "s_lookback.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-15T12:00:00Z"},
+                "recentIds": ["recent-id-1"],
+            }, f)
+
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            # Recent backdated item (2 days before highWater) -> should survive
+            {
+                "id": "recent-backdated",
+                "title": "GitHub Actions Recent Backdated",
+                "link": "https://example.com/recent",
+                "published": "2026-10-13T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Recent update",
+            },
+            # Historical item (60 days before highWater) -> should be dropped as historical
+            {
+                "id": "old-historical",
+                "title": "GitHub Actions Old Historical",
+                "link": "https://example.com/old",
+                "published": "2026-08-01T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Historical update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_lb.json")
+        rec_file = os.path.join(self.tmp.name, "rec_lb.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        survivor_ids = {s["id"] for s in survivors}
+        self.assertIn("recent-backdated", survivor_ids)
+        self.assertNotIn("old-historical", survivor_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
