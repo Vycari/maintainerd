@@ -75,6 +75,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "productDocs":  ["docs/", "README.md", "AGENTS.md"], // user-facing docs (audit-product-docs)
     "changelogDir": "planning/changelog/",       // where daily-changelog writes YYYY-MM-DD.md
     "researchRadarDir": "planning/research-radar/", // where research-radar writes its digests
+    "changelogRadarDir": "planning/changelog-radar/", // where changelog-radar keeps state
     "prTemplate":   ".github/PULL_REQUEST_TEMPLATE.md", // PR body template create-pr enforces; null = repo uses no template
     "skillsDir":    ".claude/skills/",           // local skill scaffolding dir; pre-flight clean-tree exception
     "migrations":   "migrations/versions/"       // migration files directory; required when commands.migrationGraph is set
@@ -187,6 +188,13 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "categories":    ["cs.AI", "cs.CL", "cs.HC", "cs.MA"], // arXiv categories the prefilter keeps
     "interestsFile": "planning/research-radar/interests.md", // optional; default <researchRadarDir>/interests.md
     "userAgent":     "research-radar/1.0 (mailto:you@example.com)" // arXiv API courtesy UA
+  },
+
+  // ── changelog-radar (optional) ───────────────────────────────────────────
+  // Absent → defaults to the GitHub Changelog feed.
+  "changelogRadar": {
+    "feed":      "https://github.blog/changelog/feed/", // custom RSS/Atom changelog feed URL
+    "interests": ["actions", "runner"] // explicit extra interest keywords
   },
 
   // ── create-pr gates (optional) ───────────────────────────────────────────
@@ -330,7 +338,7 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`, `deploy`
+### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `changelogRadar`, `review`, `release`, `deploy`
 
 - `coverage.*` *(optional; absent = the ratchet has not been adopted here)* — `floor`, the whole
   percent of line coverage CI refuses to drop below, and `floorCommit`, the default-branch commit it
@@ -413,6 +421,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `researchRadar.interestsFile` *(optional; default `<researchRadarDir>/interests.md`)* — pinned
   interests, one per line, merged into the interest profile alongside the phrases derived from
   recent PRs and design docs. A missing file is not an error.
+- `changelogRadar.feed` *(optional; default `https://github.blog/changelog/feed/`)* — custom RSS or Atom
+  changelog feed URL.
+- `changelogRadar.interests` *(optional)* — explicit list of extra keyword strings to match against changelog
+  entries.
 - `review.bots` *(optional)* — extra automated-reviewer logins `address-review` should recognize.
   Defaults to `["coderabbitai[bot]", "gemini-code-assist[bot]"]`. Humans are auto-detected (any
   reviewer who isn't the PR author), so only bots go here.

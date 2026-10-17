@@ -42,6 +42,12 @@ STOPWORDS = frozenset({
     "what", "when", "where", "which", "while", "who", "will", "with", "you", "your",
 })
 
+COMMAND_STOPWORDS = STOPWORDS | {
+    "run", "check", "test", "lint", "format", "build", "exec", "cmd", "sh", "bash",
+    "python", "node", "cli", "gh", "set", "env", "echo", "true", "false", "all",
+    "src", "dir", "path", "file", "scripts", "script", "args", "exit",
+}
+
 
 def die(msg):
     sys.exit(f"changelog-radar: {msg}")
@@ -152,11 +158,18 @@ def parse_feed_xml(content_bytes):
     except ET.ParseError as e:
         die(f"feed XML is malformed ({e})")
 
+    # Validate that the root is an RSS or Atom feed element
+    root_tag = root.tag
+    if "}" in root_tag:
+        root_tag = root_tag.split("}", 1)[1]
+    if root_tag not in ("rss", "feed"):
+        die(f"unrecognized XML root <{root.tag}>: not an RSS or Atom feed")
+
     records = []
 
     # Check for RSS 2.0 (<rss><channel><item>...)
     channel = root.find("channel")
-    if channel is not None or root.tag == "rss":
+    if channel is not None or root_tag == "rss":
         items = root.findall(".//item")
         for it in items:
             title = it.findtext("title", default="").strip()
@@ -307,7 +320,7 @@ def build_profile(cwd, config):
         if not cmd_str:
             continue
         for word in WORD.findall(cmd_str.lower()):
-            if len(word) >= 2 and word not in STOPWORDS:
+            if len(word) >= 2 and word not in COMMAND_STOPWORDS:
                 terms.add(word)
 
     # Workflows
@@ -318,12 +331,12 @@ def build_profile(cwd, config):
     for act in wf_actions:
         terms.add(act)
         for part in act.split("/"):
-            if len(part) >= 2 and part not in STOPWORDS:
+            if len(part) >= 2 and part not in COMMAND_STOPWORDS:
                 terms.add(part)
     for runner in wf_runners:
         terms.add(runner)
         for part in runner.split("-"):
-            if len(part) >= 2 and part not in STOPWORDS:
+            if len(part) >= 2 and part not in COMMAND_STOPWORDS:
                 terms.add(part)
 
     # Dependencies & repo tools
@@ -335,8 +348,7 @@ def build_profile(cwd, config):
     always_relevant = {
         "actions", "github actions", "workflow", "workflows", "runner", "runners",
         "dependabot", "codeql", "code scanning", "secret scanning", "security advisories",
-        "merge queue", "merge queues", "pull requests", "copilot", "cli", "gh", "lockfile",
-        "lockfiles",
+        "merge queue", "merge queues", "lockfile", "lockfiles",
     }
     terms.update(always_relevant)
 
@@ -393,9 +405,6 @@ def prefilter(records, profile, state=None):
         # Skip if already seen
         if rid in recent_ids:
             continue
-        # Skip if older than high-water mark
-        if high_water and r["published"] and r["published"] <= high_water:
-            continue
 
         score, matched = score_record(r, profile_terms)
         if score > 0:
@@ -427,7 +436,17 @@ def cmd_profile(args):
 
 
 def cmd_harvest(args):
-    feed_url = args.feed or DEFAULT_FEED
+    feed_url = args.feed
+    if not feed_url:
+        cwd = os.path.abspath(args.cwd) if hasattr(args, "cwd") and args.cwd else os.getcwd()
+        cfg_path = os.path.join(cwd, ".claude", "maintainerd.json")
+        if os.path.exists(cfg_path):
+            try:
+                cfg = read_json_file(cfg_path)
+                feed_url = cfg.get("changelogRadar", {}).get("feed")
+            except Exception:
+                pass
+    feed_url = feed_url or DEFAULT_FEED
     ua = args.user_agent or "maintainerd-changelog-radar/1.0"
     content = fetch_url(feed_url, ua)
     records = parse_feed_xml(content)
@@ -437,9 +456,19 @@ def cmd_harvest(args):
 def cmd_prefilter(args):
     # Read harvested records from file or stdin
     if args.input:
-        records = read_json_file(args.input)
+        if not os.path.exists(args.input):
+            die(f"input file {args.input} does not exist")
+        if os.path.getsize(args.input) == 0:
+            die(f"input file {args.input} is empty (harvest may have failed)")
+        try:
+            records = read_json_file(args.input)
+        except Exception as e:
+            die(f"cannot read input file {args.input}: {e}")
     else:
-        records = json.load(sys.stdin)
+        try:
+            records = json.load(sys.stdin)
+        except Exception as e:
+            die(f"cannot read input from stdin: {e}")
 
     # Read profile
     profile = read_json_file(args.profile)
@@ -456,20 +485,32 @@ def cmd_advance(args):
     if not state_path:
         die("--state is required for advance")
 
-    state = load_state(state_path) or {
-        "version": STATE_VERSION,
-        "highWater": {"publishedDate": None},
-        "recentIds": [],
-    }
+    state = load_state(state_path)
+    current_mark = state.get("highWater", {}).get("publishedDate") if state else None
 
-    # New records or IDs to mark seen
+    # Compare-and-set mark verification (VR-1ae7cacf)
+    if args.expected_mark is not None:
+        expected = None if args.expected_mark in ("", "none", "null") else args.expected_mark
+        if current_mark != expected:
+            die(f"the state's mark is {current_mark or '(none)'} but this run started from "
+                f"{expected or '(none)'}: another run advanced it since; refusing to overwrite. "
+                "Start over from the latest state.")
+
+    if not state:
+        state = {
+            "version": STATE_VERSION,
+            "highWater": {"publishedDate": None},
+            "recentIds": [],
+        }
+
+    # Only mark seen the items passed in --input (the evaluated survivors, VR-64c20138)
     if args.input:
         items = read_json_file(args.input)
     else:
         items = json.load(sys.stdin)
 
     seen_ids = list(state.get("recentIds", []))
-    latest_date = state.get("highWater", {}).get("publishedDate")
+    latest_date = current_mark
 
     for it in items:
         rid = it.get("id")
@@ -499,6 +540,7 @@ def main():
     # harvest
     p_harv = sub.add_parser("harvest", help="Fetch RSS/Atom changelog feed into JSON records")
     p_harv.add_argument("--feed", default=None, help="Feed URL (default: GitHub changelog RSS)")
+    p_harv.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
     p_harv.add_argument("--user-agent", default=None, help="User agent string")
     p_harv.set_defaults(func=cmd_harvest)
 
@@ -513,6 +555,7 @@ def main():
     p_adv = sub.add_parser("advance", help="Advance state file with processed items")
     p_adv.add_argument("--state", required=True, help="State JSON file path")
     p_adv.add_argument("--input", default=None, help="JSON list of processed items (or stdin)")
+    p_adv.add_argument("--expected-mark", default=None, help="Expected high-water mark timestamp for compare-and-set")
     p_adv.set_defaults(func=cmd_advance)
 
     args = parser.parse_args()

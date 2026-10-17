@@ -223,6 +223,156 @@ jobs:
         survivors = json.loads(proc.stdout)
         self.assertEqual(len(survivors), 0)
 
+    def test_parse_non_feed_xml_fails(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        error_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>AccessDenied</Code>
+  <Message>Rate limit exceeded</Message>
+</Error>"""
+        with self.assertRaises(SystemExit) as ctx:
+            cr.parse_feed_xml(error_xml)
+        self.assertIn("not an RSS or Atom feed", str(ctx.exception))
+
+    def test_generic_command_stopwords_no_false_positive(self):
+        d = self.tmp.name
+        claude_dir = os.path.join(d, ".claude")
+        os.makedirs(claude_dir, exist_ok=True)
+        with open(os.path.join(claude_dir, "maintainerd.json"), "w") as f:
+            json.dump({
+                "language": "python",
+                "commands": {"lint": "uv run ruff check"},
+            }, f)
+
+        proc = run_script(["profile", "--cwd", d])
+        self.assertEqual(proc.returncode, 0)
+        profile = json.loads(proc.stdout)
+        self.assertNotIn("check", profile["terms"])
+        self.assertNotIn("run", profile["terms"])
+
+        # Feed item titled 'Check your billing details'
+        records = [{
+            "id": "billing-1",
+            "title": "Check your billing details",
+            "link": "https://example.com/billing",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": [],
+            "summary": "Please review payment information.",
+        }]
+        prof_file = os.path.join(self.tmp.name, "prof_check.json")
+        rec_file = os.path.join(self.tmp.name, "rec_check.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 0)
+
+    def test_same_timestamp_and_backdated_unseen_entries_survive(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        record_a = {
+            "id": "post-a",
+            "title": "GitHub Actions Post A",
+            "link": "https://example.com/a",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions A",
+        }
+        record_b_same_date = {
+            "id": "post-b",
+            "title": "GitHub Actions Post B",
+            "link": "https://example.com/b",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions B",
+        }
+        record_c_older_date = {
+            "id": "post-c",
+            "title": "GitHub Actions Post C",
+            "link": "https://example.com/c",
+            "published": "2026-10-13T10:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions C",
+        }
+
+        prof_file = os.path.join(self.tmp.name, "p_time.json")
+        state_file = os.path.join(self.tmp.name, "s_time.json")
+        rec_a_file = os.path.join(self.tmp.name, "r_a.json")
+        rec_later_file = os.path.join(self.tmp.name, "r_later.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_a_file, "w") as f:
+            json.dump([record_a], f)
+        with open(rec_later_file, "w") as f:
+            json.dump([record_a, record_b_same_date, record_c_older_date], f)
+
+        # Advance state with A
+        proc = run_script(["advance", "--state", state_file, "--input", rec_a_file])
+        self.assertEqual(proc.returncode, 0)
+
+        # Run prefilter with A, B, C: B and C must survive even though their date <= A's date!
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_later_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        survivor_ids = {s["id"] for s in survivors}
+        self.assertNotIn("post-a", survivor_ids)
+        self.assertIn("post-b", survivor_ids)
+        self.assertIn("post-c", survivor_ids)
+
+    def test_advance_compare_and_set_conflict(self):
+        state_file = os.path.join(self.tmp.name, "s_cas.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        input_file = os.path.join(self.tmp.name, "cas_in.json")
+        with open(input_file, "w") as f:
+            json.dump([{"id": "id-2", "published": "2026-10-15T12:00:00Z"}], f)
+
+        # Stale expected-mark fails
+        proc = run_script(["advance", "--state", state_file, "--input", input_file, "--expected-mark", "2026-10-10T00:00:00Z"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("refusing to overwrite", proc.stderr)
+
+        # Matching expected-mark succeeds
+        proc = run_script(["advance", "--state", state_file, "--input", input_file, "--expected-mark", "2026-10-14T12:00:00Z"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_advance_only_marks_input_items(self):
+        state_file = os.path.join(self.tmp.name, "s_partial.json")
+        evaluated_file = os.path.join(self.tmp.name, "evaluated.json")
+        with open(evaluated_file, "w") as f:
+            json.dump([{"id": "evaluated-item-1", "published": "2026-10-14T12:00:00Z"}], f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", evaluated_file])
+        self.assertEqual(proc.returncode, 0)
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertIn("evaluated-item-1", st["recentIds"])
+        self.assertNotIn("unevaluated-item-2", st["recentIds"])
+
+    def test_prefilter_fails_on_empty_input(self):
+        prof_file = os.path.join(self.tmp.name, "p_empty.json")
+        empty_input = os.path.join(self.tmp.name, "empty_harvest.json")
+        with open(prof_file, "w") as f:
+            json.dump({"technologies": [], "terms": []}, f)
+        with open(empty_input, "w") as f:
+            pass  # 0 bytes
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", empty_input])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is empty", proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
