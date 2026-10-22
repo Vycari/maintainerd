@@ -1,6 +1,6 @@
 ---
 name: create-pr
-description: Create a pull request for the current repository the right way — enforce the repo's PR template, run a `/simplify` pass and then every CI gate (format, lint, build, typecheck, tests) locally before pushing, require docs updates for user-facing changes, and write an honest, non-marketing PR body. Where the repo sets `createPr.requireIssueForDeferredWork`, it also refuses to open a PR whose body promises follow-up work without naming an issue. Use whenever the user wants to "create a PR", "open a pull request", "submit changes", "prepare changes for review", or "push this for review". Never bypasses verification, never auto-merges.
+description: Create a pull request for the current repository the right way — enforce the repo's PR template, run a `/simplify` pass and a `code-review` self-review, then every CI gate (format, lint, build, typecheck, tests) locally before pushing, require docs updates for user-facing changes, and write an honest, non-marketing PR body. Where the repo sets `createPr.requireIssueForDeferredWork`, it also refuses to open a PR whose body promises follow-up work without naming an issue. Use whenever the user wants to "create a PR", "open a pull request", "submit changes", "prepare changes for review", or "push this for review". Never bypasses verification, never auto-merges.
 ---
 
 # Create a Pull Request
@@ -42,21 +42,33 @@ order** and fix any failures. Run each command from `config.commands.*`; **skip 
    Build, Type check and Tests below), and say in the PR body that it was skipped and why. If the
    `simplify` skill is not available in the session, say so in the PR body — never skip it silently
    and never report it as run.
-2. **Format** — run `config.commands.format`. If it fails, apply the repo's formatter and stage the
+2. **Self-review** — invoke the built-in `code-review` skill (Skill tool, `skill: "code-review"`,
+   `args: "medium --fix"`) on the branch's changes. It runs after Simplify and before Format, so
+   every later gate checks the fixed code: `/simplify` covers quality, `code-review` hunts
+   correctness bugs. Never use the `ultra` level — it is a billed, user-triggered cloud review an
+   agent must not launch. Review what `--fix` changed with `git diff` and keep only the edits that
+   fix a real defect within this PR's scope; revert the rest. Skip it for a diff that touches no
+   code, as for Simplify, and say in the PR body that it was skipped and why. If the `code-review`
+   skill is not available in the session, say so in the PR body — never skip it silently and never
+   report it as run. Record the outcome as one line in the PR body's reviewer-facing section, e.g.
+   `code-review (medium): 4 findings, 3 fixed, 1 not a defect — <one-line why>`, so downstream
+   reviewers see what was already considered. It runs when the PR is created, not on every later
+   push: a review-response loop does not repeat it.
+3. **Format** — run `config.commands.format`. If it fails, apply the repo's formatter and stage the
    changes, then re-run until clean.
-3. **Lint** — run `config.commands.lint`. Fix every reported issue.
-4. **Build & type check** — run `config.commands.build`, then `config.commands.typecheck`. Fix any
+4. **Lint** — run `config.commands.lint`. Fix every reported issue.
+5. **Build & type check** — run `config.commands.build`, then `config.commands.typecheck`. Fix any
    type errors. (Some repos fold the type check into the build; if `typecheck` is `null`, the build
    covers it.)
-5. **Tests** — run `config.commands.test`. All tests must pass with no warnings or unexpected
+6. **Tests** — run `config.commands.test`. All tests must pass with no warnings or unexpected
    console output.
 
 **A docs-only or config-only diff still runs Format and Lint.** "No source file changed" is not a
 reason to mark them N/A: formatters increasingly reach into prose — `ruff format` rewrites Python
 code blocks *inside Markdown*, Prettier formats fenced code and the Markdown itself — and CI runs
 the same command over the whole tree. A design doc with one mis-spaced code sample passes every
-docs check and then fails the format gate. Only Simplify, Build, Type check and Tests may be skipped for a
-diff that touches no code, and the PR body says which were skipped and why.
+docs check and then fails the format gate. Only Simplify, Self-review, Build, Type check and Tests may be
+skipped for a diff that touches no code, and the PR body says which were skipped and why.
 
 **A command that cannot start is a failure to fix, not a step to skip.** A fresh worktree or
 sandbox often has no environment yet (`Failed to spawn: ruff`, `command not found`). Install the

@@ -7,7 +7,7 @@ same on all of them. Nothing here merges.
 
 | Skill | What it does | Typical trigger |
 | --- | --- | --- |
-| [`create-pr`](skills/create-pr/SKILL.md) | Open a PR only after a `/simplify` pass and the repo's own format/lint/build/test pre-flight pass, using the repo's PR template. | "open a PR", "create a pull request" |
+| [`create-pr`](skills/create-pr/SKILL.md) | Open a PR only after a `/simplify` pass, a `code-review` self-review and the repo's own format/lint/build/test pre-flight pass, using the repo's PR template. | "open a PR", "create a pull request" |
 | [`address-review`](skills/address-review/SKILL.md) | Drive the full response loop on your own PR — fetch every review comment (bot and human), triage, fix with one focused commit each, push, then reply to every thread. Silence makes bots re-raise items. | "address the review comments" |
 | [`release`](skills/release/SKILL.md) | Cut a versioned release: gather changes since the last tag, write notes, run the gate, bump, tag, publish, verify. | "cut a release" |
 | [`daily-changelog`](skills/daily-changelog/SKILL.md) | Turn a day's merged PRs into a short readable changelog at `config.paths.changelogDir/YYYY-MM-DD.md`. | "what shipped today" |
