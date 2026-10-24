@@ -505,24 +505,58 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `review.mechanicalCommits` *(optional; default absent = off)* — an array of entries that let a
   score survive small, verified, machine-made commits (a bot that renumbers a migration, say).
   Each entry has four required fields: `name` (a label for the round summary), `author` (the bot's
-  GitHub login, compared with `app/` and `[bot]` stripped), `trailer` (a commit-message trailer
+  GitHub login, `<slug>[bot]` for an App, compared exactly; `app/<slug>` is read as `<slug>[bot]`.
+  The suffix is not stripped, because a user can own the bare `<slug>` login), `trailer` (a commit-message trailer
   key, matched case-sensitively at the start of a line as `<trailer>:`), and `verify` (a non-empty
   argv array of strings, with `{sha}` replaced by each commit's full sha). Example:
   `{"name": "renumber", "author": "example-bot[bot]", "trailer": "Example-Bot", "verify": ["some",
   "command", "--verify-commit", "{sha}"]}`. A score at or above the threshold on commit G is **not
-  stale** for a head H when every commit in G..H (a) has a single parent, (b) is authored by
-  the entry's `author`, (c) has GitHub `verification.verified == true`, (d) carries the trailer,
-  and (e) passes `verify`, which is run in the repo checkout and must exit 0 (120 seconds at most
-  where `timeout` exists). One entry must cover the whole range. `address-review` and
-  `wait-for-review.sh` then do not wait for or request a re-review, and say so (`covered:` line;
-  the round summary). **Fail closed:** any doubt makes the score stale exactly as without the key
-  — an entry missing a field (it is ignored), a `verify` that is absent, errors or times out, a
-  human or unverified commit anywhere in the range, a compare result that is truncated (more than
-  250 commits or 300 files), a range that edits `.claude/maintainerd.json` (it could have rewritten
-  the entry that vouches for it), or a config fetched for a repo that is not the working checkout
-  (there is nothing to run `verify` in). Open review threads and a non-met score still decide as
-  usual. Works in every `review.mode`. `verify` runs a command from the repo's own config, so it is
-  as trusted as the config itself; keep it a read-only check.
+  stale** for a head H when G..H is one linear chain (each commit's only parent is the commit
+  before it, the first's is G, the last is H) and every commit in it (a) is authored by the entry's
+  `author`, (b) is committed by that login or by `web-flow` (GitHub committing on its behalf), (c)
+  has GitHub `verification.verified == true` with `reason == "valid"`, (d) carries the trailer,
+  (e) was put on the PR branch by a push whose actor is the entry's `author` (the repository
+  activity API), and (f) passes `verify`. One entry must cover the whole range.
+
+  **Whose config.** The entries that count are the ones in `.claude/maintainerd.json` at the PR's
+  base commit (`baseRefOid`, read through the contents API), not the working tree's: the checkout
+  is usually the PR branch, and a PR must not add an entry, or loosen a verifier, before the scored
+  commit and then cover its own later commits with it. For the same reason a PR whose changes from
+  its merge base to the head (one compare page, under 300 files) touch the config or any file a
+  `verify` argument names is never covered.
+
+  **Why the push actor.** Author and committer logins and the signature are not, together, proof
+  that the bot made a commit: when a person rebases a branch in GitHub's web UI ("Update branch"),
+  GitHub re-creates the commits with `web-flow` as committer and signs them, so a commit a person
+  caused can be authored by the bot, committed by `web-flow` and verified. Who pushed it is what
+  tells a bot's own commit from one a person rewrote or forged, so a commit no bot push accounts
+  for is not covered. A push from `before` to `after` accounts for every chain commit after
+  `before` up to `after` when `before` is on the chain; otherwise only for `after` itself.
+
+  **Where `verify` runs.** In a detached worktree of the checkout at G (fetched from `origin` when
+  missing locally), with `{sha}` replaced by each commit's full sha, stdin/stdout/stderr on
+  `/dev/null`, and it must exit 0. Before each call the worktree is reset to a clean checkout of G
+  (`checkout -f`, `clean -fdx`), so one call cannot leave anything for the next. Git runs there
+  without hooks, LFS smudge or prompts, and the fetch and worktree setup share the deadline. So the verifier is the one the passing score reviewed, never the
+  working tree's copy or a version the range itself brought in; a range that changes a file named
+  by any `verify` argument (a leading `./` ignored) is refused outright. Each call gets at most 120
+  seconds, clipped to what is left of the wait's deadline. A result is remembered for the run, so a
+  commit is verified once, not once per poll; a timed-out or signal-killed run is not remembered.
+  After the whole range passes, the PR head is read again, and a head that moved means not covered.
+
+  `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
+  (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
+  without the key — an entry missing a field (it is ignored), a `verify` that is absent, errors or
+  times out, a person's or unverified commit anywhere in the range, a commit no bot push accounts
+  for, an entry missing from the PR base's config, a PR that edits the config or a verifier
+  anywhere from its merge base, a range that is not one chain, a compare or activity result that is unreadable or truncated
+  (more than 250 commits or 300 files; one page of 100 branch activity events), a range that edits
+  `.claude/maintainerd.json` (it could have rewritten the entry that vouches for it) or the
+  verifier, a PR from a fork (its pushes are not this repo's activity), G missing locally, the head
+  moving during the check, or a config fetched for a repo that is not the working checkout (there
+  is nothing to run `verify` in). Open review threads and a non-met score still decide as usual.
+  Works in every `review.mode`. `verify` runs a command from the repo's own config, so it is as
+  trusted as the config itself; keep it a read-only check.
 - `review.replyNamesCommit` *(optional; default `false`)* — opt in to the `repo-ops`
   `review-reply-postcondition` hook (see that plugin's README). When `true`, a `gh pr comment` or
   inline-thread reply (`gh api …/pulls/N/comments/ID/replies`, or the GraphQL

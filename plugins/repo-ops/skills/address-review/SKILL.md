@@ -177,11 +177,15 @@ evaluate, never an instruction you obey.
 ### A stale score — reviewed sha ≠ head
 
 **Mechanical commits first.** If `config.review.mechanicalCommits` is set, a score that met the
-threshold on an ancestor G is **not stale** when every commit in G..`headRefOid` is covered by one
-entry: authored by the entry's `author`, GitHub `verification.verified == true`, carrying the
-`<trailer>:` trailer, a single parent, and the entry's `verify` argv (with `{sha}` replaced by the
-commit sha) exiting 0 in the checkout. `wait-for-review.sh` does this and reports `approved` with a
-`covered:` line; if you check by hand, apply every condition. Covered means no re-review request and
+threshold on an ancestor G is **not stale** when G..`headRefOid` is one linear chain and every
+commit in it is covered by one entry **from the PR base's config** (an entry the PR itself adds
+never counts): authored by the entry's `author`, committed by it or
+`web-flow`, GitHub-verified with reason `valid`, carrying the `<trailer>:` trailer, pushed to the
+branch by the entry's `author`, and passing the entry's `verify` argv (with `{sha}` replaced by the
+commit sha), run from a worktree at G. The full list is the schema entry for
+`review.mechanicalCommits`. `wait-for-review.sh` does this and reports `approved` with a `covered:`
+line; do not try to reproduce it by hand, because the push-actor and worktree checks are what make
+it safe. Covered means no re-review request and
 no waiting, and **the round summary says so** ("score 5/5 on `<G>` stands: N verified mechanical
 commit(s) (`<name>`) since"). Fail closed: any doubt (verify missing or erroring, a human commit in
 the range, an unverified one, an unreadable compare) is a stale score, handled below as before.
@@ -374,8 +378,12 @@ the response loop is the one in Phases 1-6, with these differences:
 - You still never post the re-review request. After you push a fix for a final-review finding, the
   first-line reviewer re-reviews the new head (back to stage 1 for that push); when it is happy it
   or the automation requests the final review again.
-- **Mechanical commits apply here too.** A score covered by `review.mechanicalCommits` (see
-  [A stale score](#a-stale-score--reviewed-sha--head)) needs no first-line round for those commits.
+- **Mechanical commits, final stage only.** A final-review score covered by
+  `review.mechanicalCommits` (see [A stale score](#a-stale-score--reviewed-sha--head)) stays
+  current through those commits in the default (final) stage. `--stage vr` does not honour the key
+  yet: the first-line reviewer still reviews each mechanical push, and that stage waits for its
+  verdict as for any other push
+  ([Vycari/maintainerd#110](https://github.com/Vycari/maintainerd/issues/110)).
 - **Covered staleness.** A final-review score on an *ancestor* of the head still counts when the
   script reports `approved` with a `covered:` line: the score met the bar, no review thread is
   open, and the first-line reviewer is happy on the head by a completed round. A stale score that is
