@@ -573,8 +573,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   again, because the decision and the threads were read before `verify` ran (up to 120 seconds per
   commit). A head or base that moved means not covered: a moved base may have dropped the entry or
   tightened the verifier. So does a review decision or a set of open threads that differs from what
-  the poll judged on (a late "changes requested", a new thread). So does an answer that arrives
-  after the deadline.
+  the poll judged on (a late "changes requested", a new thread); the wait then decides on its next
+  read, and never falls back to first-line covered staleness on the old one. So does an answer that
+  arrives after the deadline.
 
   **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
   An approval still needs no open review thread and a completed, happy first-line round on the head

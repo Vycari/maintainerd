@@ -81,11 +81,18 @@ case "$1 $2" in
     ;;
   "api repos/"*"/compare/"*)
     # The PR base's compare (mechanical commits): base...head, the base named by the case.
+    # A `--jq <filter>` caller (the first-line ancestry check) gets the filter applied when the
+    # fixture is a JSON compare object; a plain-text fixture ("ahead") is served as it is.
     b="$(cat "$STUB_DIR/.base" 2>/dev/null)"
     case "$2" in
-      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then serve basecompare; else serve compare; fi ;;
-      *) serve compare ;;
-    esac
+      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then out="$(serve basecompare)"; else out="$(serve compare)"; fi ;;
+      *) out="$(serve compare)" ;;
+    esac || exit 1
+    if [ "${3:-}" = "--jq" ] && printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      printf '%s' "$out" | jq -r "$4"
+    else
+      printf '%s\n' "$out"
+    fi
     ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
@@ -1602,6 +1609,24 @@ mech_fl_case mech-fl-open-thread true "$THREAD_OPEN"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical, first-line: covered, but an open thread is reported (findings:1)" findings:1 1
 expect_contains "mechanical, first-line: the open thread's detail is printed" "a.py:3"
+
+# A mid-verify change the re-read rejects must not fall through to the first-line covered-staleness
+# path, which would approve from the state read before verify ran.
+mech_fl_case mech-fl-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a changes-requested review during verify is never approved" ||
+  bad "mechanical, first-line: decision changed mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_fl_case mech-fl-thread-opens true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread that opens during verify is never approved" ||
+  bad "mechanical, first-line: thread opened mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 

@@ -402,6 +402,7 @@ MECH_CROSS=""
 MECH_BASE=""
 MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
 MECH_THREADS=""  # must find both unchanged
+MECH_HOLD=0      # 1 when the final re-read saw the review state move: this poll decides nothing
 MECH_SECS=0
 mech_cleanup() {
   local wt
@@ -592,6 +593,7 @@ covered_by_mechanical() {
   local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first="" cmp act g now_head
   local basecfg entries bcmp now_gql now_threads
   MECH_NOTE=""
+  MECH_HOLD=0
   [ -n "$scores" ] || return 1
   [ -n "$(mechanical_entries)" ] || return 1
   # A verify command runs in the checkout; when the config was fetched for another repo there is none.
@@ -671,12 +673,20 @@ covered_by_mechanical() {
   # read before verify ran, so a human's "changes requested" or a new thread that landed meanwhile
   # must show here too: any change means not covered. The answer must also arrive before the deadline.
   mech_budget 1 || return 1
+  # A change sets MECH_HOLD: the caller must not fall back to another covered-staleness path, or
+  # judge anything else, on the state it read before verify ran.
   now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision -q '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
-  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || return 1
+  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || {
+    MECH_HOLD=1
+    return 1
+  }
   mech_budget 1 || return 1
   now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
   now_threads="$(unresolved_threads "$now_gql")" || return 1
-  [ "$now_threads" = "$MECH_THREADS" ] || return 1
+  [ "$now_threads" = "$MECH_THREADS" ] || {
+    MECH_HOLD=1
+    return 1
+  }
   mech_budget 1 || return 1
   MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
   return 0
@@ -797,6 +807,7 @@ poll_once() {
   VERDICT=""
   DETAIL=""
   COVERED_NOTE="" # a note from an earlier poll must never ride on this poll's verdict
+  MECH_HOLD=0
   pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS" 2>&1)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
@@ -932,6 +943,11 @@ poll_once() {
       # below; in first-line mode an approval also needs a happy first-line round on the head.
       stale=0
       COVERED_NOTE="$MECH_NOTE"
+    elif [ "$MECH_HOLD" = "1" ]; then
+      # The review state moved while verify ran: decide on the next poll's fresh read, never on
+      # this one's (the first-line path below would approve from it).
+      COVERED_NOTE=""
+      return 0
     elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
       covered_by_first_line "$scores" "$head"; then
       stale=0
