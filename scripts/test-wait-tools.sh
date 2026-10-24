@@ -1185,6 +1185,24 @@ cp "$CASE/repo/.claude/maintainerd.json" "$CASE/cfg.json"
 run_tool "$WFR" 7 -R o/r --config "$CASE/cfg.json" --timeout-seconds 3 --interval-seconds 1
 expect "mechanical: --config for this checkout's own repo still covers" approved 0
 
+mech_case mech-multiline-argv 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "true\nfalse", "{sha}"]}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a multi-line verify script runs whole (its failing line fails it) -> timeout" timeout 2
+
+mech_case mech-multiline-argv-ok 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c --arg out "$CASE/argv" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", ("test \"$1\" = c1\nprintf %s \"$2\" >" + $out), "x", "{sha}", "two\nlines"]}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a multi-line verify script that passes covers" approved 0
+[ "$(cat "$CASE/argv" 2>/dev/null)" = $'two\nlines' ] && ok "mechanical: an argument with a newline reaches verify intact" ||
+  bad "mechanical: newline argument" "$(cat "$CASE/argv" 2>/dev/null)"
+
 mech_case mech-note-no-leak 5/5 0
 write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",

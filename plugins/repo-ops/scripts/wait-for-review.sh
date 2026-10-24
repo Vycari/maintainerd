@@ -359,7 +359,8 @@ fetch_gql() {
 }
 
 # mechanical_entries — prints the valid review.mechanicalCommits entries as compact JSON lines. An
-# entry missing a field, or of the wrong type, is dropped (fail closed: it can only cover less).
+# entry missing a field, or of the wrong type, is dropped (fail closed: it can only cover less), and
+# so is one whose verify argv holds a NUL, which no argv can carry.
 mechanical_entries() {
   printf '%s' "$WAIT_CONFIG_JSON" | jq -c '
     ((.review // {}).mechanicalCommits // []) | if type == "array" then .[] else empty end
@@ -367,7 +368,8 @@ mechanical_entries() {
         and (.name | type == "string" and length > 0)
         and (.author | type == "string" and length > 0)
         and (.trailer | type == "string" and length > 0)
-        and (.verify | type == "array" and length > 0 and all(.[]; type == "string")))' 2>/dev/null
+        and (.verify | type == "array" and length > 0
+          and all(.[]; type == "string" and (explode | any(. == 0) | not))))' 2>/dev/null
 }
 
 # range_covered_by_entry <entry-json> <from> <head> — true when EVERY commit in <from>..<head> is a
@@ -400,7 +402,8 @@ range_covered_by_entry() {
   while IFS= read -r sha; do
     [ -n "$sha" ] || return 1
     verify=()
-    while IFS= read -r i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -r '.verify[]')
+    # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
+    while IFS= read -r -d '' i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -j '.verify[] | ., "\u0000"')
     [ "${#verify[@]}" -gt 0 ] || return 1
     if command -v timeout >/dev/null 2>&1; then
       timeout 120 "${verify[@]}" >/dev/null 2>&1 </dev/null || return 1
