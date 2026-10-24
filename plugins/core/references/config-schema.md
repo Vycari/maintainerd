@@ -510,9 +510,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   key, matched case-sensitively at the start of a line as `<trailer>:`), and `verify` (a non-empty
   argv array of strings, with `{sha}` replaced by each commit's full sha). Example:
   `{"name": "renumber", "author": "example-bot[bot]", "trailer": "Example-Bot", "verify": ["some",
-  "command", "--verify-commit", "{sha}"]}`. A score at or above the threshold on commit G is **not
-  stale** for a head H when G..H is one linear chain (each commit's only parent is the commit
-  before it, the first's is G, the last is H) and every commit in it (a) is authored by the entry's
+  "command", "--verify-commit", "{sha}"]}`. Under a numeric `review.approvalThreshold`, a score at or
+  above it on commit G is **not stale** for a head H (a score below the threshold is never covered).
+  Under `approvalThreshold: "approved"` there is no score bar to meet: the gate is GitHub's review
+  decision, so any score on G counts as the bot having looked at G, and the decision must still be
+  `APPROVED` at the end. G is **not stale** for a head H when G..H is one linear chain (each
+  commit's only parent is the commit before it, the first's is G, the last is H) and every commit in it (a) is authored by the entry's
   `author`, (b) is committed by that login or by `web-flow` (GitHub committing on its behalf), (c)
   has GitHub `verification.verified == true` with `reason == "valid"`, (d) carries the trailer,
   (e) was put on the PR branch by a push whose actor is the entry's `author` (the repository
@@ -566,9 +569,17 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   base that changes during the wait is verified afresh. A timed-out or signal-killed run is not
   remembered.
 
-  After the whole range passes, the PR head and base are read again. A head or base that moved
-  means not covered: a moved base may have dropped the entry or tightened the verifier. So does an
-  answer that arrives after the deadline.
+  After the whole range passes, the PR head, base, review decision and open review threads are read
+  again, because the decision and the threads were read before `verify` ran (up to 120 seconds per
+  commit). A head or base that moved means not covered: a moved base may have dropped the entry or
+  tightened the verifier. So does a review decision or a set of open threads that differs from what
+  the poll judged on (a late "changes requested", a new thread). So does an answer that arrives
+  after the deadline.
+
+  **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
+  Every other first-line condition still holds: no review thread is open, and the first-line
+  reviewer has a completed, happy round on the head itself. Without both, the score stays stale and
+  the wait keeps going.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
   (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
