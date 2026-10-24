@@ -123,17 +123,22 @@ resolve_repo() {
 load_config() {
   local f here out
   WAIT_CONFIG_JSON="{}"
+  # WAIT_CONFIG_LOCAL=1 only when the working directory is a checkout of the repository being
+  # waited on, however the config was chosen: --config names a file, not a checkout, so it does not
+  # by itself make the cwd the target repo's. Tools that run commands in the checkout read it.
+  here=""
+  if [ "$WAIT_REPO_EXPLICIT" = "1" ]; then
+    here="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || here=""
+  else
+    here="$WAIT_REPO"
+  fi
+  WAIT_CONFIG_LOCAL=0
+  [ -z "$here" ] || [ "$here" != "$WAIT_REPO" ] || WAIT_CONFIG_LOCAL=1
   if [ -n "$WAIT_CONFIG" ]; then
     [ -f "$WAIT_CONFIG" ] || die 3 "--config $WAIT_CONFIG does not exist"
     WAIT_CONFIG_JSON="$(cat "$WAIT_CONFIG")"
   else
-    here=""
-    if [ "$WAIT_REPO_EXPLICIT" = "1" ]; then
-      here="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || here=""
-    else
-      here="$WAIT_REPO"
-    fi
-    if [ "$here" = "$WAIT_REPO" ]; then
+    if [ "$WAIT_CONFIG_LOCAL" = "1" ]; then
       f="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/maintainerd.json"
       [ ! -f "$f" ] || WAIT_CONFIG_JSON="$(cat "$f")"
     else
