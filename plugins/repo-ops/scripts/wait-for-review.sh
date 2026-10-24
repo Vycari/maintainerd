@@ -402,23 +402,33 @@ mech_cleanup() {
 }
 trap mech_cleanup EXIT
 
-# run_bounded <seconds> <argv...> — runs argv with stdin/stdout/stderr on /dev/null and kills it
-# after <seconds>. Exit status is argv's, or 124 (timeout(1)) / >= 128 (a signal) when it was killed.
+# run_bounded <seconds> <argv...> — runs argv with stdin/stdout/stderr on /dev/null, in a process
+# group of its own, and stops it after <seconds>: TERM to the whole group, then KILL to the group
+# RB_GRACE seconds later. Exit status is argv's, or 124 whenever the time limit fired (even if argv
+# then exited 0 from a TERM handler), or >= 128 for a signal. Whatever argv leaves running in its
+# group is killed when it returns. One implementation everywhere, so timeout(1)'s presence or flavour
+# changes nothing. A process that moves itself to another session (setsid) is out of reach.
+RB_GRACE=2
 run_bounded() {
-  local secs="$1" pid wd rc
+  local secs="$1" pid wd flag rc
   shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@" </dev/null >/dev/null 2>&1
-    return $?
-  fi
+  flag="$(mktemp 2>/dev/null)" || return 1
+  rm -f "$flag"
+  set -m
   "$@" </dev/null >/dev/null 2>&1 &
   pid=$!
-  (sleep "$secs" && kill -TERM "$pid") </dev/null >/dev/null 2>&1 &
+  (sleep "$secs" && : >"$flag" && kill -TERM -- "-$pid" && sleep "$RB_GRACE" && kill -KILL -- "-$pid") </dev/null >/dev/null 2>&1 &
   wd=$!
-  wait "$pid"
+  set +m
+  wait "$pid" 2>/dev/null
   rc=$?
-  kill "$wd" >/dev/null 2>&1
+  kill -KILL -- "-$wd" >/dev/null 2>&1
   wait "$wd" 2>/dev/null
+  kill -KILL -- "-$pid" >/dev/null 2>&1
+  if [ -e "$flag" ]; then
+    rm -f "$flag"
+    return 124
+  fi
   return "$rc"
 }
 

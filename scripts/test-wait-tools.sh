@@ -1327,6 +1327,38 @@ expect "mechanical: verify runs the scored commit's verifier (passes there) -> a
   ok "mechanical: the verify worktree is removed on exit" ||
   bad "mechanical: worktree left behind" "$(git -C "$CASE/repo" worktree list)"
 
+# The time limit holds against verifiers that resist it, and nothing they start survives it.
+mech_case mech-term-exits-zero 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "trap \"exit 0\" TERM; while :; do sleep 1; done", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+expect "mechanical: a verify that exits 0 when stopped at its limit does not pass (timeout)" timeout 2
+
+mech_case mech-term-ignored 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "trap \"\" TERM; sleep 30", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical: a verify that ignores TERM -> timeout" timeout 2
+[ $((t1 - t0)) -le 7 ] && ok "mechanical: a verify that ignores TERM is killed, not waited on" ||
+  bad "mechanical: TERM-resistant verify" "took $((t1 - t0))s against a 2s deadline"
+
+mech_case mech-grandchild 5/5 0
+write_config "$(jq -n -c --arg f "$CASE/leaked" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", ("(sleep 4; touch " + $f + ") & sleep 30"), "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+expect "mechanical: a verify that forks and overruns -> timeout" timeout 2
+sleep 5
+[ ! -e "$CASE/leaked" ] && ok "mechanical: what a stopped verify started is stopped with it" ||
+  bad "mechanical: grandchild survived" "$CASE/leaked exists"
+
 mech_case mech-human-committer 5/5 0
 mech_compare ahead "[$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG" 1 someone)]"
 run_tool "$WFR" 7 "${FAST[@]}"
