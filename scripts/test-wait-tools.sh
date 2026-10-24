@@ -1171,6 +1171,20 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a score on the head approves without covering" approved 0
 expect_not_contains "mechanical: no covered note when the score names the head" "covered:"
 
+mech_case mech-config-other-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+cp "$CASE/repo/.claude/maintainerd.json" "$CASE/cfg.json"
+run_tool "$WFR" 7 -R x/other --config "$CASE/cfg.json" --timeout-seconds 3 --interval-seconds 1
+expect "mechanical: --config for a repo that is not this checkout -> stale (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never ran in a foreign checkout" ||
+  bad "mechanical: verify ran in a foreign checkout" "$(cat "$CASE/verified")"
+
+mech_case mech-config-same-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+cp "$CASE/repo/.claude/maintainerd.json" "$CASE/cfg.json"
+run_tool "$WFR" 7 -R o/r --config "$CASE/cfg.json" --timeout-seconds 3 --interval-seconds 1
+expect "mechanical: --config for this checkout's own repo still covers" approved 0
+
 mech_case mech-note-no-leak 5/5 0
 write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",

@@ -380,7 +380,7 @@ range_covered_by_entry() {
   author="$(printf '%s' "$entry" | jq -r '.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")')"
   trailer="$(printf '%s' "$entry" | jq -r .trailer)"
   # A verify command runs in the checkout; when the config was fetched for another repo there is none.
-  [ "${WAIT_CONFIG_LOCAL:-1}" = "1" ] || return 1
+  [ "${WAIT_CONFIG_LOCAL:-0}" = "1" ] || return 1
   cmp="$(gh api "repos/$WAIT_REPO/compare/$from...$head" 2>/dev/null)" || return 1
   # One page only (<=250 commits, <=300 files): a truncated range is not covered.
   printf '%s' "$cmp" | jq -e '
