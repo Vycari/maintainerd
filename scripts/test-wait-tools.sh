@@ -26,6 +26,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 HEAD_SHA="aaaaaaa1111111111111111111111111111111111"
+BASE_SHA="dddddddd44444444444444444444444444444444"
 OLD_SHA="bbbbbbb2222222222222222222222222222222222"
 
 # The stub gh. Dispatches on the subcommand and serves $STUB_DIR fixtures.
@@ -57,7 +58,14 @@ case "$1 $2" in
     esac
     ;;
   "api graphql") serve threads ;;
-  "api -H") serve remoteconfig ;;
+  "api -H")
+    case "$*" in
+      # The PR base's config (mechanical commits): the checkout's own unless a case says otherwise.
+      *"?ref="*) if [ -f "$STUB_DIR/basecfg" ]; then serve basecfg; else cat "$STUB_DIR/../repo/.claude/maintainerd.json"; fi ;;
+      *) serve remoteconfig ;;
+    esac
+    ;;
+  "api repos/"*"/compare/dddddddd"*) if [ -f "$STUB_DIR/basecompare" ]; then serve basecompare; else serve compare; fi ;;
   "api repos/"*"/compare/"*) serve compare ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
@@ -88,9 +96,9 @@ greptile_text() { # <score> <sha7>
 }
 write_prview() { # <file-suffix or ""> <jq-filter-over-base>
   local base
-  base="$(jq -n --arg head "$HEAD_SHA" '{
+  base="$(jq -n --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '{
     number: 7, isDraft: false, state: "OPEN", labels: [], headRefOid: $head, headRefName: "feat",
-    isCrossRepository: false, body: "",
+    isCrossRepository: false, baseRefOid: $base, body: "",
     comments: [], reviews: [], reviewDecision: "", statusCheckRollup: []}')"
   printf '%s' "$base" | jq -c "$2" >"$STUB_DIR/prview$1"
 }
@@ -1095,7 +1103,7 @@ mech_case() { # <case> <score> <verify-exit>
   write_threads "" '[]'
 }
 GOOD1="$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG")"
-GOOD2="$(mech_commit c2 'example-bot' true "$MECH_MSG" 1 'example-bot[bot]')"
+GOOD2="$(mech_commit c2 'example-bot[bot]' true "$MECH_MSG" 1 'example-bot[bot]')"
 
 mech_case mech-ok 5/5 0
 mech_compare ahead "[$GOOD1,$GOOD2]"
@@ -1118,6 +1126,9 @@ mech_case mech-verify-fails 5/5 1
 mech_compare ahead "[$GOOD1]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: verify exiting non-zero -> stale (timeout)" timeout 2
+[ "$(calls_of 'compare/')" -ge 2 ] && [ "$(wc -l <"$CASE/verified")" = "1" ] &&
+  ok "mechanical: a failed verify is remembered, not re-run every poll" ||
+  bad "mechanical: failed-verify cache" "compare calls $(calls_of 'compare/'); verified: $(cat "$CASE/verified" 2>/dev/null)"
 
 mech_case mech-verify-missing 5/5 0
 rm "$CASE/bin/verify"
@@ -1161,9 +1172,15 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a range that edits the config file -> stale (timeout)" timeout 2
 
 mech_case mech-truncated 5/5 0
-jq -n -c --argjson c "[$GOOD1]" '{status: "ahead", total_commits: 400, commits: $c, files: []}' >"$STUB_DIR/compare"
+mech_compare ahead "[$GOOD1]"
+jq -c '.total_commits = 400' "$STUB_DIR/compare" >"$STUB_DIR/compare.new" && mv "$STUB_DIR/compare.new" "$STUB_DIR/compare"
 run_tool "$WFR" 7 "${FAST[@]}"
-expect "mechanical: a truncated compare page -> stale (timeout)" timeout 2
+expect "mechanical: a truncated compare page (commits) -> stale (timeout)" timeout 2
+
+mech_case mech-truncated-files 5/5 0
+mech_compare ahead "[$GOOD1]" "$(jq -n -c '[range(300) | {filename: "db/\(.).sql"}]')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a truncated compare page (300 files) -> stale (timeout)" timeout 2
 
 mech_case mech-diverged 5/5 0
 mech_compare diverged "[$GOOD1]"
@@ -1363,6 +1380,60 @@ mech_compare ahead "[$GOOD1]"
 printf 'ccccccc3333333333333333333333333333333333' >"$STUB_DIR/prhead"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: the head moved while verifying -> not covered (timeout)" timeout 2
+
+mech_case mech-user-lookalike 5/5 0
+mech_compare ahead "[$(mech_commit c1 example-bot true "$MECH_MSG" 1 example-bot)]"
+jq -c '.[].actor.login = "example-bot"' "$STUB_DIR/activity" >"$STUB_DIR/activity.new" && mv "$STUB_DIR/activity.new" "$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a user login equal to the App's slug is not the App -> stale (timeout)" timeout 2
+
+mech_case mech-app-form 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "app/example-bot", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an app/<slug> author is read as <slug>[bot] -> approved" approved 0
+
+mech_case mech-base-lacks-entry 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '%s' "$CFG_5" >"$STUB_DIR/basecfg"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an entry the PR base's config does not carry covers nothing -> stale (timeout)" timeout 2
+
+mech_case mech-basecfg-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '%s' "$CFG_5" >"$STUB_DIR/basecfg"
+touch "$STUB_DIR/basecfg.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable base config -> stale (timeout)" timeout 2
+
+mech_case mech-base-touches-config 5/5 0
+mech_compare ahead "[$GOOD1]"
+jq -c '.files = [{"filename":".claude/maintainerd.json"},{"filename":"db/0002.sql"}]' "$STUB_DIR/compare" >"$STUB_DIR/basecompare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR that edits the config before the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-base-touches-verifier 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+jq -c '.files = [{"filename":"scripts/check.sh"},{"filename":"db/0002.sql"}]' "$STUB_DIR/compare" >"$STUB_DIR/basecompare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR that edits the verifier before the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-verify-mutates 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "test ! -e marker && touch marker", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: each verify starts from a clean checkout of the scored commit -> approved" approved 0
 
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
