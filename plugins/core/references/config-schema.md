@@ -566,7 +566,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   base that changes during the wait is verified afresh. A timed-out or signal-killed run is not
   remembered.
 
-  After the whole range passes, the PR head is read again, and a head that moved means not covered.
+  After the whole range passes, the PR head and base are read again. A head or base that moved
+  means not covered: a moved base may have dropped the entry or tightened the verifier. So does an
+  answer that arrives after the deadline.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
   (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
@@ -576,8 +578,8 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   anywhere from its merge base, a range that is not one chain, a compare or activity result that is unreadable or truncated
   (more than 250 commits or 300 files; one page of 100 branch activity events), a range that edits
   `.claude/maintainerd.json` (it could have rewritten the entry that vouches for it) or the
-  verifier, a PR from a fork (its pushes are not this repo's activity), G or the base missing locally, the head
-  moving during the check, or a config fetched for a repo that is not the working checkout (there
+  verifier, a PR from a fork (its pushes are not this repo's activity), G or the base missing locally after the fetch, the head
+  or base moving during the check, or a config fetched for a repo that is not the working checkout (there
   is nothing to run `verify` in). Open review threads and a non-met score still decide as usual.
   Works in every `review.mode`. `verify` is a command from the base branch's config, run from the
   base branch's tree, so it is as trusted as the base branch itself. Keep it a read-only check.
