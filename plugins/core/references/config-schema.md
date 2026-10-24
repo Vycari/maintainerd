@@ -533,15 +533,39 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   for is not covered. A push from `before` to `after` accounts for every chain commit after
   `before` up to `after` when `before` is on the chain; otherwise only for `after` itself.
 
-  **Where `verify` runs.** In a detached worktree of the checkout at G (fetched from `origin` when
-  missing locally), with `{sha}` replaced by each commit's full sha, stdin/stdout/stderr on
-  `/dev/null`, and it must exit 0. Before each call the worktree is reset to a clean checkout of G
-  (`checkout -f`, `clean -fdx`), so one call cannot leave anything for the next. Git runs there
-  without hooks, LFS smudge or prompts, and the fetch and worktree setup share the deadline. So the verifier is the one the passing score reviewed, never the
-  working tree's copy or a version the range itself brought in; a range that changes a file named
-  by any `verify` argument (a leading `./` ignored) is refused outright. Each call gets at most 120
-  seconds, clipped to what is left of the wait's deadline. A result is remembered for the run, so a
-  commit is verified once, not once per poll; a timed-out or signal-killed run is not remembered.
+  **Where `verify` runs.** It runs in a detached worktree of the checkout at the PR's base commit
+  (`baseRefOid`). G and the head are fetched from `origin` along with it when missing locally.
+  - `{sha}` is replaced by each commit's full sha.
+  - stdin, stdout and stderr are `/dev/null`.
+  - It must exit 0.
+
+  The verifier and every file it reads (a sourced library, a Makefile, a package script) are
+  therefore the base branch's, the same commit the entry was read from. Nothing the PR changed is in
+  that tree, so a PR cannot loosen a dependency the argv does not name, and a verifier the base has
+  tightened since the PR branched applies at once. The PR's commits are objects in the shared store,
+  so the verifier inspects `{sha}` through git (`git show {sha}`, `git diff {sha}^ {sha}`), not
+  through the files on disk.
+
+  Before each call the worktree is reset to a clean checkout of the base (`checkout -f`,
+  `clean -fdx`), so one call cannot leave anything for the next. Git runs there without hooks, LFS
+  smudge or prompts. The fetch, the worktree setup and each reset are bounded by the wait's
+  deadline, and the deadline is checked before every API read and every commit.
+
+  As a second guard, a range that changes a file named by any `verify` argument (a leading `./`
+  ignored) is refused outright.
+
+  **Time limit.** Each call gets at most 120 seconds, clipped to what is left of the wait's
+  deadline. The call runs in its own process group:
+  - At the limit, the whole group gets TERM, then KILL 2 seconds later.
+  - A call stopped at its limit fails even if it then exits 0.
+  - Anything the call left running in its group is killed when it returns.
+  - A process that moves itself into another session is out of reach.
+
+  **Caching.** A result is remembered for the run, keyed by the base commit, the entry's whole
+  content and the commit sha. So a commit is verified once rather than once per poll, and an entry or
+  base that changes during the wait is verified afresh. A timed-out or signal-killed run is not
+  remembered.
+
   After the whole range passes, the PR head is read again, and a head that moved means not covered.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
@@ -552,11 +576,11 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   anywhere from its merge base, a range that is not one chain, a compare or activity result that is unreadable or truncated
   (more than 250 commits or 300 files; one page of 100 branch activity events), a range that edits
   `.claude/maintainerd.json` (it could have rewritten the entry that vouches for it) or the
-  verifier, a PR from a fork (its pushes are not this repo's activity), G missing locally, the head
+  verifier, a PR from a fork (its pushes are not this repo's activity), G or the base missing locally, the head
   moving during the check, or a config fetched for a repo that is not the working checkout (there
   is nothing to run `verify` in). Open review threads and a non-met score still decide as usual.
-  Works in every `review.mode`. `verify` runs a command from the repo's own config, so it is as
-  trusted as the config itself; keep it a read-only check.
+  Works in every `review.mode`. `verify` is a command from the base branch's config, run from the
+  base branch's tree, so it is as trusted as the base branch itself. Keep it a read-only check.
 - `review.replyNamesCommit` *(optional; default `false`)* — opt in to the `repo-ops`
   `review-reply-postcondition` hook (see that plugin's README). When `true`, a `gh pr comment` or
   inline-thread reply (`gh api …/pulls/N/comments/ID/replies`, or the GraphQL

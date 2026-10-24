@@ -182,7 +182,7 @@ commit in it is covered by one entry **from the PR base's config** (an entry the
 never counts): authored by the entry's `author`, committed by it or
 `web-flow`, GitHub-verified with reason `valid`, carrying the `<trailer>:` trailer, pushed to the
 branch by the entry's `author`, and passing the entry's `verify` argv (with `{sha}` replaced by the
-commit sha), run from a worktree at G. The full list is the schema entry for
+commit sha), run from a worktree of the PR's base commit, so the verifier and its files are the base branch's. The full list is the schema entry for
 `review.mechanicalCommits`. `wait-for-review.sh` does this and reports `approved` with a `covered:`
 line; do not try to reproduce it by hand, because the push-actor and worktree checks are what make
 it safe. Covered means no re-review request and
