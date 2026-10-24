@@ -53,12 +53,14 @@ echo "$*" >>"$STUB_DIR/.calls"
 case "$1 $2" in
   "pr view")
     case "$*" in
-      # The re-read after verifying: "<head> <base>", the base being the case's unless prbase says otherwise.
+      # The re-read after verifying: "<head> <base>", the base being the case's unless prbase says
+      # otherwise. A head-only re-read gets the head alone, so a tool that ignores the base is caught.
       *"--json headRefOid,baseRefOid "*)
         h="$(serve prhead)" || exit 1
         b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
         printf '%s %s\n' "$h" "${b:-dddddddd44444444444444444444444444444444}"
         ;;
+      *"--json headRefOid "*) serve prhead ;;
       *) serve prview ;;
     esac
     ;;
