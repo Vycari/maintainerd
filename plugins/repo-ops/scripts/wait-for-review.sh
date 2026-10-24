@@ -546,6 +546,7 @@ poll_once() {
 
   VERDICT=""
   DETAIL=""
+  COVERED_NOTE="" # a note from an earlier poll must never ride on this poll's verdict
   pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS" 2>&1)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1

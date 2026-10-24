@@ -53,7 +53,7 @@ case "$1 $2" in
   "pr view") serve prview ;;
   "api graphql") serve threads ;;
   "api -H") serve remoteconfig ;;
-  "api repos/o/r/compare/"*) serve compare ;;
+  "api repos/"*"/compare/"*) serve compare ;;
   "run view") serve joblog ;;
   "repo view") echo "o/r" ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
@@ -1170,6 +1170,18 @@ mech_compare ahead "[$GOOD1]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a score on the head approves without covering" approved 0
 expect_not_contains "mechanical: no covered note when the score names the head" "covered:"
+
+mech_case mech-note-no-leak 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 bbbbbbb)")]"
+write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+rm -f "$STUB_DIR/prview"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: approved mode, a later score on the head approves" approved 0
+expect_not_contains "mechanical: a covered note from an earlier poll does not leak onto it" "covered:"
 
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
