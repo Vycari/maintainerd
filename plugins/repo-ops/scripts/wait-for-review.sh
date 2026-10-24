@@ -55,7 +55,7 @@
 # worktree of the PR's base commit (so the verifier and everything it reads are the base branch's). A second detail line says so. Anything unreadable or doubtful (compare or activity
 # data truncated, the range touching the config file or the verifier, a fork, no local checkout or
 # no G, verify missing / failing / out of time, the head or base moving meanwhile, the review
-# decision or the open threads changing meanwhile) is NOT covered. The
+# decision, the open threads or the scores changing meanwhile) is NOT covered. The
 # default stage only: --stage vr does not use it. Only entries in the PR base's config count, and a
 # PR that edits the config or a verifier anywhere since its merge base is never covered.
 #
@@ -591,7 +591,7 @@ range_covered_by_entry() {
 MECH_NOTE=""
 covered_by_mechanical() {
   local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first="" cmp act g now_head
-  local basecfg entries bcmp now_gql now_threads
+  local basecfg entries bcmp now_pr now_gql now_threads now_scores
   MECH_NOTE=""
   MECH_HOLD=0
   [ -n "$scores" ] || return 1
@@ -669,13 +669,15 @@ covered_by_mechanical() {
   done <<<"$scores"
   [ "$total" -gt 0 ] || return 1
   # Verifying took time: the head it covered must still be the head, and the base whose config and
-  # verifier vouched for it must still be the base. The review decision and the open threads were
-  # read before verify ran, so a human's "changes requested" or a new thread that landed meanwhile
-  # must show here too: any change means not covered. The answer must also arrive before the deadline.
+  # verifier vouched for it must still be the base. The review decision, the open threads and the
+  # scores were read before verify ran, so a human's "changes requested", a new thread or a new
+  # score that landed meanwhile must show here too: any change means not covered. The answer must
+  # also arrive before the deadline.
   mech_budget 1 || return 1
   # A change sets MECH_HOLD: the caller must not fall back to another covered-staleness path, or
   # judge anything else, on the state it read before verify ran.
-  now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision -q '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
+  now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
+  now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
   [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || {
     MECH_HOLD=1
     return 1
@@ -684,6 +686,11 @@ covered_by_mechanical() {
   now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
   now_threads="$(unresolved_threads "$now_gql")" || return 1
   [ "$now_threads" = "$MECH_THREADS" ] || {
+    MECH_HOLD=1
+    return 1
+  }
+  now_scores="$(scores_of "$now_pr" "$now_gql" "$head")"
+  [ "$now_scores" = "$scores" ] || {
     MECH_HOLD=1
     return 1
   }
@@ -796,12 +803,25 @@ find_scores() {
   return 0
 }
 
+# scores_of <pr-json> <graphql-json-stream> <head> — the scores a poll judges on: rung 0 (the
+# configured App's check run on the head; may be PENDING or INCOMPLETE) when it answers, else the
+# bot ladder of find_scores. poll_once and the mechanical re-read share it so both read alike.
+scores_of() {
+  local pr="$1" gql="$2" head="$3" s="" editor
+  [ -z "$CHECK_NAME" ] || s="$(check_run_score "$gql" "$head")"
+  if [ -z "$s" ]; then
+    editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
+    s="$(find_scores "$pr" "$editor")"
+  fi
+  printf '%s' "$s"
+}
+
 # One poll. Sets VERDICT (empty = not decided yet) and DETAIL (extra stdout lines).
 VERDICT=""
 DETAIL=""
 LAST_ERR=""
 poll_once() {
-  local pr gql threads editor head scores line bot score reviewed num den
+  local pr gql threads head scores line bot score reviewed num den
   local unresolved n decision all_met stale
 
   VERDICT=""
@@ -880,7 +900,6 @@ poll_once() {
     LAST_ERR="could not parse review threads"
     return 1
   }
-  editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
   unresolved="$threads"
   n="$(printf '%s' "$unresolved" | jq 'length')"
   MECH_DECISION="$decision"
@@ -891,18 +910,14 @@ poll_once() {
   # one of them must meet the bar. Absence of any score is "not reviewed yet", never a pass.
   # Rung 0 first: the configured App's check run on this head, when it has a readable verdict. It
   # replaces the bot ladder below; if the run exists but is unreadable, the ladder decides.
-  scores=""
-  if [ -n "$CHECK_NAME" ]; then
-    scores="$(check_run_score "$gql" "$head")"
-    [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
-    if [ "$scores" = "INCOMPLETE" ]; then
-      # More check suites or runs than one query returns: the configured run may be on a page not
-      # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
-      LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
-      return 0
-    fi
+  scores="$(scores_of "$pr" "$gql" "$head")"
+  [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
+  if [ "$scores" = "INCOMPLETE" ]; then
+    # More check suites or runs than one query returns: the configured run may be on a page not
+    # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
+    LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+    return 0
   fi
-  [ -n "$scores" ] || scores="$(find_scores "$pr" "$editor")"
   stale=0
   all_met=1
   if [ -z "$THR_NUM" ]; then

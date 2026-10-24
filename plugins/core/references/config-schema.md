@@ -569,11 +569,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   base that changes during the wait is verified afresh. A timed-out or signal-killed run is not
   remembered.
 
-  After the whole range passes, the PR head, base, review decision and open review threads are read
-  again, because the decision and the threads were read before `verify` ran (up to 120 seconds per
+  After the whole range passes, the PR head, base, review decision, open review threads and the
+  bots' scores are read again, because they were read before `verify` ran (up to 120 seconds per
   commit). A head or base that moved means not covered: a moved base may have dropped the entry or
-  tightened the verifier. So does a review decision or a set of open threads that differs from what
-  the poll judged on (a late "changes requested", a new thread); the wait then decides on its next
+  tightened the verifier. So does a review decision, a set of open threads or a set of scores that
+  differs from what the poll judged on (a late "changes requested", a new thread, a new score on the
+  head); the wait then decides on its next
   read, and never falls back to first-line covered staleness on the old one. So does an answer that
   arrives after the deadline.
 
