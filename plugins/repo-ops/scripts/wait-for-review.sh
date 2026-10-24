@@ -46,11 +46,14 @@
 # that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
 # Mechanical commits (review.mechanicalCommits, any mode): a score at or above the threshold on an
-# ANCESTOR G of the head is not stale when every commit in G..head is a verified mechanical commit
-# of ONE configured entry: authored by its `author` login, GitHub-verified, carrying its `trailer:`
-# trailer, and passing its `verify` argv ({sha} substituted) run in the checkout. A second detail
-# line says so. Anything unreadable or doubtful (compare data truncated, the range touching the
-# config file, no local checkout, verify missing / failing / timing out) is NOT covered.
+# ANCESTOR G of the head is not stale when G..head is one linear chain of verified mechanical
+# commits of ONE configured entry: authored by its `author` login, committed by it or web-flow,
+# GitHub-verified (reason "valid"), carrying its `trailer:` trailer, pushed to the branch by that
+# login (activity API), and passing its `verify` argv ({sha} substituted) run from a detached
+# worktree at G. A second detail line says so. Anything unreadable or doubtful (compare or activity
+# data truncated, the range touching the config file or the verifier, a fork, no local checkout or
+# no G, verify missing / failing / out of time, the head moving meanwhile) is NOT covered. The
+# default stage only: --stage vr does not use it.
 #
 # Exit status: 0 approved / no-review-scheduled, 1 findings, 2 timeout, 3 the tool could not run
 # (bad usage, gh failure on the first read, invalid config). A verdict is never an error text and an
@@ -171,7 +174,7 @@ esac
 OWNER="${WAIT_REPO%%/*}"
 NAME="${WAIT_REPO##*/}"
 
-PR_FIELDS="number,isDraft,state,labels,headRefOid,body,comments,reviews,reviewDecision"
+PR_FIELDS="number,isDraft,state,labels,headRefOid,headRefName,isCrossRepository,body,comments,reviews,reviewDecision"
 # The latest edit of the PR description is asked for alongside the threads: the description's score
 # block is only evidence when a configured bot is who last wrote it (see find_scores).
 THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
@@ -372,44 +375,148 @@ mechanical_entries() {
           and all(.[]; type == "string" and (explode | any(. == 0) | not))))' 2>/dev/null
 }
 
-# range_covered_by_entry <entry-json> <from> <head> — true when EVERY commit in <from>..<head> is a
-# verified mechanical commit of this entry. Sets MECH_COUNT / MECH_NAME for the note.
+# Mechanical-commit state that lives for the whole run (poll_once runs in this shell, never in a
+# subshell). MECH_CACHE holds " <G>:<entry>:<sha>=<0|1> " verdicts so a commit's verify runs once per
+# run, not once per poll; a verify that timed out or died on a signal is not cached, so it is tried
+# again while time is left. MECH_WT_ROOT holds the detached worktrees verify runs in.
+MECH_CACHE=" "
+MECH_WT_ROOT=""
+MECH_TOP=""
+MECH_WT=""
+MECH_HEAD_REF=""
+MECH_CROSS=""
+mech_cleanup() {
+  local wt
+  [ -n "$MECH_WT_ROOT" ] || return 0
+  for wt in "$MECH_WT_ROOT"/*; do
+    [ -d "$wt" ] || continue
+    git -C "$MECH_TOP" worktree remove --force "$wt" >/dev/null 2>&1
+  done
+  rm -rf "$MECH_WT_ROOT"
+  git -C "$MECH_TOP" worktree prune >/dev/null 2>&1
+  return 0
+}
+trap mech_cleanup EXIT
+
+# run_bounded <seconds> <argv...> — runs argv with stdin/stdout/stderr on /dev/null and kills it
+# after <seconds>. Exit status is argv's, or 124 (timeout(1)) / >= 128 (a signal) when it was killed.
+run_bounded() {
+  local secs="$1" pid wd rc
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@" </dev/null >/dev/null 2>&1
+    return $?
+  fi
+  "$@" </dev/null >/dev/null 2>&1 &
+  pid=$!
+  (sleep "$secs" && kill -TERM "$pid") </dev/null >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid"
+  rc=$?
+  kill "$wd" >/dev/null 2>&1
+  wait "$wd" 2>/dev/null
+  return "$rc"
+}
+
+# mech_worktree <G> — sets MECH_WT to a detached worktree of this checkout at <G> (made once per
+# run; called directly, never in $(...), so the cleanup trap sees what it made). The
+# verifier runs there, from the version of the repo the passing score reviewed, never from the
+# working tree or from the range it is vouching for. Fails when <G> is not available locally.
+mech_worktree() {
+  local g="$1" wt
+  MECH_WT=""
+  if [ -z "$MECH_TOP" ]; then
+    MECH_TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$MECH_TOP" ] || return 1
+  fi
+  if [ -z "$MECH_WT_ROOT" ]; then
+    MECH_WT_ROOT="$(mktemp -d 2>/dev/null)" || return 1
+    [ -n "$MECH_WT_ROOT" ] || return 1
+  fi
+  wt="$MECH_WT_ROOT/$g"
+  if [ ! -d "$wt" ]; then
+    git -C "$MECH_TOP" worktree add --detach --quiet "$wt" "$g" >/dev/null 2>&1 || return 1
+  fi
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$g" ] || return 1
+  MECH_WT="$wt"
+}
+
+# range_covered_by_entry <entry-json> <entry-index> <compare-json> <activity-json> <G> — true when
+# EVERY commit in the compare range is a verified mechanical commit of this entry (the range's shape,
+# chain and config-file checks are the caller's). Sets MECH_COUNT / MECH_NAME for the note.
+#
+# Who made a commit is bound by three things GitHub records and a person cannot forge alone: the
+# author login (GitHub's mapping of the author email), the committer login (the bot itself, or
+# `web-flow` when GitHub made the commit on its behalf), and the push that put the commit on the
+# branch (the activity API's actor). Commit metadata alone is not enough: GitHub re-signs commits
+# as `web-flow` when a person rebases a branch in the web UI, so a person's action can yield a
+# commit that is authored by the bot, committed by web-flow and verified. The push actor is what
+# tells those apart.
 range_covered_by_entry() {
-  local entry="$1" from="$2" head="$3" cmp author trailer cfgpath sha n argv i
+  local entry="$1" idx="$2" cmp="$3" act="$4" g="$5" author trailer chain sha i key left secs rc wt
   local -a verify
   MECH_COUNT=0
   MECH_NAME="$(printf '%s' "$entry" | jq -r .name)"
   author="$(printf '%s' "$entry" | jq -r '.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")')"
   trailer="$(printf '%s' "$entry" | jq -r .trailer)"
-  # A verify command runs in the checkout; when the config was fetched for another repo there is none.
-  [ "${WAIT_CONFIG_LOCAL:-0}" = "1" ] || return 1
-  cmp="$(gh api "repos/$WAIT_REPO/compare/$from...$head" 2>/dev/null)" || return 1
-  # One page only (<=250 commits, <=300 files): a truncated range is not covered.
-  printf '%s' "$cmp" | jq -e '
-    .status == "ahead" and (.commits | type == "array") and (.commits | length) > 0
-    and (.total_commits == (.commits | length)) and (.commits | length) <= 250
-    and (.files | type == "array") and (.files | length) < 300' >/dev/null 2>&1 || return 1
-  # A range that edits the config could have rewritten the entry that vouches for it.
-  printf '%s' "$cmp" | jq -e '[.files[] | .filename, (.previous_filename // empty)]
-    | any(. == ".claude/maintainerd.json") | not' >/dev/null 2>&1 || return 1
-  # Every commit: single parent, authored by the entry's login, verified, carrying the trailer.
+  # Every commit: authored and committed by the entry's login (or committed by GitHub's web-flow on
+  # its behalf), verified with reason "valid", carrying the trailer.
   printf '%s' "$cmp" | jq -e --arg a "$author" --arg t "$trailer" '
+    def login: (. // "") | sub("^app/"; "") | sub("\\[bot\\]$"; "");
     .commits | all(.[];
-      ((.parents | length) == 1)
-      and ((.author.login // "") | sub("^app/"; "") | sub("\\[bot\\]$"; "")) == $a
+      (.author.login | login) == $a
+      and ((.committer.login | login) as $c | $c == $a or $c == "web-flow")
       and (.commit.verification.verified == true)
+      and (.commit.verification.reason == "valid")
       and ((.commit.message // "") | split("\n") | any(.[]; startswith($t + ":"))))' >/dev/null 2>&1 || return 1
+  # Every commit was put on the branch by a push whose actor is the entry's login. A push from
+  # <before> to <after> introduced the chain commits after <before> up to <after> when <before> is
+  # on the chain below <after>; otherwise it is only evidence for <after> itself. One page of
+  # activity: a commit the page does not attribute is not covered.
+  chain="$(printf '%s' "$cmp" | jq -c --arg g "$g" '[$g] + [.commits[].sha]')" || return 1
+  printf '%s' "$act" | jq -e --arg a "$author" --argjson chain "$chain" '
+    def login: (. // "") | sub("^app/"; "") | sub("\\[bot\\]$"; "");
+    type == "array"
+    and ([.[]
+        | select((.activity_type == "push" or .activity_type == "force_push") and ((.actor.login | login) == $a))
+        | . as $p
+        | ($chain | index($p.after)) as $j
+        | select($j != null and $j >= 1)
+        | ($chain | index($p.before)) as $i
+        | if $i != null and $i < $j then range($i + 1; $j + 1) else $j end] as $cov
+      | all(range(1; $chain | length); . as $k | $cov | any(.[]; . == $k)))' >/dev/null 2>&1 || return 1
+  # The verifier must not be one of the files the range changes: it would be vouching for itself.
+  printf '%s' "$cmp" | jq -e --argjson e "$entry" '
+    [.files[] | .filename, (.previous_filename // empty)] as $f
+    | [$e.verify[] | sub("^(\\./)+"; "")] | any(.[]; . as $x | $f | any(.[]; . == $x)) | not' >/dev/null 2>&1 || return 1
+  mech_worktree "$g" || return 1
+  wt="$MECH_WT"
   while IFS= read -r sha; do
     [ -n "$sha" ] || return 1
+    key="$g:$idx:$sha"
+    case "$MECH_CACHE" in
+      *" $key=1 "*)
+        MECH_COUNT=$((MECH_COUNT + 1))
+        continue
+        ;;
+      *" $key=0 "*) return 1 ;;
+    esac
+    # Each verify gets at most 120s, clipped to what is left of the wait's deadline.
+    left=$((deadline - $(now)))
+    [ "$left" -gt 0 ] || return 1
+    secs=120
+    [ "$left" -ge "$secs" ] || secs="$left"
     verify=()
     # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
     while IFS= read -r -d '' i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -j '.verify[] | ., "\u0000"')
     [ "${#verify[@]}" -gt 0 ] || return 1
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 120 "${verify[@]}" >/dev/null 2>&1 </dev/null || return 1
-    else
-      "${verify[@]}" >/dev/null 2>&1 </dev/null || return 1
+    (cd "$wt" && run_bounded "$secs" "${verify[@]}")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ] || MECH_CACHE="$MECH_CACHE$key=0 "
+      return 1
     fi
+    MECH_CACHE="$MECH_CACHE$key=1 "
     MECH_COUNT=$((MECH_COUNT + 1))
   done < <(printf '%s' "$cmp" | jq -r '.commits[].sha')
   [ "$MECH_COUNT" -gt 0 ]
@@ -420,10 +527,14 @@ range_covered_by_entry() {
 # bar is checked by the caller. Anything unreadable is "not covered".
 MECH_NOTE=""
 covered_by_mechanical() {
-  local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first=""
+  local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first="" cmp act g idx now_head
   MECH_NOTE=""
   [ -n "$scores" ] || return 1
   [ -n "$(mechanical_entries)" ] || return 1
+  # A verify command runs in the checkout; when the config was fetched for another repo there is none.
+  [ "${WAIT_CONFIG_LOCAL:-0}" = "1" ] || return 1
+  # A fork's branch is pushed outside this repo: its activity is not this repo's to read.
+  [ "$MECH_CROSS" = "false" ] && [ -n "$MECH_HEAD_REF" ] || return 1
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     bot="${line%% *}"
@@ -432,10 +543,36 @@ covered_by_mechanical() {
     [ -n "$reviewed" ] || return 1
     [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
     is_head_sha "$reviewed" "$head" && continue
+    cmp="$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" 2>/dev/null)" || return 1
+    # One page only (<=250 commits, <=300 files): a truncated range is not covered. The range is one
+    # linear chain from the reviewed commit G to the head: each commit's only parent is the one
+    # before it, so no commit outside the list is part of what the head contains.
+    printf '%s' "$cmp" | jq -e --arg r "$reviewed" --arg h "$head" '
+      .status == "ahead" and (.commits | type == "array") and (.commits | length) > 0
+      and (.total_commits == (.commits | length)) and (.commits | length) <= 250
+      and (.files | type == "array") and (.files | length) < 300
+      and ((.base_commit.sha // "") | test("^[0-9a-f]{40}$") and startswith($r))
+      and (.commits[-1].sha == $h)' >/dev/null 2>&1 || return 1
+    g="$(printf '%s' "$cmp" | jq -r '.base_commit.sha')"
+    printf '%s' "$cmp" | jq -e --arg g "$g" '
+      ([$g] + [.commits[].sha]) as $chain
+      | [range(0; .commits | length) as $k | .commits[$k]
+          | ((.parents | length) == 1 and .parents[0].sha == $chain[$k])] | all' >/dev/null 2>&1 || return 1
+    # A range that edits the config could have rewritten the entry that vouches for it.
+    printf '%s' "$cmp" | jq -e '[.files[] | .filename, (.previous_filename // empty)]
+      | any(. == ".claude/maintainerd.json") | not' >/dev/null 2>&1 || return 1
+    act="$(gh api "repos/$WAIT_REPO/activity?ref=$(printf '%s' "refs/heads/$MECH_HEAD_REF" | jq -sRr @uri)&per_page=100" 2>/dev/null)" || return 1
+    # Verify needs G (and is likely to want the range's commits); fetch them when they are missing.
+    if ! git cat-file -e "$g^{commit}" 2>/dev/null || ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+      GIT_TERMINAL_PROMPT=0 git fetch -q --no-tags origin "$g" "$head" >/dev/null 2>&1 </dev/null
+    fi
+    git cat-file -e "$g^{commit}" 2>/dev/null || return 1
     ok=0
+    idx=0
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      if range_covered_by_entry "$entry" "$reviewed" "$head"; then
+      idx=$((idx + 1))
+      if range_covered_by_entry "$entry" "$idx" "$cmp" "$act" "$g"; then
         ok=1
         total=$((total + MECH_COUNT))
         name="$MECH_NAME"
@@ -445,6 +582,9 @@ covered_by_mechanical() {
     [ "$ok" = "1" ] || return 1
   done <<<"$scores"
   [ "$total" -gt 0 ] || return 1
+  # Verifying took time: the head it covered must still be the head.
+  now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid -q .headRefOid 2>/dev/null)" || return 1
+  [ "$now_head" = "$head" ] || return 1
   MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
   return 0
 }
@@ -583,6 +723,8 @@ poll_once() {
     return 1
   }
   decision="$(printf '%s' "$pr" | jq -r '.reviewDecision // ""')"
+  MECH_HEAD_REF="$(printf '%s' "$pr" | jq -r '.headRefName // ""')"
+  MECH_CROSS="$(printf '%s' "$pr" | jq -r 'if .isCrossRepository == false then "false" else "true" end')"
 
   if [ "$STAGE" = "vr" ]; then
     gql="$(fetch_gql "$FL_NAME")" || {

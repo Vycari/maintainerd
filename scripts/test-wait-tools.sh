@@ -50,10 +50,16 @@ serve() {
 }
 echo "$*" >>"$STUB_DIR/.calls"
 case "$1 $2" in
-  "pr view") serve prview ;;
+  "pr view")
+    case "$*" in
+      *"--json headRefOid "*) serve prhead ;;
+      *) serve prview ;;
+    esac
+    ;;
   "api graphql") serve threads ;;
   "api -H") serve remoteconfig ;;
   "api repos/"*"/compare/"*) serve compare ;;
+  "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
   "repo view") echo "o/r" ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
@@ -83,7 +89,8 @@ greptile_text() { # <score> <sha7>
 write_prview() { # <file-suffix or ""> <jq-filter-over-base>
   local base
   base="$(jq -n --arg head "$HEAD_SHA" '{
-    number: 7, isDraft: false, state: "OPEN", labels: [], headRefOid: $head, body: "",
+    number: 7, isDraft: false, state: "OPEN", labels: [], headRefOid: $head, headRefName: "feat",
+    isCrossRepository: false, body: "",
     comments: [], reviews: [], reviewDecision: "", statusCheckRollup: []}')"
   printf '%s' "$base" | jq -c "$2" >"$STUB_DIR/prview$1"
 }
@@ -1032,24 +1039,37 @@ expect "first-line mode: a Greptile 5/5 on the head still approves with no VR ca
 expect_not_contains "first-line mode: no covered note when the score names the head" "covered:"
 
 # Mechanical commits (review.mechanicalCommits): verified bot commits after a passing score.
-# mech_commit <sha> <login|""> <verified> <message> [parents] -> one compare-API commit object
+# mech_commit <sha> <login|""> <verified> <message> [parents] [committer] [reason] -> one
+# compare-API commit object (mech_compare rewrites the parent chain).
 mech_commit() {
-  jq -n -c --arg sha "$1" --arg login "$2" --argjson v "$3" --arg msg "$4" --argjson p "${5:-1}" '{
+  jq -n -c --arg sha "$1" --arg login "$2" --argjson v "$3" --arg msg "$4" --argjson p "${5:-1}" \
+    --arg cm "${6:-web-flow}" --arg why "${7:-valid}" '{
     sha: $sha, parents: [range($p) | {sha: "p"}],
     author: (if $login == "" then null else {login: $login} end),
-    commit: {message: $msg, verification: {verified: $v}}}'
+    committer: (if $cm == "" then null else {login: $cm} end),
+    commit: {message: $msg, verification: {verified: $v, reason: $why}}}'
 }
 MECH_MSG=$'chore: renumber\n\nExample-Bot: renumber'
-# mech_compare <status> <commits-json-array> [files-json-array] -> compare fixture
+# mech_compare <status> <commits-json-array> [files-json-array] -> compare fixture for
+# $MECH_G...$HEAD_SHA: the last commit becomes the head and each commit's first parent the one
+# before it (G for the first). Also writes the default activity: the bot pushed each commit alone.
 MECH_FILES='[{"filename":"db/0002.sql"}]'
 mech_compare() {
-  jq -n -c --arg st "$1" --argjson c "$2" --argjson f "${3:-$MECH_FILES}" \
-    '{status: $st, total_commits: ($c | length), commits: $c, files: $f}' >"$STUB_DIR/compare"
+  jq -n -c --arg st "$1" --argjson c "$2" --argjson f "${3:-$MECH_FILES}" --arg g "$MECH_G" --arg h "$HEAD_SHA" '
+    ($c | .[-1].sha = $h) as $c
+    | ([$g] + [$c[].sha]) as $chain
+    | {status: $st, base_commit: {sha: $g}, total_commits: ($c | length),
+       commits: [range(0; $c | length) as $k | $c[$k] | .parents[0].sha = $chain[$k]], files: $f}' >"$STUB_DIR/compare"
+  jq -c '([.base_commit.sha] + [.commits[].sha]) as $ch
+    | [range(($ch | length) - 1; 0; -1) as $k
+       | {activity_type: "push", before: $ch[$k - 1], after: $ch[$k], actor: {login: "example-bot[bot]"}}]' \
+    "$STUB_DIR/compare" >"$STUB_DIR/activity"
 }
-# A verify command stub that records its argument; $1 is the exit status it returns.
+# A verify command stub that records its argument and the commit it runs at; $1 is its exit status.
 mech_verify() {
   mkdir -p "$CASE/bin"
-  printf '#!/usr/bin/env bash\necho "$*" >>"%s/verified"\nexit %s\n' "$CASE" "$1" >"$CASE/bin/verify"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/verified"\ngit rev-parse HEAD >>"%s/where" 2>/dev/null\nexit %s\n' \
+    "$CASE" "$CASE" "$1" >"$CASE/bin/verify"
   chmod +x "$CASE/bin/verify"
 }
 mech_config() { # -> writes config with one entry whose verify is the stub
@@ -1057,15 +1077,25 @@ mech_config() { # -> writes config with one entry whose verify is the stub
     mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
       verify: [$v, "--verify-commit", "{sha}"]}]}}')"
 }
+# mech_base <score> — commits the case repo as it stands (a new G) and points the score at it.
+mech_base() {
+  git -C "$CASE/repo" add -A >/dev/null 2>&1
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m base >/dev/null 2>&1
+  MECH_G="$(git -C "$CASE/repo" rev-parse HEAD)"
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$1" "${MECH_G:0:7}")")]"
+}
 mech_case() { # <case> <score> <verify-exit>
   new_case "$1"
+  git init -q "$CASE/repo" >/dev/null 2>&1
   mech_verify "$3"
   mech_config
-  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$2" bbbbbbb)")]"
+  mech_base "$2"
+  printf '%s' "$HEAD_SHA" >"$STUB_DIR/prhead"
   write_threads "" '[]'
 }
 GOOD1="$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG")"
-GOOD2="$(mech_commit c2 'example-bot' true "$MECH_MSG")"
+GOOD2="$(mech_commit c2 'example-bot' true "$MECH_MSG" 1 'example-bot[bot]')"
 
 mech_case mech-ok 5/5 0
 mech_compare ahead "[$GOOD1,$GOOD2]"
@@ -1076,6 +1106,8 @@ expect_contains "mechanical: the output names the entry" "(renumber)"
 [ "$(wc -l <"$CASE/verified")" = "2" ] && grep -q -- '--verify-commit c1' "$CASE/verified" &&
   ok "mechanical: verify ran once per commit with {sha} substituted" ||
   bad "mechanical: verify argv" "$(cat "$CASE/verified" 2>/dev/null)"
+[ "$(sort -u "$CASE/where" 2>/dev/null)" = "$MECH_G" ] && ok "mechanical: verify ran in a checkout of the scored commit" ||
+  bad "mechanical: verify location" "want $MECH_G; got $(cat "$CASE/where" 2>/dev/null)"
 
 mech_case mech-below-bar 4/5 0
 mech_compare ahead "[$GOOD1]"
@@ -1195,9 +1227,9 @@ expect "mechanical: a multi-line verify script runs whole (its failing line fail
 
 mech_case mech-multiline-argv-ok 5/5 0
 mech_compare ahead "[$GOOD1]"
-write_config "$(jq -n -c --arg out "$CASE/argv" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+write_config "$(jq -n -c --arg out "$CASE/argv" --arg h "$HEAD_SHA" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
-    verify: ["sh", "-c", ("test \"$1\" = c1\nprintf %s \"$2\" >" + $out), "x", "{sha}", "two\nlines"]}]}}')"
+    verify: ["sh", "-c", ("test \"$1\" = " + $h + "\nprintf %s \"$2\" >" + $out), "x", "{sha}", "two\nlines"]}]}}')"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a multi-line verify script that passes covers" approved 0
 [ "$(cat "$CASE/argv" 2>/dev/null)" = $'two\nlines' ] && ok "mechanical: an argument with a newline reaches verify intact" ||
@@ -1207,13 +1239,130 @@ mech_case mech-note-no-leak 5/5 0
 write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
     verify: [$v, "--verify-commit", "{sha}"]}]}}')"
-write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 bbbbbbb)")]"
+write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
 write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
 rm -f "$STUB_DIR/prview"
 mech_compare ahead "[$GOOD1]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: approved mode, a later score on the head approves" approved 0
 expect_not_contains "mechanical: a covered note from an earlier poll does not leak onto it" "covered:"
+
+mech_case mech-cache 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+write_prview "" ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+expect "mechanical: approved mode, no approval yet -> timeout" timeout 2
+[ "$(calls_of 'compare/')" -ge 2 ] && [ "$(wc -l <"$CASE/verified")" = "2" ] &&
+  ok "mechanical: each commit is verified once per run, not once per poll" ||
+  bad "mechanical: verify cache" "compare calls $(calls_of 'compare/'); verified: $(cat "$CASE/verified" 2>/dev/null)"
+
+mech_case mech-deadline 5/5 0
+printf '#!/usr/bin/env bash\nsleep 5\n' >"$CASE/bin/verify"
+mech_compare ahead "[$GOOD1]"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical: a slow verify -> timeout" timeout 2
+[ $((t1 - t0)) -le 4 ] && ok "mechanical: a slow verify cannot overrun the deadline" ||
+  bad "mechanical: deadline" "took $((t1 - t0))s against a 2s deadline"
+
+mech_case mech-verifier-in-range 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["./scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]" '[{"filename":"db/0002.sql"},{"filename":"scripts/check.sh"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a range that edits the verifier itself -> stale (timeout)" timeout 2
+
+mech_case mech-verifier-from-g 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify runs the scored commit's verifier, not the working tree's (fails there)" timeout 2
+
+mech_case mech-verifier-from-g-ok 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify runs the scored commit's verifier (passes there) -> approved" approved 0
+[ "$(git -C "$CASE/repo" worktree list --porcelain | grep -c '^worktree ')" = "1" ] &&
+  ok "mechanical: the verify worktree is removed on exit" ||
+  bad "mechanical: worktree left behind" "$(git -C "$CASE/repo" worktree list)"
+
+mech_case mech-human-committer 5/5 0
+mech_compare ahead "[$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG" 1 someone)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a bot-authored commit committed by a person -> stale (timeout)" timeout 2
+
+mech_case mech-bad-signature-reason 5/5 0
+mech_compare ahead "[$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG" 1 web-flow unknown_key)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verification reason other than valid -> stale (timeout)" timeout 2
+
+mech_case mech-human-push 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -c '.[1].actor.login = "someone"' "$STUB_DIR/activity" >"$STUB_DIR/activity.new" && mv "$STUB_DIR/activity.new" "$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a bot commit a person pushed (rebased in the web UI) -> stale (timeout)" timeout 2
+
+mech_case mech-one-push 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -n -c --arg g "$MECH_G" --arg h "$HEAD_SHA" \
+  '[{activity_type: "push", before: $g, after: $h, actor: {login: "example-bot[bot]"}}]' >"$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: one bot push carrying two commits covers both -> approved" approved 0
+
+mech_case mech-push-unseen 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -n -c --arg h "$HEAD_SHA" \
+  '[{activity_type: "force_push", before: "elsewhere", after: $h, actor: {login: "example-bot[bot]"}}]' >"$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit no bot push accounts for -> stale (timeout)" timeout 2
+
+mech_case mech-activity-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+touch "$STUB_DIR/activity.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable activity log -> stale (timeout)" timeout 2
+
+mech_case mech-broken-chain 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -c '.commits[1].parents[0].sha = "elsewhere"' "$STUB_DIR/compare" >"$STUB_DIR/compare.new" && mv "$STUB_DIR/compare.new" "$STUB_DIR/compare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: commits that are not one chain from the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-cross-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_prview "" ".isCrossRepository = true | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR from a fork -> stale (timeout)" timeout 2
+
+mech_case mech-head-moved 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf 'ccccccc3333333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the head moved while verifying -> not covered (timeout)" timeout 2
 
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
