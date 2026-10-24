@@ -45,14 +45,17 @@
 # first-line reviewer is happy on the head itself. A second detail line says so. Judging whether
 # that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
-# Mechanical commits (review.mechanicalCommits, any mode): a score at or above the threshold on an
+# Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
+# score names the head", so an approval still needs a happy first-line round on the head, and open
+# threads are reported as findings): a score at or above the threshold on an
 # ANCESTOR G of the head is not stale when G..head is one linear chain of verified mechanical
 # commits of ONE configured entry: authored by its `author` login, committed by it or web-flow,
 # GitHub-verified (reason "valid"), carrying its `trailer:` trailer, pushed to the branch by that
 # login (activity API), and passing its `verify` argv ({sha} substituted) run from a detached
 # worktree of the PR's base commit (so the verifier and everything it reads are the base branch's). A second detail line says so. Anything unreadable or doubtful (compare or activity
 # data truncated, the range touching the config file or the verifier, a fork, no local checkout or
-# no G, verify missing / failing / out of time, the head moving meanwhile) is NOT covered. The
+# no G, verify missing / failing / out of time, the head or base moving meanwhile, the review
+# decision, the open threads or the scores changing meanwhile) is NOT covered. The
 # default stage only: --stage vr does not use it. Only entries in the PR base's config count, and a
 # PR that edits the config or a verifier anywhere since its merge base is never covered.
 #
@@ -362,6 +365,13 @@ fetch_gql() {
   fi
 }
 
+# unresolved_threads <graphql-json-stream> — the open review threads of a fetch_gql result, as one
+# compact JSON array. poll_once and the mechanical re-read share it so both judge "open" alike.
+unresolved_threads() {
+  printf '%s' "$1" | jq -s -c '
+    [.[] | .data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)]'
+}
+
 # mechanical_entries [config-json] — prints the valid review.mechanicalCommits entries of the given
 # config (default: the loaded one) as compact JSON lines. An
 # entry missing a field, or of the wrong type, is dropped (fail closed: it can only cover less), and
@@ -390,6 +400,9 @@ MECH_WT=""
 MECH_HEAD_REF=""
 MECH_CROSS=""
 MECH_BASE=""
+MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
+MECH_THREADS=""  # must find both unchanged
+MECH_HOLD=0      # 1 when the final re-read saw the review state move: this poll decides nothing
 MECH_SECS=0
 mech_cleanup() {
   local wt
@@ -578,8 +591,9 @@ range_covered_by_entry() {
 MECH_NOTE=""
 covered_by_mechanical() {
   local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first="" cmp act g now_head
-  local basecfg entries bcmp
+  local basecfg entries bcmp now_pr now_gql now_threads now_scores
   MECH_NOTE=""
+  MECH_HOLD=0
   [ -n "$scores" ] || return 1
   [ -n "$(mechanical_entries)" ] || return 1
   # A verify command runs in the checkout; when the config was fetched for another repo there is none.
@@ -655,13 +669,67 @@ covered_by_mechanical() {
   done <<<"$scores"
   [ "$total" -gt 0 ] || return 1
   # Verifying took time: the head it covered must still be the head, and the base whose config and
-  # verifier vouched for it must still be the base. The answer must also arrive before the deadline.
-  mech_budget 1 || return 1
-  now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid -q '"\(.headRefOid) \(.baseRefOid)"' 2>/dev/null)" || return 1
-  [ "$now_head" = "$head $MECH_BASE" ] || return 1
-  mech_budget 1 || return 1
+  # verifier vouched for it must still be the base. The review decision, the open threads and the
+  # scores were read before verify ran, so a human's "changes requested", a new thread or a new
+  # score that landed meanwhile must show here too: any change means not covered. The answer must
+  # also arrive before the deadline. A change, or running out of time from here on, sets MECH_HOLD:
+  # the caller must not fall back to another covered-staleness path, or judge anything else, on the
+  # state it read before verify ran.
+  mech_budget 1 || {
+    MECH_HOLD=1
+    return 1
+  }
+  now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
+  now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
+  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || {
+    MECH_HOLD=1
+    return 1
+  }
+  mech_budget 1 || {
+    MECH_HOLD=1
+    return 1
+  }
+  now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
+  now_threads="$(unresolved_threads "$now_gql")" || return 1
+  [ "$now_threads" = "$MECH_THREADS" ] || {
+    MECH_HOLD=1
+    return 1
+  }
+  now_scores="$(scores_of "$now_pr" "$now_gql" "$head")"
+  [ "$now_scores" = "$scores" ] || {
+    MECH_HOLD=1
+    return 1
+  }
+  mech_budget 1 || {
+    MECH_HOLD=1
+    return 1
+  }
   MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
   return 0
+}
+
+# first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
+# or not) waives only "the score names the head"; an approval still needs the first-line reviewer's
+# completed, happy round on the head itself. Open review threads pass here because they are reported
+# as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
+# there is nothing more to hold. Anything unreadable is "no". The read is the last step of a
+# mechanical cover, so it too must end before the deadline; one that does not sets MECH_HOLD, so no
+# other covered-staleness path approves late in its place.
+first_line_waiver_ok() {
+  local head="$1" open="$2" vr_gql
+  [ "$FIRST_LINE" = "1" ] || return 0
+  [ "$open" -eq 0 ] || return 0
+  mech_budget 1 || {
+    MECH_HOLD=1
+    return 1
+  }
+  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  vr_read "$vr_gql" "$head"
+  [ "$(now)" -lt "$deadline" ] || {
+    MECH_HOLD=1
+    return 1
+  }
+  [ "$VR_KIND" = "happy" ]
 }
 
 # covered_by_first_line <scores> <head> — covered staleness (first-line mode only). True when every
@@ -754,17 +822,31 @@ find_scores() {
   return 0
 }
 
+# scores_of <pr-json> <graphql-json-stream> <head> — the scores a poll judges on: rung 0 (the
+# configured App's check run on the head; may be PENDING or INCOMPLETE) when it answers, else the
+# bot ladder of find_scores. poll_once and the mechanical re-read share it so both read alike.
+scores_of() {
+  local pr="$1" gql="$2" head="$3" s="" editor
+  [ -z "$CHECK_NAME" ] || s="$(check_run_score "$gql" "$head")"
+  if [ -z "$s" ]; then
+    editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
+    s="$(find_scores "$pr" "$editor")"
+  fi
+  printf '%s' "$s"
+}
+
 # One poll. Sets VERDICT (empty = not decided yet) and DETAIL (extra stdout lines).
 VERDICT=""
 DETAIL=""
 LAST_ERR=""
 poll_once() {
-  local pr gql threads editor head scores line bot score reviewed num den
+  local pr gql threads head scores line bot score reviewed num den
   local unresolved n decision all_met stale
 
   VERDICT=""
   DETAIL=""
   COVERED_NOTE="" # a note from an earlier poll must never ride on this poll's verdict
+  MECH_HOLD=0
   pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS" 2>&1)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
@@ -833,32 +915,28 @@ poll_once() {
     LAST_ERR="gh api graphql failed: $gql"
     return 1
   }
-  threads="$(printf '%s' "$gql" | jq -s -c '
-    [.[] | .data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)]')" || {
+  threads="$(unresolved_threads "$gql")" || {
     LAST_ERR="could not parse review threads"
     return 1
   }
-  editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
   unresolved="$threads"
   n="$(printf '%s' "$unresolved" | jq 'length')"
+  MECH_DECISION="$decision"
+  MECH_THREADS="$unresolved"
 
   # Is there a review of THIS head yet? Every configured bot that has published a score must have
   # scored the head (else its score is stale and we keep waiting), and — numeric threshold — every
   # one of them must meet the bar. Absence of any score is "not reviewed yet", never a pass.
   # Rung 0 first: the configured App's check run on this head, when it has a readable verdict. It
   # replaces the bot ladder below; if the run exists but is unreadable, the ladder decides.
-  scores=""
-  if [ -n "$CHECK_NAME" ]; then
-    scores="$(check_run_score "$gql" "$head")"
-    [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
-    if [ "$scores" = "INCOMPLETE" ]; then
-      # More check suites or runs than one query returns: the configured run may be on a page not
-      # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
-      LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
-      return 0
-    fi
+  scores="$(scores_of "$pr" "$gql" "$head")"
+  [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
+  if [ "$scores" = "INCOMPLETE" ]; then
+    # More check suites or runs than one query returns: the configured run may be on a page not
+    # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
+    LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+    return 0
   fi
-  [ -n "$scores" ] || scores="$(find_scores "$pr" "$editor")"
   stale=0
   all_met=1
   if [ -z "$THR_NUM" ]; then
@@ -869,7 +947,7 @@ poll_once() {
       reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
       is_head_sha "$reviewed" "$head" || stale=1
     done <<<"$scores"
-    if [ "$stale" = "1" ] && covered_by_mechanical "$scores" "$head"; then
+    if [ "$stale" = "1" ] && covered_by_mechanical "$scores" "$head" && first_line_waiver_ok "$head" "$n"; then
       stale=0
       COVERED_NOTE="$MECH_NOTE"
     fi
@@ -893,10 +971,17 @@ poll_once() {
     done <<<"$scores"
     # Covered staleness (first-line mode only): the bar was met on an ancestor of the head, nothing
     # is open, and the first-line reviewer is happy on the head itself.
-    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head"; then
-      # Verified mechanical commits since the passing score (any mode); open threads are reported below.
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head" &&
+      first_line_waiver_ok "$head" "$n"; then
+      # Verified mechanical commits since the passing score (any mode). Open threads are reported
+      # below; in first-line mode an approval also needs a happy first-line round on the head.
       stale=0
       COVERED_NOTE="$MECH_NOTE"
+    elif [ "$MECH_HOLD" = "1" ]; then
+      # The review state moved while verify ran: decide on the next poll's fresh read, never on
+      # this one's (the first-line path below would approve from it).
+      COVERED_NOTE=""
+      return 0
     elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
       covered_by_first_line "$scores" "$head"; then
       stale=0
