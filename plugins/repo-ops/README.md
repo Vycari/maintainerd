@@ -275,8 +275,8 @@ names its repository, and contradicting it with `-R` is an error.
   pushed by the bot (repository activity API), and `verify` exits 0 when run from a worktree of the PR's base commit, which is where the verifier and its files come from.
   It yields `approved` with a `covered:` line naming the entry. Anything doubtful stays stale, and
   the review decision and open threads are re-read after `verify` runs (a change means not covered).
-  Open threads still give `findings:<n>`; in first-line mode they, and an unhappy first-line round
-  on the head, keep the score stale (only "the score names the head" is waived). The default (final) stage only; `--stage vr` does not use it
+  Open threads still give `findings:<n>`; in first-line mode an approval also needs a happy
+  first-line round on the head (only "the score names the head" is waived). The default (final) stage only; `--stage vr` does not use it
   yet. See the schema entry for the fail-closed list.
 - `review.blockMarker` may be a bare name (`greptile_comment`), read as `<!-- greptile_comment -->`.
 

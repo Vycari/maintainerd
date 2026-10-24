@@ -1577,8 +1577,8 @@ mech_compare ahead "[$GOOD1,$GOOD2]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: each verify starts from a clean checkout of the base -> approved" approved 0
 
-# First-line mode: mechanical coverage waives only "the score names the head". The first-line
-# reviewer's happy round on the head and the no-open-thread condition still apply.
+# First-line mode: mechanical coverage waives only "the score names the head". It approves only with
+# no open thread and the first-line reviewer's happy round on the head; an open thread is reported.
 mech_fl_case() { # <case> <vr-happy:true|false> <threads-json>
   mech_case "$1" 5/5 0
   write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {mode: "first-line", approvalThreshold: "5/5",
@@ -1600,7 +1600,8 @@ expect "mechanical, first-line: VR not happy on the head -> not covered (timeout
 
 mech_fl_case mech-fl-open-thread true "$THREAD_OPEN"
 run_tool "$WFR" 7 "${FAST[@]}"
-expect "mechanical, first-line: an open thread -> not covered (timeout)" timeout 2
+expect "mechanical, first-line: covered, but an open thread is reported (findings:1)" findings:1 1
+expect_contains "mechanical, first-line: the open thread's detail is printed" "a.py:3"
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 

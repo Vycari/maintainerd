@@ -383,7 +383,8 @@ the response loop is the one in Phases 1-6, with these differences:
   current through those commits in the default (final) stage. `--stage vr` does not honour the key
   yet: the first-line reviewer still reviews each mechanical push, and that stage waits for its
   verdict as for any other push. In the final stage the coverage waives only "the score names the
-  head": no open thread and a happy first-line round on the head must still hold
+  head": an approval still needs no open thread and a happy first-line round on the head, and an
+  open thread is reported as findings
   ([Vycari/maintainerd#110](https://github.com/Vycari/maintainerd/issues/110)).
 - **Covered staleness.** A final-review score on an *ancestor* of the head still counts when the
   script reports `approved` with a `covered:` line: the score met the bar, no review thread is

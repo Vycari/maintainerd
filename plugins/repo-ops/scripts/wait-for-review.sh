@@ -46,7 +46,8 @@
 # that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
 # Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
-# score names the head", so no open thread and a happy first-line round on the head still apply): a score at or above the threshold on an
+# score names the head", so an approval still needs a happy first-line round on the head, and open
+# threads are reported as findings): a score at or above the threshold on an
 # ANCESTOR G of the head is not stale when G..head is one linear chain of verified mechanical
 # commits of ONE configured entry: authored by its `author` login, committed by it or web-flow,
 # GitHub-verified (reason "valid"), carrying its `trailer:` trailer, pushed to the branch by that
@@ -682,13 +683,14 @@ covered_by_mechanical() {
 }
 
 # first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
-# or not) waives only "the score names the head"; every other first-line condition still holds: no
-# open review thread, and the first-line reviewer has a completed, happy round on the head itself.
-# Outside first-line mode there is nothing more to hold. Anything unreadable is "no".
+# or not) waives only "the score names the head"; an approval still needs the first-line reviewer's
+# completed, happy round on the head itself. Open review threads pass here because they are reported
+# as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
+# there is nothing more to hold. Anything unreadable is "no".
 first_line_waiver_ok() {
   local head="$1" open="$2" vr_gql
   [ "$FIRST_LINE" = "1" ] || return 0
-  [ "$open" -eq 0 ] || return 1
+  [ "$open" -eq 0 ] || return 0
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   vr_read "$vr_gql" "$head"
   [ "$VR_KIND" = "happy" ]
@@ -926,8 +928,8 @@ poll_once() {
     # is open, and the first-line reviewer is happy on the head itself.
     if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head" &&
       first_line_waiver_ok "$head" "$n"; then
-      # Verified mechanical commits since the passing score (any mode). In first-line mode the
-      # first-line conditions still hold; elsewhere open threads are reported below.
+      # Verified mechanical commits since the passing score (any mode). Open threads are reported
+      # below; in first-line mode an approval also needs a happy first-line round on the head.
       stale=0
       COVERED_NOTE="$MECH_NOTE"
     elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&

@@ -582,9 +582,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   after the deadline.
 
   **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
-  Every other first-line condition still holds: no review thread is open, and the first-line
-  reviewer has a completed, happy round on the head itself. Without both, the score stays stale and
-  the wait keeps going.
+  An approval still needs no open review thread and a completed, happy first-line round on the head
+  itself. An open thread is reported as `findings:<n>`, as in any mode; with none open and no happy
+  round on the head, the score stays stale and the wait keeps going.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
   (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
