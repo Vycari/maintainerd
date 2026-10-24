@@ -61,12 +61,18 @@ case "$1 $2" in
   "api -H")
     case "$*" in
       # The PR base's config (mechanical commits): the checkout's own unless a case says otherwise.
-      *"?ref="*) if [ -f "$STUB_DIR/basecfg" ]; then serve basecfg; else cat "$STUB_DIR/../repo/.claude/maintainerd.json"; fi ;;
+      *"?ref="*) if ls "$STUB_DIR"/basecfg* >/dev/null 2>&1; then serve basecfg; else cat "$STUB_DIR/../repo/.claude/maintainerd.json"; fi ;;
       *) serve remoteconfig ;;
     esac
     ;;
-  "api repos/"*"/compare/dddddddd"*) if [ -f "$STUB_DIR/basecompare" ]; then serve basecompare; else serve compare; fi ;;
-  "api repos/"*"/compare/"*) serve compare ;;
+  "api repos/"*"/compare/"*)
+    # The PR base's compare (mechanical commits): base...head, the base named by the case.
+    b="$(cat "$STUB_DIR/.base" 2>/dev/null)"
+    case "$2" in
+      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then serve basecompare; else serve compare; fi ;;
+      *) serve compare ;;
+    esac
+    ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
   "repo view") echo "o/r" ;;
@@ -1085,6 +1091,15 @@ mech_config() { # -> writes config with one entry whose verify is the stub
     mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
       verify: [$v, "--verify-commit", "{sha}"]}]}}')"
 }
+# mech_pr_base — commits the case repo as it stands as the PR's base commit (baseRefOid): the tree
+# verify runs from. Later prview fixtures carry it.
+mech_pr_base() {
+  git -C "$CASE/repo" add -A >/dev/null 2>&1
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m 'pr base' >/dev/null 2>&1
+  BASE_SHA="$(git -C "$CASE/repo" rev-parse HEAD)"
+  printf '%s' "$BASE_SHA" >"$STUB_DIR/.base"
+}
 # mech_base <score> — commits the case repo as it stands (a new G) and points the score at it.
 mech_base() {
   git -C "$CASE/repo" add -A >/dev/null 2>&1
@@ -1098,6 +1113,7 @@ mech_case() { # <case> <score> <verify-exit>
   git init -q "$CASE/repo" >/dev/null 2>&1
   mech_verify "$3"
   mech_config
+  mech_pr_base
   mech_base "$2"
   printf '%s' "$HEAD_SHA" >"$STUB_DIR/prhead"
   write_threads "" '[]'
@@ -1114,8 +1130,8 @@ expect_contains "mechanical: the output names the entry" "(renumber)"
 [ "$(wc -l <"$CASE/verified")" = "2" ] && grep -q -- '--verify-commit c1' "$CASE/verified" &&
   ok "mechanical: verify ran once per commit with {sha} substituted" ||
   bad "mechanical: verify argv" "$(cat "$CASE/verified" 2>/dev/null)"
-[ "$(sort -u "$CASE/where" 2>/dev/null)" = "$MECH_G" ] && ok "mechanical: verify ran in a checkout of the scored commit" ||
-  bad "mechanical: verify location" "want $MECH_G; got $(cat "$CASE/where" 2>/dev/null)"
+[ "$(sort -u "$CASE/where" 2>/dev/null)" = "$BASE_SHA" ] && ok "mechanical: verify ran in a checkout of the PR's base commit" ||
+  bad "mechanical: verify location" "want $BASE_SHA; got $(cat "$CASE/where" 2>/dev/null)"
 
 mech_case mech-below-bar 4/5 0
 mech_compare ahead "[$GOOD1]"
@@ -1290,6 +1306,7 @@ mech_case mech-verifier-in-range 5/5 0
 mkdir -p "$CASE/repo/scripts"
 printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
 chmod +x "$CASE/repo/scripts/check.sh"
+mech_pr_base
 mech_base 5/5
 write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
@@ -1298,34 +1315,61 @@ mech_compare ahead "[$GOOD1]" '[{"filename":"db/0002.sql"},{"filename":"scripts/
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a range that edits the verifier itself -> stale (timeout)" timeout 2
 
-mech_case mech-verifier-from-g 5/5 0
-mkdir -p "$CASE/repo/scripts"
-printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
-chmod +x "$CASE/repo/scripts/check.sh"
-mech_base 5/5
-printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
-write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
-  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
-    verify: ["scripts/check.sh", "{sha}"]}]}}')"
-mech_compare ahead "[$GOOD1]"
+# The verifier and what it reads come from the PR base, so a PR cannot weaken a file the verify
+# argv does not name (a sourced library) before the scored commit.
+mech_lib_case() { # <case> <base lib exit> <PR lib exit>
+  mech_case "$1" 5/5 0
+  printf 'check() { return %s; }\n' "$2" >"$CASE/repo/lib.sh"
+  mech_pr_base
+  printf 'check() { return %s; }\n' "$3" >"$CASE/repo/lib.sh"
+  mech_base 5/5
+  write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+    mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+      verify: ["sh", "-c", ". ./lib.sh && check", "x", "{sha}"]}]}}')"
+  mech_compare ahead "[$GOOD1]"
+}
+mech_lib_case mech-verifier-from-base 1 0
 run_tool "$WFR" 7 "${FAST[@]}"
-expect "mechanical: verify runs the scored commit's verifier, not the working tree's (fails there)" timeout 2
+expect "mechanical: a PR that loosens a library the verifier sources is not trusted (base's fails) -> timeout" timeout 2
 
-mech_case mech-verifier-from-g-ok 5/5 0
-mkdir -p "$CASE/repo/scripts"
-printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
-chmod +x "$CASE/repo/scripts/check.sh"
-mech_base 5/5
-printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
-write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
-  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
-    verify: ["scripts/check.sh", "{sha}"]}]}}')"
-mech_compare ahead "[$GOOD1]"
+mech_lib_case mech-verifier-from-base-ok 0 1
 run_tool "$WFR" 7 "${FAST[@]}"
-expect "mechanical: verify runs the scored commit's verifier (passes there) -> approved" approved 0
+expect "mechanical: verify runs the base's verifier and library (passes there) -> approved" approved 0
 [ "$(git -C "$CASE/repo" worktree list --porcelain | grep -c '^worktree ')" = "1" ] &&
   ok "mechanical: the verify worktree is removed on exit" ||
   bad "mechanical: worktree left behind" "$(git -C "$CASE/repo" worktree list)"
+
+# The base branch tightened its verifier after the PR branched: the base's version is the one run.
+mech_case mech-base-tightened 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
+mech_pr_base
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a verifier the base tightened since the PR branched applies -> timeout" timeout 2
+
+# A base whose entry changes between polls gets a fresh verify, never the old entry's cached pass.
+mech_case mech-cache-entry-changed 5/5 0
+jq -n -c '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["true", "{sha}"]}]}}' >"$STUB_DIR/basecfg.1"
+jq -n -c '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["false", "{sha}"]}]}}' >"$STUB_DIR/basecfg.2"
+write_config "$(cat "$STUB_DIR/basecfg.1")"
+write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+rm -f "$STUB_DIR/prview"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the base's entry changed to a failing verify -> the old pass is not reused (timeout)" timeout 2
 
 # The time limit holds against verifiers that resist it, and nothing they start survives it.
 mech_case mech-term-exits-zero 5/5 0
@@ -1450,6 +1494,7 @@ mech_case mech-base-touches-verifier 5/5 0
 mkdir -p "$CASE/repo/scripts"
 printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
 chmod +x "$CASE/repo/scripts/check.sh"
+mech_pr_base
 mech_base 5/5
 write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
@@ -1465,7 +1510,7 @@ write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-a
     verify: ["sh", "-c", "test ! -e marker && touch marker", "x", "{sha}"]}]}}')"
 mech_compare ahead "[$GOOD1,$GOOD2]"
 run_tool "$WFR" 7 "${FAST[@]}"
-expect "mechanical: each verify starts from a clean checkout of the scored commit -> approved" approved 0
+expect "mechanical: each verify starts from a clean checkout of the base -> approved" approved 0
 
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
