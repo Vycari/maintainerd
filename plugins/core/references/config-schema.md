@@ -234,6 +234,9 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // hook, which warns when `gh pr create` carries this label
                                      // without `--draft` — the bot schedules its review on the open
                                      // event, before a label applied in the same command lands.
+    "mechanicalCommits": [],         // optional. Verified mechanical bot commits that do not make a
+                                     // passing score stale; see the key's entry below. Absent/empty
+                                     // = any commit after the scored sha is stale.
     "replyNamesCommit":  false,      // opt-in. true = the repo-ops `review-reply-postcondition` hook
                                      // requires a review reply that claims a fix to name a commit
                                      // reachable from HEAD. false/absent = the hook says nothing.
@@ -499,6 +502,27 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   for on a `gh pr create` — many review bots schedule their run on the `opened` webhook, before a
   label applied in the same command lands, so the label alone doesn't reliably suppress the review.
   `null`/absent = this repo has no such label; the hook says nothing.
+- `review.mechanicalCommits` *(optional; default absent = off)* — an array of entries that let a
+  score survive small, verified, machine-made commits (a bot that renumbers a migration, say).
+  Each entry has four required fields: `name` (a label for the round summary), `author` (the bot's
+  GitHub login, compared with `app/` and `[bot]` stripped), `trailer` (a commit-message trailer
+  key, matched case-sensitively at the start of a line as `<trailer>:`), and `verify` (a non-empty
+  argv array of strings, with `{sha}` replaced by each commit's full sha). Example:
+  `{"name": "renumber", "author": "example-bot[bot]", "trailer": "Example-Bot", "verify": ["some",
+  "command", "--verify-commit", "{sha}"]}`. A score at or above the threshold on commit G is **not
+  stale** for a head H when every commit in G..H (a) has a single parent, (b) is authored by
+  the entry's `author`, (c) has GitHub `verification.verified == true`, (d) carries the trailer,
+  and (e) passes `verify`, which is run in the repo checkout and must exit 0 (120 seconds at most
+  where `timeout` exists). One entry must cover the whole range. `address-review` and
+  `wait-for-review.sh` then do not wait for or request a re-review, and say so (`covered:` line;
+  the round summary). **Fail closed:** any doubt makes the score stale exactly as without the key
+  — an entry missing a field (it is ignored), a `verify` that is absent, errors or times out, a
+  human or unverified commit anywhere in the range, a compare result that is truncated (more than
+  250 commits or 300 files), a range that edits `.claude/maintainerd.json` (it could have rewritten
+  the entry that vouches for it), or a config fetched for a repo that is not the working checkout
+  (there is nothing to run `verify` in). Open review threads and a non-met score still decide as
+  usual. Works in every `review.mode`. `verify` runs a command from the repo's own config, so it is
+  as trusted as the config itself; keep it a read-only check.
 - `review.replyNamesCommit` *(optional; default `false`)* — opt in to the `repo-ops`
   `review-reply-postcondition` hook (see that plugin's README). When `true`, a `gh pr comment` or
   inline-thread reply (`gh api …/pulls/N/comments/ID/replies`, or the GraphQL

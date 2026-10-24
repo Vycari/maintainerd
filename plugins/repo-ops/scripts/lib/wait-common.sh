@@ -123,6 +123,7 @@ resolve_repo() {
 load_config() {
   local f here out
   WAIT_CONFIG_JSON="{}"
+  WAIT_CONFIG_LOCAL=1 # 0 when the config came from another repo: the cwd is then not its checkout
   if [ -n "$WAIT_CONFIG" ]; then
     [ -f "$WAIT_CONFIG" ] || die 3 "--config $WAIT_CONFIG does not exist"
     WAIT_CONFIG_JSON="$(cat "$WAIT_CONFIG")"
@@ -137,6 +138,7 @@ load_config() {
       f="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/maintainerd.json"
       [ ! -f "$f" ] || WAIT_CONFIG_JSON="$(cat "$f")"
     else
+      WAIT_CONFIG_LOCAL=0
       if out="$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WAIT_REPO/contents/.claude/maintainerd.json" 2>&1)"; then
         WAIT_CONFIG_JSON="$out"
       else

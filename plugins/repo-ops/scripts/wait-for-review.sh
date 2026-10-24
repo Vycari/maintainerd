@@ -45,6 +45,13 @@
 # first-line reviewer is happy on the head itself. A second detail line says so. Judging whether
 # that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
+# Mechanical commits (review.mechanicalCommits, any mode): a score at or above the threshold on an
+# ANCESTOR G of the head is not stale when every commit in G..head is a verified mechanical commit
+# of ONE configured entry: authored by its `author` login, GitHub-verified, carrying its `trailer:`
+# trailer, and passing its `verify` argv ({sha} substituted) run in the checkout. A second detail
+# line says so. Anything unreadable or doubtful (compare data truncated, the range touching the
+# config file, no local checkout, verify missing / failing / timing out) is NOT covered.
+#
 # Exit status: 0 approved / no-review-scheduled, 1 findings, 2 timeout, 3 the tool could not run
 # (bad usage, gh failure on the first read, invalid config). A verdict is never an error text and an
 # error is never a verdict.
@@ -69,7 +76,7 @@
 # Config (.claude/maintainerd.json, see references/config-schema.md): review.waitTimeoutMinutes,
 # review.approvalThreshold, review.bots, review.skipLabel, review.checkName, review.checkApp,
 # review.blockMarker (a bare name such as `greptile_comment` is read as `<!-- greptile_comment -->`),
-# review.mode, review.firstLine.checkName / checkApp / unavailableMinutes.
+# review.mode, review.firstLine.checkName / checkApp / unavailableMinutes, review.mechanicalCommits.
 # Flags for tests and tuning: --timeout-seconds N, --interval-seconds N (default 180, the floor a
 # polite poller keeps against the API), --config FILE.
 #
@@ -351,6 +358,94 @@ fetch_gql() {
   fi
 }
 
+# mechanical_entries — prints the valid review.mechanicalCommits entries as compact JSON lines. An
+# entry missing a field, or of the wrong type, is dropped (fail closed: it can only cover less).
+mechanical_entries() {
+  printf '%s' "$WAIT_CONFIG_JSON" | jq -c '
+    ((.review // {}).mechanicalCommits // []) | if type == "array" then .[] else empty end
+    | select(type == "object"
+        and (.name | type == "string" and length > 0)
+        and (.author | type == "string" and length > 0)
+        and (.trailer | type == "string" and length > 0)
+        and (.verify | type == "array" and length > 0 and all(.[]; type == "string")))' 2>/dev/null
+}
+
+# range_covered_by_entry <entry-json> <from> <head> — true when EVERY commit in <from>..<head> is a
+# verified mechanical commit of this entry. Sets MECH_COUNT / MECH_NAME for the note.
+range_covered_by_entry() {
+  local entry="$1" from="$2" head="$3" cmp author trailer cfgpath sha n argv i
+  local -a verify
+  MECH_COUNT=0
+  MECH_NAME="$(printf '%s' "$entry" | jq -r .name)"
+  author="$(printf '%s' "$entry" | jq -r '.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")')"
+  trailer="$(printf '%s' "$entry" | jq -r .trailer)"
+  # A verify command runs in the checkout; when the config was fetched for another repo there is none.
+  [ "${WAIT_CONFIG_LOCAL:-1}" = "1" ] || return 1
+  cmp="$(gh api "repos/$WAIT_REPO/compare/$from...$head" 2>/dev/null)" || return 1
+  # One page only (<=250 commits, <=300 files): a truncated range is not covered.
+  printf '%s' "$cmp" | jq -e '
+    .status == "ahead" and (.commits | type == "array") and (.commits | length) > 0
+    and (.total_commits == (.commits | length)) and (.commits | length) <= 250
+    and (.files | type == "array") and (.files | length) < 300' >/dev/null 2>&1 || return 1
+  # A range that edits the config could have rewritten the entry that vouches for it.
+  printf '%s' "$cmp" | jq -e '[.files[] | .filename, (.previous_filename // empty)]
+    | any(. == ".claude/maintainerd.json") | not' >/dev/null 2>&1 || return 1
+  # Every commit: single parent, authored by the entry's login, verified, carrying the trailer.
+  printf '%s' "$cmp" | jq -e --arg a "$author" --arg t "$trailer" '
+    .commits | all(.[];
+      ((.parents | length) == 1)
+      and ((.author.login // "") | sub("^app/"; "") | sub("\\[bot\\]$"; "")) == $a
+      and (.commit.verification.verified == true)
+      and ((.commit.message // "") | split("\n") | any(.[]; startswith($t + ":"))))' >/dev/null 2>&1 || return 1
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || return 1
+    verify=()
+    while IFS= read -r i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -r '.verify[]')
+    [ "${#verify[@]}" -gt 0 ] || return 1
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 120 "${verify[@]}" >/dev/null 2>&1 </dev/null || return 1
+    else
+      "${verify[@]}" >/dev/null 2>&1 </dev/null || return 1
+    fi
+    MECH_COUNT=$((MECH_COUNT + 1))
+  done < <(printf '%s' "$cmp" | jq -r '.commits[].sha')
+  [ "$MECH_COUNT" -gt 0 ]
+}
+
+# covered_by_mechanical <scores> <head> — true when every published score names an ancestor of the
+# head (or the head) and each stale one's range is covered by one configured mechanical entry. The
+# bar is checked by the caller. Anything unreadable is "not covered".
+MECH_NOTE=""
+covered_by_mechanical() {
+  local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first=""
+  MECH_NOTE=""
+  [ -n "$scores" ] || return 1
+  [ -n "$(mechanical_entries)" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    bot="${line%% *}"
+    score="$(printf '%s' "$line" | cut -d' ' -f2)"
+    reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+    [ -n "$reviewed" ] || return 1
+    [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
+    is_head_sha "$reviewed" "$head" && continue
+    ok=0
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      if range_covered_by_entry "$entry" "$reviewed" "$head"; then
+        ok=1
+        total=$((total + MECH_COUNT))
+        name="$MECH_NAME"
+        break
+      fi
+    done < <(mechanical_entries)
+    [ "$ok" = "1" ] || return 1
+  done <<<"$scores"
+  [ "$total" -gt 0 ] || return 1
+  MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
+  return 0
+}
+
 # covered_by_first_line <scores> <head> — covered staleness (first-line mode only). True when every
 # published score is at the bar, names an ANCESTOR of the head (or the head), and the first-line
 # reviewer has a completed, happy round on the head. Anything unreadable is "not covered".
@@ -552,6 +647,10 @@ poll_once() {
       reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
       is_head_sha "$reviewed" "$head" || stale=1
     done <<<"$scores"
+    if [ "$stale" = "1" ] && covered_by_mechanical "$scores" "$head"; then
+      stale=0
+      COVERED_NOTE="$MECH_NOTE"
+    fi
     [ "$stale" = "0" ] || return 0
     [ "$decision" = "APPROVED" ] || [ -n "$scores" ] || return 0
   else
@@ -572,7 +671,11 @@ poll_once() {
     done <<<"$scores"
     # Covered staleness (first-line mode only): the bar was met on an ancestor of the head, nothing
     # is open, and the first-line reviewer is happy on the head itself.
-    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head"; then
+      # Verified mechanical commits since the passing score (any mode); open threads are reported below.
+      stale=0
+      COVERED_NOTE="$MECH_NOTE"
+    elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
       covered_by_first_line "$scores" "$head"; then
       stale=0
     else
@@ -597,7 +700,10 @@ poll_once() {
   fi
 
   if [ -z "$THR_NUM" ]; then
-    [ "$decision" = "APPROVED" ] && VERDICT="approved"
+    if [ "$decision" = "APPROVED" ]; then
+      VERDICT="approved"
+      DETAIL="$COVERED_NOTE"
+    fi
     return 0
   fi
   if [ "$all_met" = "1" ]; then

@@ -59,6 +59,12 @@ the source of truth for what's valid. Then run every check below, collecting fin
   `guidelines`. Missing → **FAIL**.
 - `language` is `python` | `typescript` (else **WARN**: audits fall back to language-generic checks).
 - Types match the schema (arrays are arrays, caps are numbers, `commands.*` are strings or `null`).
+- `review.mechanicalCommits`, when present, is an array of objects that each carry `name`, `author`
+  and `trailer` as non-empty strings and `verify` as a non-empty array of strings → else **WARN**
+  naming the entry (an entry with a missing or mistyped field is ignored by the wait tools, so its
+  commits keep making a score stale). Also **WARN** when no `verify` element contains `{sha}`
+  (the check would not look at the commit it is vouching for), and when `author` is not
+  `*[bot]`-shaped and not an exact login you recognise (advisory).
 - **Unknown keys** not in the schema → **WARN** (usually a typo, e.g. `commands.tests` for `test`;
   the skill reading it will silently miss the value).
 

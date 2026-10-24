@@ -1031,6 +1031,146 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "first-line mode: a Greptile 5/5 on the head still approves with no VR call" approved 0
 expect_not_contains "first-line mode: no covered note when the score names the head" "covered:"
 
+# Mechanical commits (review.mechanicalCommits): verified bot commits after a passing score.
+# mech_commit <sha> <login|""> <verified> <message> [parents] -> one compare-API commit object
+mech_commit() {
+  jq -n -c --arg sha "$1" --arg login "$2" --argjson v "$3" --arg msg "$4" --argjson p "${5:-1}" '{
+    sha: $sha, parents: [range($p) | {sha: "p"}],
+    author: (if $login == "" then null else {login: $login} end),
+    commit: {message: $msg, verification: {verified: $v}}}'
+}
+MECH_MSG=$'chore: renumber\n\nExample-Bot: renumber'
+# mech_compare <status> <commits-json-array> [files-json-array] -> compare fixture
+MECH_FILES='[{"filename":"db/0002.sql"}]'
+mech_compare() {
+  jq -n -c --arg st "$1" --argjson c "$2" --argjson f "${3:-$MECH_FILES}" \
+    '{status: $st, total_commits: ($c | length), commits: $c, files: $f}' >"$STUB_DIR/compare"
+}
+# A verify command stub that records its argument; $1 is the exit status it returns.
+mech_verify() {
+  mkdir -p "$CASE/bin"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/verified"\nexit %s\n' "$CASE" "$1" >"$CASE/bin/verify"
+  chmod +x "$CASE/bin/verify"
+}
+mech_config() { # -> writes config with one entry whose verify is the stub
+  write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+    mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+      verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+}
+mech_case() { # <case> <score> <verify-exit>
+  new_case "$1"
+  mech_verify "$3"
+  mech_config
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$2" bbbbbbb)")]"
+  write_threads "" '[]'
+}
+GOOD1="$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG")"
+GOOD2="$(mech_commit c2 'example-bot' true "$MECH_MSG")"
+
+mech_case mech-ok 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a passing score + verified bot commits that verify -> approved" approved 0
+expect_contains "mechanical: the output says why the older score stands" "covered:"
+expect_contains "mechanical: the output names the entry" "(renumber)"
+[ "$(wc -l <"$CASE/verified")" = "2" ] && grep -q -- '--verify-commit c1' "$CASE/verified" &&
+  ok "mechanical: verify ran once per commit with {sha} substituted" ||
+  bad "mechanical: verify argv" "$(cat "$CASE/verified" 2>/dev/null)"
+
+mech_case mech-below-bar 4/5 0
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score under the bar is never covered -> timeout" timeout 2
+
+mech_case mech-verify-fails 5/5 1
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify exiting non-zero -> stale (timeout)" timeout 2
+
+mech_case mech-verify-missing 5/5 0
+rm "$CASE/bin/verify"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify command missing -> stale (timeout)" timeout 2
+
+mech_case mech-mixed-author 5/5 0
+mech_compare ahead "[$GOOD1,$(mech_commit c3 someone true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: one human-authored commit in the range -> stale (timeout)" timeout 2
+
+mech_case mech-null-author 5/5 0
+mech_compare ahead "[$(mech_commit c3 '' true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unlinked (null) author -> stale (timeout)" timeout 2
+
+mech_case mech-unverified 5/5 0
+mech_compare ahead "[$GOOD1,$(mech_commit c3 'example-bot[bot]' false "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit GitHub does not verify -> stale (timeout)" timeout 2
+
+mech_case mech-no-trailer 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true 'chore: no trailer here')]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit without the trailer -> stale (timeout)" timeout 2
+
+mech_case mech-trailer-in-subject 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true 'chore: Example-Bot: not a trailer')]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the trailer must start a line -> stale (timeout)" timeout 2
+
+mech_case mech-merge-commit 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true "$MECH_MSG" 2)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a merge commit (two parents) -> stale (timeout)" timeout 2
+
+mech_case mech-touches-config 5/5 0
+mech_compare ahead "[$GOOD1]" '[{"filename":".claude/maintainerd.json"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a range that edits the config file -> stale (timeout)" timeout 2
+
+mech_case mech-truncated 5/5 0
+jq -n -c --argjson c "[$GOOD1]" '{status: "ahead", total_commits: 400, commits: $c, files: []}' >"$STUB_DIR/compare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a truncated compare page -> stale (timeout)" timeout 2
+
+mech_case mech-diverged 5/5 0
+mech_compare diverged "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score on a non-ancestor -> stale (timeout)" timeout 2
+
+mech_case mech-compare-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+touch "$STUB_DIR/compare.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable compare -> stale (timeout)" timeout 2
+
+mech_case mech-open-thread 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_threads "" "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: covered, but an open thread still yields findings" findings:1 1
+
+mech_case mech-bad-entry 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot"}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an entry missing 'verify' covers nothing -> stale (timeout)" timeout 2
+
+mech_case mech-absent 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$CFG_5"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: no review.mechanicalCommits -> today's behaviour (timeout)" timeout 2
+if grep -q compare "$STUB_DIR/.calls"; then bad "mechanical: no compare call when unconfigured" "$(cat "$STUB_DIR/.calls")"; else ok "mechanical: no compare call when unconfigured"; fi
+
+mech_case mech-score-on-head 5/5 0
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score on the head approves without covering" approved 0
+expect_not_contains "mechanical: no covered note when the score names the head" "covered:"
+
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
 write_prview "" ".body = $(jq -Rs . <<<"<!-- greptile_comment -->

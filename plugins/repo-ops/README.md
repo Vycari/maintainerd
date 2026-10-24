@@ -269,6 +269,11 @@ names its repository, and contradicting it with `-R` is an error.
   review thread is open and the first-line reviewer has a completed, happy round on the head. A
   `covered:` line says so. The script cannot see whether that score carried a P1; the merge gate
   judges that, as it does for a score on the head.
+- **Mechanical commits** (any mode, `review.mechanicalCommits`): a score at or above the threshold on
+  an ancestor of the head is not stale when every commit after it is a verified mechanical commit of
+  one configured entry (right author, GitHub-verified, trailer present, `verify` exits 0 in the
+  checkout). It yields `approved` with a `covered:` line naming the entry. Anything doubtful stays
+  stale. Open threads still give `findings:<n>`. See the schema entry for the fail-closed list.
 - `review.blockMarker` may be a bare name (`greptile_comment`), read as `<!-- greptile_comment -->`.
 
 ### `wait-for-checks.sh <pr> [-R owner/repo]`
