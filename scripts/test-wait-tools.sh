@@ -71,7 +71,11 @@ case "$1 $2" in
       *) serve prview ;;
     esac
     ;;
-  "api graphql") serve threads ;;
+  "api graphql")
+    # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
+    case "$*" in *"checkName=Vycari Review"*) [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")" ;; esac
+    serve threads
+    ;;
   "api -H")
     case "$*" in
       # The PR base's config (mechanical commits): the checkout's own unless a case says otherwise.
@@ -1639,6 +1643,12 @@ run_tool "$WFR" 7 "${FAST[@]}"
 [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread that opens during verify is never approved" ||
   bad "mechanical, first-line: thread opened mid-verify" "got: $OUT"
 expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# The first-line read after the mechanical re-read must also land before the deadline.
+mech_fl_case mech-fl-late-vr true '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 
