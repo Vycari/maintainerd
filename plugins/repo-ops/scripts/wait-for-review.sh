@@ -636,7 +636,11 @@ covered_by_mechanical() {
       ! git cat-file -e "$head^{commit}" 2>/dev/null; then
       mech_budget 60 && run_bounded "$MECH_SECS" "${MECH_GIT[@]}" fetch -q --no-tags origin "$MECH_BASE" "$g" "$head"
     fi
+    # The base (the verifier's tree), G and the head (so the whole range) must all be here now,
+    # however the fetch went: a commit the verifier cannot see is not one it vouched for.
     git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || return 1
+    git cat-file -e "$g^{commit}" 2>/dev/null || return 1
+    git cat-file -e "$head^{commit}" 2>/dev/null || return 1
     ok=0
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
@@ -650,10 +654,12 @@ covered_by_mechanical() {
     [ "$ok" = "1" ] || return 1
   done <<<"$scores"
   [ "$total" -gt 0 ] || return 1
-  # Verifying took time: the head it covered must still be the head.
+  # Verifying took time: the head it covered must still be the head, and the base whose config and
+  # verifier vouched for it must still be the base. The answer must also arrive before the deadline.
   mech_budget 1 || return 1
-  now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid -q .headRefOid 2>/dev/null)" || return 1
-  [ "$now_head" = "$head" ] || return 1
+  now_head="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid -q '"\(.headRefOid) \(.baseRefOid)"' 2>/dev/null)" || return 1
+  [ "$now_head" = "$head $MECH_BASE" ] || return 1
+  mech_budget 1 || return 1
   MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
   return 0
 }

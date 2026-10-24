@@ -53,7 +53,12 @@ echo "$*" >>"$STUB_DIR/.calls"
 case "$1 $2" in
   "pr view")
     case "$*" in
-      *"--json headRefOid "*) serve prhead ;;
+      # The re-read after verifying: "<head> <base>", the base being the case's unless prbase says otherwise.
+      *"--json headRefOid,baseRefOid "*)
+        h="$(serve prhead)" || exit 1
+        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
+        printf '%s %s\n' "$h" "${b:-dddddddd44444444444444444444444444444444}"
+        ;;
       *) serve prview ;;
     esac
     ;;
@@ -1052,7 +1057,9 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "first-line mode: a Greptile 5/5 on the head still approves with no VR call" approved 0
 expect_not_contains "first-line mode: no covered note when the score names the head" "covered:"
 
-# Mechanical commits (review.mechanicalCommits): verified bot commits after a passing score.
+# Mechanical commits (review.mechanicalCommits): verified bot commits after a passing score. Each
+# case's head is a real commit (mech_case); the fixed HEAD_SHA comes back after the section.
+FIXED_HEAD_SHA="$HEAD_SHA"
 # mech_commit <sha> <login|""> <verified> <message> [parents] [committer] [reason] -> one
 # compare-API commit object (mech_compare rewrites the parent chain).
 mech_commit() {
@@ -1115,6 +1122,12 @@ mech_case() { # <case> <score> <verify-exit>
   mech_config
   mech_pr_base
   mech_base "$2"
+  # The head is a real commit after G: verify needs the range locally, so the tool checks for it.
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m head >/dev/null 2>&1
+  HEAD_SHA="$(git -C "$CASE/repo" rev-parse HEAD)"
+  git -C "$CASE/repo" checkout -q --detach "$MECH_G" >/dev/null 2>&1
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$2" "${MECH_G:0:7}")")]"
   printf '%s' "$HEAD_SHA" >"$STUB_DIR/prhead"
   write_threads "" '[]'
 }
@@ -1230,7 +1243,7 @@ expect "mechanical: no review.mechanicalCommits -> today's behaviour (timeout)" 
 if grep -q compare "$STUB_DIR/.calls"; then bad "mechanical: no compare call when unconfigured" "$(cat "$STUB_DIR/.calls")"; else ok "mechanical: no compare call when unconfigured"; fi
 
 mech_case mech-score-on-head 5/5 0
-write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 "${HEAD_SHA:0:7}")")]"
 mech_compare ahead "[$GOOD1]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: a score on the head approves without covering" approved 0
@@ -1273,7 +1286,7 @@ write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold
   mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
     verify: [$v, "--verify-commit", "{sha}"]}]}}')"
 write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
-write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${HEAD_SHA:0:7}")")]"
 rm -f "$STUB_DIR/prview"
 mech_compare ahead "[$GOOD1]"
 run_tool "$WFR" 7 "${FAST[@]}"
@@ -1457,6 +1470,29 @@ printf 'ccccccc3333333333333333333333333333333333' >"$STUB_DIR/prhead"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: the head moved while verifying -> not covered (timeout)" timeout 2
 
+mech_case mech-base-moved 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf 'eeeeeeee55555555555555555555555555555555' >"$STUB_DIR/prbase"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the base moved while verifying (its policy may be revoked) -> not covered (timeout)" timeout 2
+
+mech_case mech-g-missing 5/5 0
+mech_compare ahead "[$GOOD1]"
+obj="$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
+rm -f "$obj"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the scored commit is missing and the fetch fails -> not covered (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never runs without the scored commit" ||
+  bad "mechanical: verify ran without G" "$(cat "$CASE/verified")"
+
+mech_case mech-head-missing 5/5 0
+mech_compare ahead "[$GOOD1]"
+rm -f "$CASE/repo/.git/objects/${HEAD_SHA:0:2}/${HEAD_SHA:2}"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the head is missing and the fetch fails -> not covered (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never runs without the range's commits" ||
+  bad "mechanical: verify ran without the head" "$(cat "$CASE/verified")"
+
 mech_case mech-user-lookalike 5/5 0
 mech_compare ahead "[$(mech_commit c1 example-bot true "$MECH_MSG" 1 example-bot)]"
 jq -c '.[].actor.login = "example-bot"' "$STUB_DIR/activity" >"$STUB_DIR/activity.new" && mv "$STUB_DIR/activity.new" "$STUB_DIR/activity"
@@ -1511,6 +1547,8 @@ write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-a
 mech_compare ahead "[$GOOD1,$GOOD2]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: each verify starts from a clean checkout of the base -> approved" approved 0
+
+HEAD_SHA="$FIXED_HEAD_SHA"
 
 new_case bare-marker
 write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
