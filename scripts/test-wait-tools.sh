@@ -57,7 +57,9 @@ case "$1 $2" in
       # without advancing its sequence), so a verify stub that rewrites the fixture changes its
       # decision and scores; its head is prhead's and its base the case's unless prbase says
       # otherwise. A head-only re-read gets the head alone, so a tool that ignores the base is caught.
+      # rereadfail: this re-read fails once (a transient API error).
       *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
+        [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
         h="$(serve prhead)" || exit 1
         b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
         n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
@@ -1643,6 +1645,16 @@ run_tool "$WFR" 7 "${FAST[@]}"
 [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread that opens during verify is never approved" ||
   bad "mechanical, first-line: thread opened mid-verify" "got: $OUT"
 expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# A re-read that fails cannot show the state is unchanged: it holds too, so the first-line path
+# never approves from the pre-verify read of a thread that opened meanwhile.
+mech_fl_case mech-fl-reread-fails true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\n: >"%s/rereadfail"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a re-read that fails after verify is never approved" ||
+  bad "mechanical, first-line: re-read failed after verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports the new thread (findings:1)" findings:1 1
 
 # The first-line read after the mechanical re-read must also land before the deadline.
 mech_fl_case mech-fl-late-vr true '[]'

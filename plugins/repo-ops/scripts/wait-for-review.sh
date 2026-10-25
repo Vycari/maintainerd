@@ -672,38 +672,23 @@ covered_by_mechanical() {
   # verifier vouched for it must still be the base. The review decision, the open threads and the
   # scores were read before verify ran, so a human's "changes requested", a new thread or a new
   # score that landed meanwhile must show here too: any change means not covered. The answer must
-  # also arrive before the deadline. A change, or running out of time from here on, sets MECH_HOLD:
-  # the caller must not fall back to another covered-staleness path, or judge anything else, on the
-  # state it read before verify ran.
-  mech_budget 1 || {
-    MECH_HOLD=1
-    return 1
-  }
+  # also arrive before the deadline. From here on every way out but success holds (MECH_HOLD): a
+  # change, running out of time, or a read or parse that fails, since a failed read cannot show that
+  # nothing changed. The caller must not fall back to another covered-staleness path, or judge
+  # anything else, on the state it read before verify ran.
+  MECH_HOLD=1
+  mech_budget 1 || return 1
   now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
   now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
-  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || {
-    MECH_HOLD=1
-    return 1
-  }
-  mech_budget 1 || {
-    MECH_HOLD=1
-    return 1
-  }
+  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || return 1
+  mech_budget 1 || return 1
   now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
   now_threads="$(unresolved_threads "$now_gql")" || return 1
-  [ "$now_threads" = "$MECH_THREADS" ] || {
-    MECH_HOLD=1
-    return 1
-  }
+  [ "$now_threads" = "$MECH_THREADS" ] || return 1
   now_scores="$(scores_of "$now_pr" "$now_gql" "$head")"
-  [ "$now_scores" = "$scores" ] || {
-    MECH_HOLD=1
-    return 1
-  }
-  mech_budget 1 || {
-    MECH_HOLD=1
-    return 1
-  }
+  [ "$now_scores" = "$scores" ] || return 1
+  mech_budget 1 || return 1
+  MECH_HOLD=0
   MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
   return 0
 }
@@ -713,8 +698,8 @@ covered_by_mechanical() {
 # completed, happy round on the head itself. Open review threads pass here because they are reported
 # as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
 # there is nothing more to hold. Anything unreadable is "no". The read is the last step of a
-# mechanical cover, so it too must end before the deadline; one that does not sets MECH_HOLD, so no
-# other covered-staleness path approves late in its place.
+# mechanical cover, so it too must end before the deadline; one that does not, or that fails, sets
+# MECH_HOLD, so no other covered-staleness path approves late, or unread, in its place.
 first_line_waiver_ok() {
   local head="$1" open="$2" vr_gql
   [ "$FIRST_LINE" = "1" ] || return 0
@@ -723,7 +708,10 @@ first_line_waiver_ok() {
     MECH_HOLD=1
     return 1
   }
-  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  vr_gql="$(fetch_gql "$FL_NAME")" || {
+    MECH_HOLD=1
+    return 1
+  }
   vr_read "$vr_gql" "$head"
   [ "$(now)" -lt "$deadline" ] || {
     MECH_HOLD=1
@@ -757,7 +745,10 @@ covered_by_first_line() {
     fi
     [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
   done <<<"$scores"
-  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  vr_gql="$(fetch_gql "$FL_NAME")" || {
+    MECH_HOLD=1
+    return 1
+  }
   vr_read "$vr_gql" "$head"
   [ "$VR_KIND" = "happy" ] || return 1
   COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
