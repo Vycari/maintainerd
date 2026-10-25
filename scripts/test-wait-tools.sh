@@ -53,18 +53,31 @@ echo "$*" >>"$STUB_DIR/.calls"
 case "$1 $2" in
   "pr view")
     case "$*" in
-      # The re-read after verifying: "<head> <base>", the base being the case's unless prbase says
+      # The re-read after verifying: the PR fixture as it stands now (the one the last poll read,
+      # without advancing its sequence), so a verify stub that rewrites the fixture changes its
+      # decision and scores; its head is prhead's and its base the case's unless prbase says
       # otherwise. A head-only re-read gets the head alone, so a tool that ignores the base is caught.
-      *"--json headRefOid,baseRefOid "*)
+      # rereadfail: this re-read fails once (a transient API error).
+      *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
+        [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
         h="$(serve prhead)" || exit 1
         b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
-        printf '%s %s\n' "$h" "${b:-dddddddd44444444444444444444444444444444}"
+        n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
+        f="$STUB_DIR/prview.$n"
+        [ -f "$f" ] || f="$STUB_DIR/prview"
+        [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+        jq -c --arg h "$h" --arg b "${b:-dddddddd44444444444444444444444444444444}" \
+          '.headRefOid = $h | .baseRefOid = $b' "$f"
         ;;
       *"--json headRefOid "*) serve prhead ;;
       *) serve prview ;;
     esac
     ;;
-  "api graphql") serve threads ;;
+  "api graphql")
+    # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
+    case "$*" in *"checkName=Vycari Review"*) [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")" ;; esac
+    serve threads
+    ;;
   "api -H")
     case "$*" in
       # The PR base's config (mechanical commits): the checkout's own unless a case says otherwise.
@@ -74,11 +87,18 @@ case "$1 $2" in
     ;;
   "api repos/"*"/compare/"*)
     # The PR base's compare (mechanical commits): base...head, the base named by the case.
+    # A `--jq <filter>` caller (the first-line ancestry check) gets the filter applied when the
+    # fixture is a JSON compare object; a plain-text fixture ("ahead") is served as it is.
     b="$(cat "$STUB_DIR/.base" 2>/dev/null)"
     case "$2" in
-      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then serve basecompare; else serve compare; fi ;;
-      *) serve compare ;;
-    esac
+      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then out="$(serve basecompare)"; else out="$(serve compare)"; fi ;;
+      *) out="$(serve compare)" ;;
+    esac || exit 1
+    if [ "${3:-}" = "--jq" ] && printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      printf '%s' "$out" | jq -r "$4"
+    else
+      printf '%s\n' "$out"
+    fi
     ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
@@ -1472,6 +1492,38 @@ printf 'ccccccc3333333333333333333333333333333333' >"$STUB_DIR/prhead"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: the head moved while verifying -> not covered (timeout)" timeout 2
 
+# Review state that changes while verify runs: the stub verifier rewrites the PR fixtures mid-run.
+# The wait must not report approved on the strength of the state it read before verify ran.
+mech_case mech-decision-changes 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a changes-requested review that lands during verify is never approved" ||
+  bad "mechanical: decision changed mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_case mech-thread-opens 5/5 0
+mech_compare ahead "[$GOOD1]"
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a thread that opens during verify is never approved" ||
+  bad "mechanical: thread opened mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:1)" findings:1 1
+
+# A score the bot posts on the head while verify runs must be seen: a below-bar verdict on the head
+# outranks the older passing one on G.
+mech_case mech-score-lands 5/5 0
+mech_compare ahead "[$GOOD1]"
+LATE="$(bot_comment "$(greptile_text 3/5 "${HEAD_SHA:0:7}")")"
+printf '#!/usr/bin/env bash\njq -c --argjson c %q ".comments += [\\$c]" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$LATE" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a below-bar score on the head that lands during verify is never approved" ||
+  bad "mechanical: score landed mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:0)" findings:0 1
+
 mech_case mech-base-moved 5/5 0
 mech_compare ahead "[$GOOD1]"
 printf 'eeeeeeee55555555555555555555555555555555' >"$STUB_DIR/prbase"
@@ -1549,6 +1601,66 @@ write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-a
 mech_compare ahead "[$GOOD1,$GOOD2]"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical: each verify starts from a clean checkout of the base -> approved" approved 0
+
+# First-line mode: mechanical coverage waives only "the score names the head". It approves only with
+# no open thread and the first-line reviewer's happy round on the head; an open thread is reported.
+mech_fl_case() { # <case> <vr-happy:true|false> <threads-json>
+  mech_case "$1" 5/5 0
+  write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {mode: "first-line", approvalThreshold: "5/5",
+    bots: ["greptile-apps[bot]"], mechanicalCommits: [{name: "renumber", author: "example-bot[bot]",
+      trailer: "Example-Bot", verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+  write_threads "" "$3"
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" \
+    "$(vr_json "$HEAD_SHA" "$2" 0 0 0 '[]' '[]' '[]' null)")]")]"
+  mech_compare ahead "[$GOOD1]"
+}
+mech_fl_case mech-fl-ok true '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: VR happy on the head + no open thread -> approved" approved 0
+expect_contains "mechanical, first-line: the output says why the older score stands" "covered:"
+
+mech_fl_case mech-fl-vr-unhappy false '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: VR not happy on the head -> not covered (timeout)" timeout 2
+
+mech_fl_case mech-fl-open-thread true "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: covered, but an open thread is reported (findings:1)" findings:1 1
+expect_contains "mechanical, first-line: the open thread's detail is printed" "a.py:3"
+
+# A mid-verify change the re-read rejects must not fall through to the first-line covered-staleness
+# path, which would approve from the state read before verify ran.
+mech_fl_case mech-fl-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a changes-requested review during verify is never approved" ||
+  bad "mechanical, first-line: decision changed mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_fl_case mech-fl-thread-opens true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread that opens during verify is never approved" ||
+  bad "mechanical, first-line: thread opened mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# A re-read that fails cannot show the state is unchanged: it holds too, so the first-line path
+# never approves from the pre-verify read of a thread that opened meanwhile.
+mech_fl_case mech-fl-reread-fails true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\n: >"%s/rereadfail"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a re-read that fails after verify is never approved" ||
+  bad "mechanical, first-line: re-read failed after verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports the new thread (findings:1)" findings:1 1
+
+# The first-line read after the mechanical re-read must also land before the deadline.
+mech_fl_case mech-fl-late-vr true '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 
