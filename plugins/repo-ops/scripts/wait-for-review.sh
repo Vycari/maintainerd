@@ -185,6 +185,7 @@ PR_FIELDS="number,isDraft,state,labels,headRefOid,headRefName,isCrossRepository,
 # block is only evidence when a configured bot is who last wrote it (see find_scores).
 THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
@@ -198,6 +199,7 @@ THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String
 # newest run, and rung 0 then reports INCOMPLETE (keep waiting) rather than decide on part of it.
 THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName:String!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
@@ -572,9 +574,6 @@ range_covered_by_entry() {
         ;;
       *" $key=0 "*) return 1 ;;
     esac
-    # From here this poll runs verify, so it holds unless the cover succeeds: what the poll read
-    # before verify is stale by the time it ends, whatever verify's outcome (see covered_by_mechanical).
-    MECH_HOLD=1
     # Each verify starts from a clean checkout of the base whatever the previous run did to it, and
     # gets at most 120s, clipped to what is left of the wait's deadline.
     mech_reset "$wt" "$MECH_BASE" || return 1
@@ -584,6 +583,10 @@ range_covered_by_entry() {
     # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
     while IFS= read -r -d '' i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -j '.verify[] | ., "\u0000"')
     [ "${#verify[@]}" -gt 0 ] || return 1
+    # From here this poll runs verify, so it holds unless the cover succeeds: what the poll read
+    # before verify is stale by the time it ends, whatever verify's outcome (see covered_by_mechanical).
+    # Not before: a reset that fails is quick and runs nothing, so it is just "not covered".
+    MECH_HOLD=1
     (cd "$wt" && run_bounded "$secs" "${verify[@]}")
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -718,12 +721,14 @@ covered_by_mechanical() {
 }
 
 # fl_read <head> — the first-line reviewer's verdict on <head> (vr_read), from a read whose open
-# review threads must still be the ones the poll judged on (MECH_THREADS): a thread that opened since
-# fails it, as does a read that fails. Both covered-staleness paths read through it.
+# review threads and review decision must still be the ones the poll judged on (MECH_THREADS,
+# MECH_DECISION): a thread that opened since, or a "changes requested", fails it, as does a read that
+# fails. It is the last read before a covered approval, so the verdict rests on it. Both covered-staleness paths read through it.
 fl_read() {
   local vr_gql
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
+  [ "$(printf '%s' "$vr_gql" | jq -s -r '.[0].data.repository.pullRequest.reviewDecision // ""')" = "$MECH_DECISION" ] || return 1
   vr_read "$vr_gql" "$1"
 }
 

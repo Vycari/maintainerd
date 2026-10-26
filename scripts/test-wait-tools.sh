@@ -1654,8 +1654,8 @@ expect_contains "mechanical, first-line: the open thread's detail is printed" "a
 # A mid-verify change the re-read rejects must not fall through to the first-line covered-staleness
 # path, which would approve from the state read before verify ran.
 mech_fl_case mech-fl-decision-changes true '[]'
-printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
-  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
 run_tool "$WFR" 7 "${FAST[@]}"
 [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a changes-requested review during verify is never approved" ||
   bad "mechanical, first-line: decision changed mid-verify" "got: $OUT"
@@ -1698,8 +1698,8 @@ expect "mechanical, first-line: ...the next poll sees the thread, so the stale s
 # The same for the review decision, which no first-line read re-checks: a human's "changes
 # requested" that lands while a failing verify runs is never approved from the pre-verify read.
 mech_fl_case mech-fl-verify-fails-decision-changes true '[]'
-printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 1\n' \
-  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 1\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "mechanical, first-line: a changes-requested review during a failing verify is never approved"
 expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
@@ -1751,6 +1751,30 @@ mech_fl_case mech-fl-fetch-fails true '[]'
 rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
 run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
 expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
+
+# A verify workspace that cannot be reset runs no verify, so it does not hold: the first-line path
+# approves. (VR-43e42c3f)
+mech_fl_case mech-fl-reset-fails true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 0\n' "$CASE" >"$CASE/bin/verify"
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exit 1 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify workspace that cannot be reset does not hold -> approved" approved 0
+[ ! -f "$CASE/verify-runs" ] && ok "mechanical, first-line: ...and verify never ran" ||
+  bad "mechanical, first-line: verify ran after a failed reset" "$(cat "$CASE/verify-runs")"
+
+# The last read before a covered approval re-checks the review decision: a "changes requested"
+# that lands after the mechanical re-read is not approved. (VR-cb8d0d4c)
+mech_fl_case mech-fl-waiver-sees-decision true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review in the waiver's own read is never approved"
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 
