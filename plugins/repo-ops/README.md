@@ -274,7 +274,8 @@ names its repository, and contradicting it with `-R` is an error.
   commits of one entry in the PR base's config (never one the PR adds): right author and committer, GitHub-verified, trailer present,
   pushed by the bot (repository activity API), and `verify` exits 0 when run from a worktree of the PR's base commit, which is where the verifier and its files come from.
   It yields `approved` with a `covered:` line naming the entry. Anything doubtful stays stale, and
-  the review decision, open threads and scores are re-read after `verify` runs (a change means not covered).
+  the review decision, open threads and scores are re-read after `verify` runs (a change means not covered). A poll that ran `verify` and is not
+  covered, for any reason, decides nothing; the next poll judges from a fresh read.
   Open threads still give `findings:<n>`; in first-line mode an approval also needs a happy
   first-line round on the head (only "the score names the head" is waived). The default (final) stage only; `--stage vr` does not use it
   yet. See the schema entry for the fail-closed list.

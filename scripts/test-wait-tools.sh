@@ -188,6 +188,11 @@ expect_not_contains() {
     *) ok "$1" ;;
   esac
 }
+expect_not_approved() { # <label> — the first line of the output is anything but approved
+  if [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ]; then ok "$1"; else bad "$1" "got: $OUT"; fi
+}
+# A review-thread fixture filter: one open thread, opened late (by a person).
+LATE_THREAD='.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]'
 calls_of() { grep -c "$1" "$STUB_DIR/.calls" 2>/dev/null || true; }
 
 CFG_5='{"review":{"approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
@@ -202,6 +207,10 @@ write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
 write_threads "" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "5/5 on head with no open threads -> approved" approved 0
+# The deadline discard covers only covered approvals: a plain one from the poll's single read is
+# reported even when that read is the last look at the deadline.
+run_tool "$WFR" 7 -R o/r --timeout-seconds 0 --interval-seconds 1
+expect "--timeout-seconds 0: a plain approval on the one look -> approved" approved 0
 
 new_case review-approved-resolved
 write_config "$CFG_5"
@@ -1071,6 +1080,20 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "inert: without review.mode first-line the same data stays stale (timeout)" timeout 2
 if grep -q compare "$STUB_DIR/.calls"; then bad "inert: no compare call" "$(cat "$STUB_DIR/.calls")"; else ok "inert: no compare call without first-line mode"; fi
 
+# Every approve path checks the deadline: a first-line read that ends past it is not approved.
+# (VR-5c1cb308)
+cov_case cov-late-vr "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
+
+# The fallback's own first-line read carries the review threads: one open there is not approved.
+cov_case cov-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered: a thread in the first-line read is never approved"
+
 new_case fl-final-on-head
 write_config "$CFG_FL"
 write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
@@ -1631,8 +1654,8 @@ expect_contains "mechanical, first-line: the open thread's detail is printed" "a
 # A mid-verify change the re-read rejects must not fall through to the first-line covered-staleness
 # path, which would approve from the state read before verify ran.
 mech_fl_case mech-fl-decision-changes true '[]'
-printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
-  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
 run_tool "$WFR" 7 "${FAST[@]}"
 [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a changes-requested review during verify is never approved" ||
   bad "mechanical, first-line: decision changed mid-verify" "got: $OUT"
@@ -1661,6 +1684,105 @@ mech_fl_case mech-fl-late-vr true '[]'
 printf '4' >"$STUB_DIR/flsleep"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical, first-line: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
+
+# A poll that ran verify decides nothing on the state it read before verify, whatever verify's
+# outcome: a verify that fails must not hand the decision to the first-line fallback, which would
+# approve from the pre-verify read of a thread that opened meanwhile. (VR-95b77b8f)
+mech_fl_case mech-fl-verify-fails-thread-opens true '[]'
+NEW_THREADS="$(jq -c "$LATE_THREAD" "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 1\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a failed verify does not fall back to an approval on the pre-verify read"
+expect "mechanical, first-line: ...the next poll sees the thread, so the stale score stays stale (timeout)" timeout 2
+
+# The same for the review decision, which no first-line read re-checks: a human's "changes
+# requested" that lands while a failing verify runs is never approved from the pre-verify read.
+mech_fl_case mech-fl-verify-fails-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 1\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review during a failing verify is never approved"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+# The same when the waiver's first-line read is not happy: a happy read in the fallback must not
+# approve from the pre-verify threads. GraphQL reads per poll: the poll's (1), the re-read (2), the
+# waiver's (3), the fallback's (4); the last repeats.
+mech_fl_case mech-fl-waiver-unhappy-fallback true '[]'
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.2"
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 3/5" \
+  "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-ffff6666"]' '[]' '[]' null)")]")]"
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.3"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.4"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: an unhappy waiver read does not fall back to an approval"
+expect "mechanical, first-line: ...the next poll reports the open thread (findings:1)" findings:1 1
+
+# The waiver's own read carries the review threads: one that opened after the re-read is seen
+# there. (VR-e9e645d7)
+mech_fl_case mech-fl-waiver-sees-thread true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a thread in the waiver's own read is never approved"
+expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# Holding starts only once verify (or a fetch) runs: a range the cheap checks reject leaves the
+# first-line fallback free to approve on its own terms.
+mech_fl_case mech-fl-human-commit-fallback true '[]'
+mech_compare ahead "[$(mech_commit c3 someone true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: a human commit after the score still approves through the first-line path" approved 0
+[ ! -f "$CASE/verified" ] && ok "mechanical, first-line: ...without running verify" ||
+  bad "mechanical, first-line: verify ran on a human commit" "$(cat "$CASE/verified")"
+
+# Liveness: a verify that keeps timing out holds one poll; the next tries the first-line path
+# first, before verify, and approves from that fresh read.
+mech_fl_case mech-fl-verify-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 124\n' "$CASE" >"$CASE/bin/verify"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify that keeps timing out stops holding -> approved" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
+  bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+
+# The same for a fetch that keeps failing: it holds one poll only.
+mech_fl_case mech-fl-fetch-fails true '[]'
+rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
+
+# A verify workspace that cannot be reset runs no verify, so it does not hold: the first-line path
+# approves. (VR-43e42c3f)
+mech_fl_case mech-fl-reset-fails true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 0\n' "$CASE" >"$CASE/bin/verify"
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exit 1 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify workspace that cannot be reset does not hold -> approved" approved 0
+[ ! -f "$CASE/verify-runs" ] && ok "mechanical, first-line: ...and verify never ran" ||
+  bad "mechanical, first-line: verify ran after a failed reset" "$(cat "$CASE/verify-runs")"
+
+# The last read before a covered approval re-checks the review decision: a "changes requested"
+# that lands after the mechanical re-read is not approved. (VR-cb8d0d4c)
+mech_fl_case mech-fl-waiver-sees-decision true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review in the waiver's own read is never approved"
+
+# ...on any page of that read: a paginated read's later page counts too.
+mech_fl_case mech-fl-waiver-sees-decision-page2 true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+{ cat "$STUB_DIR/threads.1"; jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1"; } >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review on a later page of the waiver's read is never approved"
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 

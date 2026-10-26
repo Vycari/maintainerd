@@ -55,7 +55,9 @@
 # worktree of the PR's base commit (so the verifier and everything it reads are the base branch's). A second detail line says so. Anything unreadable or doubtful (compare or activity
 # data truncated, the range touching the config file or the verifier, a fork, no local checkout or
 # no G, verify missing / failing / out of time, the head or base moving meanwhile, the review
-# decision, the open threads or the scores changing meanwhile) is NOT covered. The
+# decision, the open threads or the scores changing meanwhile) is NOT covered, and a poll that ran
+# verify and is not covered decides nothing: it never falls back to the first-line covered-staleness
+# path on what it read before verify, and the next poll judges from a fresh read. The
 # default stage only: --stage vr does not use it. Only entries in the PR base's config count, and a
 # PR that edits the config or a verifier anywhere since its merge base is never covered.
 #
@@ -183,6 +185,7 @@ PR_FIELDS="number,isDraft,state,labels,headRefOid,headRefName,isCrossRepository,
 # block is only evidence when a configured bot is who last wrote it (see find_scores).
 THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
@@ -196,6 +199,7 @@ THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String
 # newest run, and rung 0 then reports INCOMPLETE (keep waiting) rather than decide on part of it.
 THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName:String!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
@@ -402,7 +406,8 @@ MECH_CROSS=""
 MECH_BASE=""
 MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
 MECH_THREADS=""  # must find both unchanged
-MECH_HOLD=0      # 1 when the final re-read saw the review state move: this poll decides nothing
+MECH_HOLD=0      # 1 when this poll ran verify (or a fetch) and was not covered: it decides nothing
+MECH_HELD=0      # 1 when the previous poll held: this one tries the first-line path first
 MECH_SECS=0
 mech_cleanup() {
   local wt
@@ -573,6 +578,10 @@ range_covered_by_entry() {
     # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
     while IFS= read -r -d '' i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -j '.verify[] | ., "\u0000"')
     [ "${#verify[@]}" -gt 0 ] || return 1
+    # From here this poll runs verify, so it holds unless the cover succeeds: what the poll read
+    # before verify is stale by the time it ends, whatever verify's outcome (see covered_by_mechanical).
+    # Not before: a reset that fails is quick and runs nothing, so it is just "not covered".
+    MECH_HOLD=1
     (cd "$wt" && run_bounded "$secs" "${verify[@]}")
     rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -648,6 +657,7 @@ covered_by_mechanical() {
     # Verify runs from the base and inspects the range's commits; fetch them when they are missing.
     if ! git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || ! git cat-file -e "$g^{commit}" 2>/dev/null ||
       ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+      MECH_HOLD=1 # a fetch takes time too: hold as for verify
       mech_budget 60 && run_bounded "$MECH_SECS" "${MECH_GIT[@]}" fetch -q --no-tags origin "$MECH_BASE" "$g" "$head"
     fi
     # The base (the verifier's tree), G and the head (so the whole range) must all be here now,
@@ -672,10 +682,11 @@ covered_by_mechanical() {
   # verifier vouched for it must still be the base. The review decision, the open threads and the
   # scores were read before verify ran, so a human's "changes requested", a new thread or a new
   # score that landed meanwhile must show here too: any change means not covered. The answer must
-  # also arrive before the deadline. From here on every way out but success holds (MECH_HOLD): a
-  # change, running out of time, or a read or parse that fails, since a failed read cannot show that
-  # nothing changed. The caller must not fall back to another covered-staleness path, or judge
-  # anything else, on the state it read before verify ran.
+  # also arrive before the deadline. A poll that ran verify or a fetch already holds (MECH_HOLD), so
+  # a verify that failed or timed out did too; from here on every way out but success holds, cached
+  # verdicts or not: a change, running out of time, or a read or parse that fails, since a failed
+  # read cannot show that nothing changed. The caller must not fall back to another
+  # covered-staleness path, or judge anything else, on the state it read before verify ran.
   MECH_HOLD=1
   mech_budget 1 || return 1
   now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
@@ -693,30 +704,31 @@ covered_by_mechanical() {
   return 0
 }
 
+# fl_read <head> — the first-line reviewer's verdict on <head> (vr_read), from a read whose open
+# review threads and review decision must still be the ones the poll judged on (MECH_THREADS,
+# MECH_DECISION): a thread that opened since, or a "changes requested", fails it, as does a read that
+# fails. It is the last read before a covered approval, so the verdict rests on it. Both covered-staleness paths read through it.
+fl_read() {
+  local vr_gql
+  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
+  # Every page carries the decision; each must still be the one the poll judged on.
+  printf '%s' "$vr_gql" | jq -s -e --arg d "$MECH_DECISION" \
+    '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
+  vr_read "$vr_gql" "$1"
+}
+
 # first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
 # or not) waives only "the score names the head"; an approval still needs the first-line reviewer's
 # completed, happy round on the head itself. Open review threads pass here because they are reported
 # as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
-# there is nothing more to hold. Anything unreadable is "no". The read is the last step of a
-# mechanical cover, so it too must end before the deadline; one that does not, or that fails, sets
-# MECH_HOLD, so no other covered-staleness path approves late, or unread, in its place.
+# there is nothing more to hold. Anything unreadable, late or changed is "no", and the caller holds
+# on a "no" (it follows a mechanical cover, so the poll's own read is stale by now).
 first_line_waiver_ok() {
-  local head="$1" open="$2" vr_gql
   [ "$FIRST_LINE" = "1" ] || return 0
-  [ "$open" -eq 0 ] || return 0
-  mech_budget 1 || {
-    MECH_HOLD=1
-    return 1
-  }
-  vr_gql="$(fetch_gql "$FL_NAME")" || {
-    MECH_HOLD=1
-    return 1
-  }
-  vr_read "$vr_gql" "$head"
-  [ "$(now)" -lt "$deadline" ] || {
-    MECH_HOLD=1
-    return 1
-  }
+  [ "$2" -eq 0 ] || return 0
+  mech_budget 1 || return 1
+  fl_read "$1" || return 1
   [ "$VR_KIND" = "happy" ]
 }
 
@@ -725,7 +737,7 @@ first_line_waiver_ok() {
 # reviewer has a completed, happy round on the head. Anything unreadable is "not covered".
 COVERED_NOTE=""
 covered_by_first_line() {
-  local scores="$1" head="$2" line bot score reviewed num den status vr_gql first=""
+  local scores="$1" head="$2" line bot score reviewed num den status first=""
   COVERED_NOTE=""
   [ -n "$scores" ] || return 1
   while IFS= read -r line; do
@@ -745,11 +757,7 @@ covered_by_first_line() {
     fi
     [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
   done <<<"$scores"
-  vr_gql="$(fetch_gql "$FL_NAME")" || {
-    MECH_HOLD=1
-    return 1
-  }
-  vr_read "$vr_gql" "$head"
+  fl_read "$head" || return 1
   [ "$VR_KIND" = "happy" ] || return 1
   COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
   return 0
@@ -832,7 +840,7 @@ DETAIL=""
 LAST_ERR=""
 poll_once() {
   local pr gql threads head scores line bot score reviewed num den
-  local unresolved n decision all_met stale
+  local unresolved n decision all_met stale held
 
   VERDICT=""
   DETAIL=""
@@ -960,24 +968,35 @@ poll_once() {
         DETAIL="  $bot scored $score, below review.approvalThreshold $THRESHOLD on the head commit"
       fi
     done <<<"$scores"
-    # Covered staleness (first-line mode only): the bar was met on an ancestor of the head, nothing
-    # is open, and the first-line reviewer is happy on the head itself.
-    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head" &&
-      first_line_waiver_ok "$head" "$n"; then
-      # Verified mechanical commits since the passing score (any mode). Open threads are reported
-      # below; in first-line mode an approval also needs a happy first-line round on the head.
-      stale=0
-      COVERED_NOTE="$MECH_NOTE"
-    elif [ "$MECH_HOLD" = "1" ]; then
-      # The review state moved while verify ran: decide on the next poll's fresh read, never on
-      # this one's (the first-line path below would approve from it).
-      COVERED_NOTE=""
-      return 0
-    elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
-      covered_by_first_line "$scores" "$head"; then
-      stale=0
-    else
-      COVERED_NOTE=""
+    # Covered staleness: the bar was met on an ancestor of the head. A poll that ran a mechanical
+    # cover decides nothing unless the cover succeeds: what it read before verify (or a fetch) is
+    # stale by now, so it never falls back to the first-line path below, which would approve from
+    # that read. It holds, and the next poll judges from a fresh one: in first-line mode with
+    # nothing open, that poll tries the first-line path first, before anything slow runs, so a
+    # verifier that keeps hanging (or a fetch that keeps failing) costs one interval, not the wait.
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ]; then
+      held="$MECH_HELD"
+      MECH_HELD=0
+      if [ "$held" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+        covered_by_first_line "$scores" "$head"; then
+        stale=0
+      elif covered_by_mechanical "$scores" "$head"; then
+        # Verified mechanical commits since the passing score (any mode). Open threads are
+        # reported below; in first-line mode an approval also needs a happy first-line round on
+        # the head, and a "no" holds too.
+        first_line_waiver_ok "$head" "$n" || {
+          MECH_HELD=1
+          return 0
+        }
+        stale=0
+        COVERED_NOTE="$MECH_NOTE"
+      elif [ "$MECH_HOLD" = "1" ]; then
+        MECH_HELD=1
+        return 0
+      elif [ "$held" != "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] && covered_by_first_line "$scores" "$head"; then
+        # First-line mode only: nothing is open and the first-line reviewer is happy on the head.
+        stale=0
+      fi
     fi
     [ "$stale" = "0" ] || return 0
   fi
@@ -1022,6 +1041,14 @@ while :; do
     # A failure on the very first read is a setup problem (auth, wrong repo, bad PR number), not a
     # slow review. Say so instead of waiting out the deadline and calling it a timeout.
     die 3 "$LAST_ERR"
+  fi
+  # A covered approval lands before the deadline: it rests on reads made after the poll's own (a
+  # mechanical re-read, a first-line read), and one that ran past the deadline approves nothing; the
+  # timeout below reports it. A plain approval is the poll's single read, so the last look at the
+  # deadline (and --timeout-seconds 0) can still report it.
+  if [ "$VERDICT" = "approved" ] && [ -n "$COVERED_NOTE" ] && [ "$(now)" -ge "$deadline" ]; then
+    VERDICT=""
+    LAST_ERR="a covered approval was read only after the deadline; not reported"
   fi
   if [ -n "$VERDICT" ]; then
     printf '%s\n' "$VERDICT"
