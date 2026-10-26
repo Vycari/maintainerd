@@ -581,12 +581,16 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   differs from what the poll judged on (a late "changes requested", a new thread, a new score on the
   head); the wait then decides on its next
   read, and never falls back to first-line covered staleness on the old one. So does an answer that
-  arrives after the deadline.
+  arrives after the deadline. More generally, a poll that ran `verify` (or fetched commits for it)
+  and is not covered, for whatever reason (a verify that fails or runs out of time included), decides
+  nothing: it holds, and the next poll judges from a fresh read. No approval, covered or not, is
+  reported once the deadline has passed.
 
   **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
   An approval still needs no open review thread and a completed, happy first-line round on the head
   itself. An open thread is reported as `findings:<n>`, as in any mode; with none open and no happy
-  round on the head, the score stays stale and the wait keeps going.
+  round on the head, the score stays stale and the wait keeps going. The first-line read must also
+  show the same open threads the poll judged on; a thread that opened since is not covered.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
   (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
