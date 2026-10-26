@@ -1691,6 +1691,15 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "mechanical, first-line: a failed verify does not fall back to an approval on the pre-verify read"
 expect "mechanical, first-line: ...the next poll sees the thread, so the stale score stays stale (timeout)" timeout 2
 
+# The same for the review decision, which no first-line read re-checks: a human's "changes
+# requested" that lands while a failing verify runs is never approved from the pre-verify read.
+mech_fl_case mech-fl-verify-fails-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 1\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review during a failing verify is never approved"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
 # The same when the waiver's first-line read is not happy: a happy read in the fallback must not
 # approve from the pre-verify threads. GraphQL reads per poll: the poll's (1), the re-read (2), the
 # waiver's (3), the fallback's (4); the last repeats.
