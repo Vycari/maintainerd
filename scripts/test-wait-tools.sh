@@ -207,6 +207,10 @@ write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
 write_threads "" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "5/5 on head with no open threads -> approved" approved 0
+# The deadline discard covers only covered approvals: a plain one from the poll's single read is
+# reported even when that read is the last look at the deadline.
+run_tool "$WFR" 7 -R o/r --timeout-seconds 0 --interval-seconds 1
+expect "--timeout-seconds 0: a plain approval on the one look -> approved" approved 0
 
 new_case review-approved-resolved
 write_config "$CFG_5"
@@ -1732,6 +1736,21 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "mechanical, first-line: a human commit after the score still approves through the first-line path" approved 0
 [ ! -f "$CASE/verified" ] && ok "mechanical, first-line: ...without running verify" ||
   bad "mechanical, first-line: verify ran on a human commit" "$(cat "$CASE/verified")"
+
+# Liveness: a verify that keeps timing out holds two polls, is then cached as failed, and the
+# first-line path approves from a fresh read.
+mech_fl_case mech-fl-verify-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 124\n' "$CASE" >"$CASE/bin/verify"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify that keeps timing out stops holding -> approved" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 2 ] && ok "mechanical, first-line: ...after verify ran twice" ||
+  bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+
+# The same for a fetch that keeps failing: it is tried once per range, so it holds one poll only.
+mech_fl_case mech-fl-fetch-fails true '[]'
+rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 

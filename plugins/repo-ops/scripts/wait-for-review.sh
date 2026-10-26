@@ -405,6 +405,12 @@ MECH_BASE=""
 MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
 MECH_THREADS=""  # must find both unchanged
 MECH_HOLD=0      # 1 when this poll ran verify (or a fetch) and was not covered: it decides nothing
+# Liveness: a poll that ran verify or a fetch holds, so a verifier that keeps hanging, or a fetch that
+# keeps failing, must not hold every poll to the deadline. A verify that times out (or dies on a
+# signal) is retried once, then cached as a "no"; a fetch is tried once per range. After that the
+# range is simply not covered, nothing slow runs, and the first-line path decides on fresh reads.
+MECH_RETRY=" "   # verify keys that timed out once
+MECH_FETCHED=" " # "base g head" ranges already fetched for
 MECH_SECS=0
 mech_cleanup() {
   local wt
@@ -581,7 +587,14 @@ range_covered_by_entry() {
     (cd "$wt" && run_bounded "$secs" "${verify[@]}")
     rc=$?
     if [ "$rc" -ne 0 ]; then
-      [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ] || MECH_CACHE="$MECH_CACHE$key=0 "
+      if [ "$rc" -ne 124 ] && [ "$rc" -lt 128 ]; then
+        MECH_CACHE="$MECH_CACHE$key=0 "
+      else
+        case "$MECH_RETRY" in
+          *" $key "*) MECH_CACHE="$MECH_CACHE$key=0 " ;; # timed out twice: stop paying for it
+          *) MECH_RETRY="$MECH_RETRY$key " ;;
+        esac
+      fi
       return 1
     fi
     MECH_CACHE="$MECH_CACHE$key=1 "
@@ -653,6 +666,10 @@ covered_by_mechanical() {
     # Verify runs from the base and inspects the range's commits; fetch them when they are missing.
     if ! git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || ! git cat-file -e "$g^{commit}" 2>/dev/null ||
       ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+      case "$MECH_FETCHED" in
+        *" $MECH_BASE:$g:$head "*) return 1 ;; # fetched for once already: still missing, not covered
+      esac
+      MECH_FETCHED="$MECH_FETCHED$MECH_BASE:$g:$head "
       MECH_HOLD=1 # a fetch takes time too: hold as for verify
       mech_budget 60 && run_bounded "$MECH_SECS" "${MECH_GIT[@]}" fetch -q --no-tags origin "$MECH_BASE" "$g" "$head"
     fi
@@ -1023,10 +1040,13 @@ while :; do
     # slow review. Say so instead of waiting out the deadline and calling it a timeout.
     die 3 "$LAST_ERR"
   fi
-  # Every approval lands before the deadline: a poll whose reads ran past it (a slow first-line
-  # read, say) approves nothing, and the timeout below reports it.
-  if [ "$VERDICT" = "approved" ] && [ "$(now)" -ge "$deadline" ]; then
+  # A covered approval lands before the deadline: it rests on reads made after the poll's own (a
+  # mechanical re-read, a first-line read), and one that ran past the deadline approves nothing; the
+  # timeout below reports it. A plain approval is the poll's single read, so the last look at the
+  # deadline (and --timeout-seconds 0) can still report it.
+  if [ "$VERDICT" = "approved" ] && [ -n "$COVERED_NOTE" ] && [ "$(now)" -ge "$deadline" ]; then
     VERDICT=""
+    LAST_ERR="a covered approval was read only after the deadline; not reported"
   fi
   if [ -n "$VERDICT" ]; then
     printf '%s\n' "$VERDICT"
