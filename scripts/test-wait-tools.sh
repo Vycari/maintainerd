@@ -1737,16 +1737,16 @@ expect "mechanical, first-line: a human commit after the score still approves th
 [ ! -f "$CASE/verified" ] && ok "mechanical, first-line: ...without running verify" ||
   bad "mechanical, first-line: verify ran on a human commit" "$(cat "$CASE/verified")"
 
-# Liveness: a verify that keeps timing out holds two polls, is then cached as failed, and the
-# first-line path approves from a fresh read.
+# Liveness: a verify that keeps timing out holds one poll; the next tries the first-line path
+# first, before verify, and approves from that fresh read.
 mech_fl_case mech-fl-verify-hangs true '[]'
 printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 124\n' "$CASE" >"$CASE/bin/verify"
 run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
 expect "mechanical, first-line: a verify that keeps timing out stops holding -> approved" approved 0
-[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 2 ] && ok "mechanical, first-line: ...after verify ran twice" ||
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
   bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
 
-# The same for a fetch that keeps failing: it is tried once per range, so it holds one poll only.
+# The same for a fetch that keeps failing: it holds one poll only.
 mech_fl_case mech-fl-fetch-fails true '[]'
 rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
 run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
@@ -1775,6 +1775,14 @@ cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
 jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "mechanical, first-line: a changes-requested review in the waiver's own read is never approved"
+
+# ...on any page of that read: a paginated read's later page counts too.
+mech_fl_case mech-fl-waiver-sees-decision-page2 true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+{ cat "$STUB_DIR/threads.1"; jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1"; } >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review on a later page of the waiver's read is never approved"
 
 HEAD_SHA="$FIXED_HEAD_SHA"
 

@@ -407,12 +407,7 @@ MECH_BASE=""
 MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
 MECH_THREADS=""  # must find both unchanged
 MECH_HOLD=0      # 1 when this poll ran verify (or a fetch) and was not covered: it decides nothing
-# Liveness: a poll that ran verify or a fetch holds, so a verifier that keeps hanging, or a fetch that
-# keeps failing, must not hold every poll to the deadline. A verify that times out (or dies on a
-# signal) is retried once, then cached as a "no"; a fetch is tried once per range. After that the
-# range is simply not covered, nothing slow runs, and the first-line path decides on fresh reads.
-MECH_RETRY=" "   # verify keys that timed out once
-MECH_FETCHED=" " # "base g head" ranges already fetched for
+MECH_HELD=0      # 1 when the previous poll held: this one tries the first-line path first
 MECH_SECS=0
 mech_cleanup() {
   local wt
@@ -590,14 +585,7 @@ range_covered_by_entry() {
     (cd "$wt" && run_bounded "$secs" "${verify[@]}")
     rc=$?
     if [ "$rc" -ne 0 ]; then
-      if [ "$rc" -ne 124 ] && [ "$rc" -lt 128 ]; then
-        MECH_CACHE="$MECH_CACHE$key=0 "
-      else
-        case "$MECH_RETRY" in
-          *" $key "*) MECH_CACHE="$MECH_CACHE$key=0 " ;; # timed out twice: stop paying for it
-          *) MECH_RETRY="$MECH_RETRY$key " ;;
-        esac
-      fi
+      [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ] || MECH_CACHE="$MECH_CACHE$key=0 "
       return 1
     fi
     MECH_CACHE="$MECH_CACHE$key=1 "
@@ -669,10 +657,6 @@ covered_by_mechanical() {
     # Verify runs from the base and inspects the range's commits; fetch them when they are missing.
     if ! git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || ! git cat-file -e "$g^{commit}" 2>/dev/null ||
       ! git cat-file -e "$head^{commit}" 2>/dev/null; then
-      case "$MECH_FETCHED" in
-        *" $MECH_BASE:$g:$head "*) return 1 ;; # fetched for once already: still missing, not covered
-      esac
-      MECH_FETCHED="$MECH_FETCHED$MECH_BASE:$g:$head "
       MECH_HOLD=1 # a fetch takes time too: hold as for verify
       mech_budget 60 && run_bounded "$MECH_SECS" "${MECH_GIT[@]}" fetch -q --no-tags origin "$MECH_BASE" "$g" "$head"
     fi
@@ -728,7 +712,9 @@ fl_read() {
   local vr_gql
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
-  [ "$(printf '%s' "$vr_gql" | jq -s -r '.[0].data.repository.pullRequest.reviewDecision // ""')" = "$MECH_DECISION" ] || return 1
+  # Every page carries the decision; each must still be the one the poll judged on.
+  printf '%s' "$vr_gql" | jq -s -e --arg d "$MECH_DECISION" \
+    '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
   vr_read "$vr_gql" "$1"
 }
 
@@ -854,7 +840,7 @@ DETAIL=""
 LAST_ERR=""
 poll_once() {
   local pr gql threads head scores line bot score reviewed num den
-  local unresolved n decision all_met stale
+  local unresolved n decision all_met stale held
 
   VERDICT=""
   DETAIL=""
@@ -985,18 +971,29 @@ poll_once() {
     # Covered staleness: the bar was met on an ancestor of the head. A poll that ran a mechanical
     # cover decides nothing unless the cover succeeds: what it read before verify (or a fetch) is
     # stale by now, so it never falls back to the first-line path below, which would approve from
-    # that read. The next poll judges from a fresh one.
+    # that read. It holds, and the next poll judges from a fresh one: in first-line mode with
+    # nothing open, that poll tries the first-line path first, before anything slow runs, so a
+    # verifier that keeps hanging (or a fetch that keeps failing) costs one interval, not the wait.
     if [ "$stale" = "1" ] && [ "$all_met" = "1" ]; then
-      if covered_by_mechanical "$scores" "$head"; then
+      held="$MECH_HELD"
+      MECH_HELD=0
+      if [ "$held" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+        covered_by_first_line "$scores" "$head"; then
+        stale=0
+      elif covered_by_mechanical "$scores" "$head"; then
         # Verified mechanical commits since the passing score (any mode). Open threads are
         # reported below; in first-line mode an approval also needs a happy first-line round on
         # the head, and a "no" holds too.
-        first_line_waiver_ok "$head" "$n" || return 0
+        first_line_waiver_ok "$head" "$n" || {
+          MECH_HELD=1
+          return 0
+        }
         stale=0
         COVERED_NOTE="$MECH_NOTE"
       elif [ "$MECH_HOLD" = "1" ]; then
+        MECH_HELD=1
         return 0
-      elif [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] && covered_by_first_line "$scores" "$head"; then
+      elif [ "$held" != "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] && covered_by_first_line "$scores" "$head"; then
         # First-line mode only: nothing is open and the first-line reviewer is happy on the head.
         stale=0
       fi

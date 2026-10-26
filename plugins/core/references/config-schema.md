@@ -578,9 +578,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   read, and never falls back to first-line covered staleness on the old one. So does an answer that
   arrives after the deadline. More generally, a poll that ran `verify` (or fetched commits for it)
   and is not covered, for whatever reason (a verify that fails or runs out of time included), decides
-  nothing: it holds, and the next poll judges from a fresh read. So that a hung verifier or a fetch
-  that keeps failing cannot hold every poll, a verify that runs out of time is retried once and then
-  counts as failed, and the missing commits are fetched once per range. No covered approval
+  nothing: it holds, and the next poll judges from a fresh read. In first-line mode with no open
+  thread, the poll after a hold tries first-line covered staleness first, before anything slow runs,
+  so a verifier that keeps hanging or a fetch that keeps failing delays an approval by one interval,
+  not the whole wait. No covered approval
   (mechanical or first-line) is reported once the deadline has passed.
 
   **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
