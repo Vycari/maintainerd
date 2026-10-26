@@ -188,6 +188,11 @@ expect_not_contains() {
     *) ok "$1" ;;
   esac
 }
+expect_not_approved() { # <label> — the first line of the output is anything but approved
+  if [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ]; then ok "$1"; else bad "$1" "got: $OUT"; fi
+}
+# A review-thread fixture filter: one open thread, opened late (by a person).
+LATE_THREAD='.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]'
 calls_of() { grep -c "$1" "$STUB_DIR/.calls" 2>/dev/null || true; }
 
 CFG_5='{"review":{"approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
@@ -1081,11 +1086,9 @@ expect "covered: a first-line read that ends past the deadline -> timeout, not a
 # The fallback's own first-line read carries the review threads: one open there is not approved.
 cov_case cov-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
 mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
-jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' \
-  "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
 run_tool "$WFR" 7 "${FAST[@]}"
-[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "covered: a thread in the first-line read is never approved" ||
-  bad "covered: first-line fallback ignored its own threads" "got: $OUT"
+expect_not_approved "covered: a thread in the first-line read is never approved"
 
 new_case fl-final-on-head
 write_config "$CFG_FL"
@@ -1681,13 +1684,11 @@ expect "mechanical, first-line: a first-line read that ends past the deadline ->
 # A poll that ran verify decides nothing on the state it read before verify, whatever verify's
 # outcome: a verify that fails must not hand the decision to the first-line fallback, which would
 # approve from the pre-verify read of a thread that opened meanwhile. (VR-95b77b8f)
-LATE_THREAD='.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]'
 mech_fl_case mech-fl-verify-fails-thread-opens true '[]'
 NEW_THREADS="$(jq -c "$LATE_THREAD" "$STUB_DIR/threads")"
 printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 1\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
 run_tool "$WFR" 7 "${FAST[@]}"
-[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a failed verify does not fall back to an approval on the pre-verify read" ||
-  bad "mechanical, first-line: verify failed, fallback approved" "got: $OUT"
+expect_not_approved "mechanical, first-line: a failed verify does not fall back to an approval on the pre-verify read"
 expect "mechanical, first-line: ...the next poll sees the thread, so the stale score stays stale (timeout)" timeout 2
 
 # The same when the waiver's first-line read is not happy: a happy read in the fallback must not
@@ -1701,8 +1702,7 @@ write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 3/5" \
 mv "$STUB_DIR/threads" "$STUB_DIR/threads.3"
 jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.4"
 run_tool "$WFR" 7 "${FAST[@]}"
-[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: an unhappy waiver read does not fall back to an approval" ||
-  bad "mechanical, first-line: waiver unhappy, fallback approved" "got: $OUT"
+expect_not_approved "mechanical, first-line: an unhappy waiver read does not fall back to an approval"
 expect "mechanical, first-line: ...the next poll reports the open thread (findings:1)" findings:1 1
 
 # The waiver's own read carries the review threads: one that opened after the re-read is seen
@@ -1712,8 +1712,7 @@ mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
 cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
 jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
 run_tool "$WFR" 7 "${FAST[@]}"
-[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread in the waiver's own read is never approved" ||
-  bad "mechanical, first-line: waiver ignored its own threads" "got: $OUT"
+expect_not_approved "mechanical, first-line: a thread in the waiver's own read is never approved"
 expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
 
 # Holding starts only once verify (or a fetch) runs: a range the cheap checks reject leaves the

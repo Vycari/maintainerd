@@ -700,27 +700,28 @@ covered_by_mechanical() {
   return 0
 }
 
+# fl_read <head> — the first-line reviewer's verdict on <head> (vr_read), from a read whose open
+# review threads must still be the ones the poll judged on (MECH_THREADS): a thread that opened since
+# fails it, as does a read that fails. Both covered-staleness paths read through it.
+fl_read() {
+  local vr_gql
+  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
+  vr_read "$vr_gql" "$1"
+}
+
 # first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
 # or not) waives only "the score names the head"; an approval still needs the first-line reviewer's
 # completed, happy round on the head itself. Open review threads pass here because they are reported
 # as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
-# there is nothing more to hold. The read is the last step of a mechanical cover, and the review
-# threads it returns must still be the ones the poll judged on. Every "no" holds (MECH_HOLD): an
-# unreadable or late read, a thread that opened since the re-read, or a reviewer that is not happy,
-# so no other covered-staleness path approves in its place on the state read before verify ran.
+# there is nothing more to hold. Anything unreadable, late or changed is "no", and the caller holds
+# on a "no" (it follows a mechanical cover, so the poll's own read is stale by now).
 first_line_waiver_ok() {
-  local head="$1" open="$2" vr_gql
   [ "$FIRST_LINE" = "1" ] || return 0
-  [ "$open" -eq 0 ] || return 0
-  MECH_HOLD=1
+  [ "$2" -eq 0 ] || return 0
   mech_budget 1 || return 1
-  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
-  [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
-  vr_read "$vr_gql" "$head"
-  [ "$(now)" -lt "$deadline" ] || return 1
-  [ "$VR_KIND" = "happy" ] || return 1
-  MECH_HOLD=0
-  return 0
+  fl_read "$1" || return 1
+  [ "$VR_KIND" = "happy" ]
 }
 
 # covered_by_first_line <scores> <head> — covered staleness (first-line mode only). True when every
@@ -728,7 +729,7 @@ first_line_waiver_ok() {
 # reviewer has a completed, happy round on the head. Anything unreadable is "not covered".
 COVERED_NOTE=""
 covered_by_first_line() {
-  local scores="$1" head="$2" line bot score reviewed num den status vr_gql first=""
+  local scores="$1" head="$2" line bot score reviewed num den status first=""
   COVERED_NOTE=""
   [ -n "$scores" ] || return 1
   while IFS= read -r line; do
@@ -748,10 +749,7 @@ covered_by_first_line() {
     fi
     [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
   done <<<"$scores"
-  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
-  # The open threads in this read must still be the ones the poll judged on (none).
-  [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
-  vr_read "$vr_gql" "$head"
+  fl_read "$head" || return 1
   [ "$VR_KIND" = "happy" ] || return 1
   COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
   return 0
@@ -962,25 +960,24 @@ poll_once() {
         DETAIL="  $bot scored $score, below review.approvalThreshold $THRESHOLD on the head commit"
       fi
     done <<<"$scores"
-    # Covered staleness (first-line mode only): the bar was met on an ancestor of the head, nothing
-    # is open, and the first-line reviewer is happy on the head itself.
-    if [ "$stale" = "1" ] && [ "$all_met" = "1" ] && covered_by_mechanical "$scores" "$head" &&
-      first_line_waiver_ok "$head" "$n"; then
-      # Verified mechanical commits since the passing score (any mode). Open threads are reported
-      # below; in first-line mode an approval also needs a happy first-line round on the head.
-      stale=0
-      COVERED_NOTE="$MECH_NOTE"
-    elif [ "$MECH_HOLD" = "1" ]; then
-      # This poll ran verify (or a fetch, or the waiver's read) and the cover did not hold up:
-      # whatever the reason, what it read before is stale. Decide on the next poll's fresh read,
-      # never on this one's (the first-line path below would approve from it).
-      COVERED_NOTE=""
-      return 0
-    elif [ "$stale" = "1" ] && [ "$all_met" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
-      covered_by_first_line "$scores" "$head"; then
-      stale=0
-    else
-      COVERED_NOTE=""
+    # Covered staleness: the bar was met on an ancestor of the head. A poll that ran a mechanical
+    # cover decides nothing unless the cover succeeds: what it read before verify (or a fetch) is
+    # stale by now, so it never falls back to the first-line path below, which would approve from
+    # that read. The next poll judges from a fresh one.
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ]; then
+      if covered_by_mechanical "$scores" "$head"; then
+        # Verified mechanical commits since the passing score (any mode). Open threads are
+        # reported below; in first-line mode an approval also needs a happy first-line round on
+        # the head, and a "no" holds too.
+        first_line_waiver_ok "$head" "$n" || return 0
+        stale=0
+        COVERED_NOTE="$MECH_NOTE"
+      elif [ "$MECH_HOLD" = "1" ]; then
+        return 0
+      elif [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] && covered_by_first_line "$scores" "$head"; then
+        # First-line mode only: nothing is open and the first-line reviewer is happy on the head.
+        stale=0
+      fi
     fi
     [ "$stale" = "0" ] || return 0
   fi
@@ -1000,17 +997,14 @@ poll_once() {
     return 0
   fi
 
-  # Every approval lands before the deadline: a poll whose reads ran past it (a slow first-line
-  # read, say) reports nothing, and the main loop reports the timeout.
   if [ -z "$THR_NUM" ]; then
-    if [ "$decision" = "APPROVED" ] && [ "$(now)" -lt "$deadline" ]; then
+    if [ "$decision" = "APPROVED" ]; then
       VERDICT="approved"
       DETAIL="$COVERED_NOTE"
     fi
     return 0
   fi
   if [ "$all_met" = "1" ]; then
-    [ "$(now)" -lt "$deadline" ] || return 0
     VERDICT="approved"
     DETAIL="$COVERED_NOTE"
   else
@@ -1028,6 +1022,11 @@ while :; do
     # A failure on the very first read is a setup problem (auth, wrong repo, bad PR number), not a
     # slow review. Say so instead of waiting out the deadline and calling it a timeout.
     die 3 "$LAST_ERR"
+  fi
+  # Every approval lands before the deadline: a poll whose reads ran past it (a slow first-line
+  # read, say) approves nothing, and the timeout below reports it.
+  if [ "$VERDICT" = "approved" ] && [ "$(now)" -ge "$deadline" ]; then
+    VERDICT=""
   fi
   if [ -n "$VERDICT" ]; then
     printf '%s\n' "$VERDICT"
