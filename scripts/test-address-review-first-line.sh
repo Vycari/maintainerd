@@ -39,7 +39,7 @@ t() { # thread JSON helper: id resolved author [reply-author:reply-body]...
   for r in "$@"; do
     cs="$cs,{\"databaseId\":0,\"body\":\"${r#*:}\",\"author\":{\"login\":\"${r%%:*}\"}}"
   done
-  printf '{"isResolved":%s,"comments":{"nodes":[%s]}}' "$res" "$cs"
+  printf '{"isResolved":%s,"opener":{"nodes":[{"databaseId":%s,"body":"finding","author":{"login":"%s"}}]},"comments":{"nodes":[%s]}}' "$res" "$id" "$au" "$cs"
 }
 THREADS="[$(t 1 false 'final-bot[bot]'),$(t 2 false 'final-bot[bot]' 'alice:Disputed: validated upstream'),$(t 3 true 'final-bot[bot]'),$(t 4 false 'first-bot[bot]'),$(t 5 false 'final-bot[bot]' 'final-bot[bot]:Fixed in abc1234'),$(t 6 false 'app/final-bot'),$(t 7 false 'final-bot[bot]' 'alice:thanks, will look'),$(t 8 false 'final-bot[bot]' 'alice:Fixed in abc1234'),$(t 9 false 'final-bot[bot]' 'alice:Declined: intentional' 'final-bot[bot]:still allocates per call')]"
 
@@ -47,16 +47,24 @@ got="$(printf '%s' "$THREADS" | jq -c --arg dispute 'Disputed:' --argjson final 
 [ "$got" = "[1,5,6,7,9]" ] && ok "lists final-gate threads with no acceptable non-bot answer (resolved, answered and first-line threads excluded; a 'thanks', a bot's reply, or an answer the final reviewer followed up on is not an answer)" \
   || bad "lists final-gate threads with no acceptable non-bot answer" "got $got, want [1,5,6,7,9]"
 
-# A thread whose comments ran past the first page is listed: its latest replies were never read.
-TRUNC='[{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":true},"nodes":[{"databaseId":10,"body":"finding","author":{"login":"final-bot[bot]"}},{"databaseId":0,"body":"Fixed in abc1234","author":{"login":"alice"}}]}}]'
-got="$(printf '%s' "$TRUNC" | jq -c --arg dispute 'Disputed:' --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]"]' -f "$TMP/threads.jq")"
-[ "$got" = "[10]" ] && ok "a thread with unread comments is listed" || bad "a thread with unread comments is listed" "got $got, want [10]"
+# A long thread: `comments` holds only its latest 100, so the opener is not among them. An answer
+# in that window clears it; no answer, or an answer the final reviewer followed up on, does not.
+long() { # id [author:body]...
+  local id="$1" cs="" r; shift
+  for r in "$@"; do cs="$cs${cs:+,}{\"databaseId\":0,\"body\":\"${r#*:}\",\"author\":{\"login\":\"${r%%:*}\"}}"; done
+  printf '{"isResolved":false,"opener":{"nodes":[{"databaseId":%s,"body":"finding","author":{"login":"final-bot[bot]"}}]},"comments":{"nodes":[%s]}}' "$id" "$cs"
+}
+LONG="[$(long 10 'alice:Fixed in abc1234' 'alice:thanks'),$(long 11 'alice:thanks'),$(long 12 'alice:Declined: x' 'final-bot[bot]:still wrong'),$(long 13 'final-bot[bot]:still wrong' 'alice:Disputed: no')]"
+got="$(printf '%s' "$LONG" | jq -c --arg dispute 'Disputed:' --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]"]' -f "$TMP/threads.jq")"
+[ "$got" = "[11,12]" ] && ok "a long thread is judged on its latest comments and replied to at its opener" \
+  || bad "a long thread is judged on its latest comments and replied to at its opener" "got $got, want [11,12]"
 
 # Order: a Fixed in reply goes up after the push, on a sha checked against the pushed head.
 grep -q 'merge-base --is-ancestor <sha> "$NEW_HEAD"' "$SKILL" && ok "Fixed in sha is checked against the pushed head" || bad "Fixed in sha is checked against the pushed head"
 grep -q 'If the push fails, post no `Fixed in` reply' "$SKILL" && ok "no Fixed in reply when the push fails" || bad "no Fixed in reply when the push fails"
 # The filter's input is a read the skill actually spells out.
-grep -q 'reviewThreads(first: 100, after: $endCursor)' "$SKILL" && grep -q 'databaseId body author { login }' "$SKILL" \
+grep -q 'reviewThreads(first: 100, after: $endCursor)' "$SKILL" && grep -q 'opener: comments(first: 1)' "$SKILL" \
+  && grep -q 'comments(last: 100) { nodes { databaseId body author { login } } }' "$SKILL" \
   && ok "the skill spells out the GraphQL read the filter consumes" || bad "the skill spells out the GraphQL read the filter consumes"
 # Every thread is read: the read paginates, joins the pages, and a failed read stops the step.
 grep -q 'gh api graphql --paginate' "$SKILL" && grep -q "jq -s 'add // \[\]'" "$SKILL" \

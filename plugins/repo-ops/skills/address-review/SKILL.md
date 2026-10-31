@@ -393,9 +393,10 @@ reply names a commit that is already on the PR. The order:
 4. Straight after the push, post each `Fixed in <sha>` reply. Use the short sha of the commit
    that holds that fix, and first check it is on the pushed head:
    `git merge-base --is-ancestor <sha> "$NEW_HEAD"`. An amend or rebase after step 2 changes the
-   sha, so take it from the pushed history, never from memory. The first-line reviewer waits out
-   its push cooldown before a round, so replies posted right after the push are on the PR when it
-   reads the new head.
+   sha, so take it from the pushed history, never from memory. The first-line reviewer waits
+   `review.pushCooldownMinutes` (default 5) after a push before it starts a round, so replies
+   posted right after the push are on the PR when it reads the new head. Post them within that
+   window.
 5. Read the threads again and run the filter below. It must print `[]`. Anything it lists still
    owes an answer: answer it now, before you wait for the review.
 
@@ -412,9 +413,11 @@ THREADS=$(gh api graphql --paginate -F owner=<owner> -F name=<name> -F pr=<PR> -
       pullRequest(number: $pr) {
         reviewThreads(first: 100, after: $endCursor) {
           pageInfo { hasNextPage endCursor }
-          nodes { isResolved comments(first: 100) {
-            pageInfo { hasNextPage }
-            nodes { databaseId body author { login } } } }
+          nodes {
+            isResolved
+            opener: comments(first: 1) { nodes { databaseId body author { login } } }
+            comments(last: 100) { nodes { databaseId body author { login } } }
+          }
         }
       }
     }
@@ -424,9 +427,9 @@ THREADS=$(printf '%s\n' "$THREADS" | jq -s 'add // []')
 
 `--paginate` follows `$endCursor` until every thread is read, and prints one `nodes` array per
 page; `jq -s 'add'` joins them. A failed read is not an empty answer: if `gh` exits non-zero, stop
-and read again rather than run the filter on nothing. A thread with more than 100 comments has
-`comments.pageInfo.hasNextPage` true, and the filter lists it, because its latest replies were not
-read; answer it, or read its comments in full before deciding it is answered.
+and read again rather than run the filter on nothing. Each thread carries its opening comment
+(`opener`, the id to reply to) and its latest 100 comments, so a reply on a long thread is always
+read.
 
 List the threads still owing an answer with this filter. Its input is the joined `$THREADS`
 array. `$bots` is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and
@@ -444,13 +447,14 @@ def answer: (test("^Fixed in [0-9a-f]{7,40}\\b"))
   or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"));
 def by($set): (.author.login // "" | norm) as $a | $set | map(norm) | index($a);
 [.[] | select(.isResolved | not)
+     | .opener.nodes[0] as $o
      | .comments.nodes as $c
-     | select($c[0] | by($final))
-     | select(.comments.pageInfo.hasNextPage // false
-              or (([range($c | length) | select($c[.] | by($final))] | last) as $last
-                  | [$c[($last + 1):][] | select(by($bots) | not) | select(.body // "" | answer)]
-                  | length == 0))
-     | $c[0].databaseId]
+     | select($o | by($final))
+     | (([range($c | length) | select($c[.] | by($final))] | last) // -1) as $last
+     | select([$c[($last + 1):][] | select(.databaseId != $o.databaseId)
+               | select(by($bots) | not) | select(.body // "" | answer)]
+              | length == 0)
+     | $o.databaseId]
 ```
 
 Check each reply you write against the same rule before posting (input is the reply body). It
