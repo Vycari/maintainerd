@@ -47,12 +47,21 @@ got="$(printf '%s' "$THREADS" | jq -c --arg dispute 'Disputed:' --argjson final 
 [ "$got" = "[1,5,6,7,9]" ] && ok "lists final-gate threads with no acceptable non-bot answer (resolved, answered and first-line threads excluded; a 'thanks', a bot's reply, or an answer the final reviewer followed up on is not an answer)" \
   || bad "lists final-gate threads with no acceptable non-bot answer" "got $got, want [1,5,6,7,9]"
 
+# A thread whose comments ran past the first page is listed: its latest replies were never read.
+TRUNC='[{"isResolved":false,"comments":{"pageInfo":{"hasNextPage":true},"nodes":[{"databaseId":10,"body":"finding","author":{"login":"final-bot[bot]"}},{"databaseId":0,"body":"Fixed in abc1234","author":{"login":"alice"}}]}}]'
+got="$(printf '%s' "$TRUNC" | jq -c --arg dispute 'Disputed:' --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]"]' -f "$TMP/threads.jq")"
+[ "$got" = "[10]" ] && ok "a thread with unread comments is listed" || bad "a thread with unread comments is listed" "got $got, want [10]"
+
 # Order: a Fixed in reply goes up after the push, on a sha checked against the pushed head.
 grep -q 'merge-base --is-ancestor <sha> "$NEW_HEAD"' "$SKILL" && ok "Fixed in sha is checked against the pushed head" || bad "Fixed in sha is checked against the pushed head"
 grep -q 'If the push fails, post no `Fixed in` reply' "$SKILL" && ok "no Fixed in reply when the push fails" || bad "no Fixed in reply when the push fails"
 # The filter's input is a read the skill actually spells out.
-grep -q 'reviewThreads(first: 100)' "$SKILL" && grep -q 'databaseId body author { login }' "$SKILL" \
+grep -q 'reviewThreads(first: 100, after: $endCursor)' "$SKILL" && grep -q 'databaseId body author { login }' "$SKILL" \
   && ok "the skill spells out the GraphQL read the filter consumes" || bad "the skill spells out the GraphQL read the filter consumes"
+# Every thread is read: the read paginates, joins the pages, and a failed read stops the step.
+grep -q 'gh api graphql --paginate' "$SKILL" && grep -q "jq -s 'add // \[\]'" "$SKILL" \
+  && ok "the thread read paginates and joins every page" || bad "the thread read paginates and joins every page"
+grep -q 'thread read failed' "$SKILL" && ok "a failed thread read is not read as []" || bad "a failed thread read is not read as []"
 
 chk() { # want body
   local g

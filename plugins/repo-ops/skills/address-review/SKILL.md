@@ -406,21 +406,31 @@ Phase 1's REST reads do not group comments into threads or say whether a thread 
 read the threads with GraphQL (owner and name from `<config.repo>`):
 
 ```bash
-gh api graphql -F owner=<owner> -F name=<name> -F pr=<PR> -f query='
-  query($owner: String!, $name: String!, $pr: Int!) {
+THREADS=$(gh api graphql --paginate -F owner=<owner> -F name=<name> -F pr=<PR> -f query='
+  query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
       pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
-          nodes { isResolved comments(first: 100) { nodes { databaseId body author { login } } } }
+        reviewThreads(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved comments(first: 100) {
+            pageInfo { hasNextPage }
+            nodes { databaseId body author { login } } } }
         }
       }
     }
-  }' --jq '.data.repository.pullRequest.reviewThreads.nodes'
+  }' --jq '.data.repository.pullRequest.reviewThreads.nodes') || { echo "thread read failed"; exit 1; }
+THREADS=$(printf '%s\n' "$THREADS" | jq -s 'add // []')
 ```
 
-List the threads still owing an answer with this filter. Its input is that `nodes` array. `$bots`
-is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and `$dispute` is
-`review.firstLine.disputePrefix`. It prints the opening comment's `databaseId` (the id to reply to)
+`--paginate` follows `$endCursor` until every thread is read, and prints one `nodes` array per
+page; `jq -s 'add'` joins them. A failed read is not an empty answer: if `gh` exits non-zero, stop
+and read again rather than run the filter on nothing. A thread with more than 100 comments has
+`comments.pageInfo.hasNextPage` true, and the filter lists it, because its latest replies were not
+read; answer it, or read its comments in full before deciding it is answered.
+
+List the threads still owing an answer with this filter. Its input is the joined `$THREADS`
+array. `$bots` is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and
+`$dispute` is `review.firstLine.disputePrefix`. It prints the opening comment's `databaseId` (the id to reply to)
 of every unresolved final-reviewer thread that has no reply, from anyone outside `$bots`, which
 passes the reply check and comes after the final reviewer's latest comment on the thread. A
 question, a "thanks" or "will do" is not an answer, and neither is an answer that the final
@@ -436,9 +446,10 @@ def by($set): (.author.login // "" | norm) as $a | $set | map(norm) | index($a);
 [.[] | select(.isResolved | not)
      | .comments.nodes as $c
      | select($c[0] | by($final))
-     | ([range($c | length) | select($c[.] | by($final))] | last) as $last
-     | select([$c[($last + 1):][] | select(by($bots) | not) | select(.body // "" | answer)]
-              | length == 0)
+     | select(.comments.pageInfo.hasNextPage // false
+              or (([range($c | length) | select($c[.] | by($final))] | last) as $last
+                  | [$c[($last + 1):][] | select(by($bots) | not) | select(.body // "" | answer)]
+                  | length == 0))
      | $c[0].databaseId]
 ```
 
