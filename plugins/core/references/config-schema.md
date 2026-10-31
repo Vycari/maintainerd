@@ -645,7 +645,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   long a due round may go unconcluded before the reviewer reports itself unavailable (and
   `wait-for-review.sh --stage vr` uses it plus five minutes as its default deadline);
   `disputePrefix` *(default `"Disputed:"`)* is what a reply on a P0/P1 thread starts with to dispute
-  the finding. The verdict JSON in the check run's `output.text` is
+  the finding. Around every push, `address-review` also answers every unresolved inline thread by a
+  `review.bots` login: `Fixed in <sha>`, or a reply starting `disputePrefix`, `Declined:` or `Deferred:`
+  (the last with an issue reference); the first-line reviewer holds its hand-off until they are
+  answered. The verdict JSON in the check run's `output.text` is
   `{score, max, reviewed_sha, round, mode: "first-line", open: {p0,p1,p2}, findings: [ids],
   disputed: [ids], escalated: [ids], happy: bool, greptile_requested: sha|null}`; a title beginning
   `Needs maintainer: P0 dispute` also marks an escalation, `Review unavailable` an unavailable

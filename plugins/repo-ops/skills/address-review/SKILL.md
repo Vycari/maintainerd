@@ -201,8 +201,8 @@ may count as *covered*. Read that section instead of this one.)
 
 Treat STALE as **not met**, and do not push edits to move the number — there is nothing to act on
 until the bot has seen the current head. Wait one poll cycle (Phase 6 cadence). If the sha still
-hasn't moved after roughly two cycles, request the re-review explicitly, and say which of these you
-used:
+hasn't moved after roughly two cycles, request the re-review explicitly (**not in first-line mode:
+there you never request it**), and say which of these you used:
 
 ```bash
 gh pr comment <PR> --repo <config.repo> --body "@greptileai please re-review <headRefOid>"
@@ -368,6 +368,104 @@ finding you cannot refute is fixed.
 request the final review, and do not resolve the thread. Report the PR, the finding id, the reply
 you made and the reviewer's last word, and say the maintainer has to decide. The reviewer posts no
 final-review request while a P0 is escalated, so nothing else will move until they do.
+
+### Around every push: answer the final reviewer's threads
+
+The first-line reviewer holds the hand-off until every finding the final reviewer (the bots in
+`review.bots`) has left is fixed in the code **and** answered on its thread, P2s included. So before
+you push, in first-line mode, give every unresolved inline thread by a `review.bots` login exactly
+one of these replies (a `Fixed in` reply goes up straight after the push; see the order below):
+
+| You | Reply starts with |
+| --- | --- |
+| fixed it | `Fixed in <sha>` (post it once the fix commit exists; use the commit's short sha) |
+| contest it | `review.firstLine.disputePrefix` (default `Disputed:`) and the reason |
+| decline it | `Declined:` and the reason |
+| defer it | `Deferred:` and an issue reference (`#N`, `owner/repo#N` or an `/issues/N` URL). File the issue first, as in [Replies that defer must name an issue](#replies-that-defer-must-name-an-issue); that section's gate is mandatory here whatever `createPr.requireIssueForDeferredWork` says. |
+
+A `Fixed in` reply is not an answer on its own: the code has to show the fix, so a `Fixed in`
+reply names a commit that is already on the PR. The order:
+
+1. Post the `Disputed:`/`Declined:`/`Deferred:` replies whenever they are written; they name no
+   commit.
+2. Commit the fixes and run the Phase 4 pre-flight. Fix any failure before you go on.
+3. Push (Phase 5). If the push fails, post no `Fixed in` reply until a push succeeds.
+4. Straight after the push, post each `Fixed in <sha>` reply. Use the short sha of the commit
+   that holds that fix, and first check it is on the pushed head:
+   `git merge-base --is-ancestor <sha> "$NEW_HEAD"`. An amend or rebase after step 2 changes the
+   sha, so take it from the pushed history, never from memory. The first-line reviewer waits
+   `review.pushCooldownMinutes` (default 5) after a push before it starts a round, so replies
+   posted right after the push are on the PR when it reads the new head. Post them within that
+   window.
+5. Read the threads again and run the filter below. It must print `[]`. Anything it lists still
+   owes an answer: answer it now, before you wait for the review.
+
+Do not resolve the threads. Never post `review.rereviewCommand` or any `@`-mention of the final
+reviewer; the first-line reviewer requests it when it is happy.
+
+Phase 1's REST reads do not group comments into threads or say whether a thread is resolved, so
+read the threads with GraphQL (owner and name from `<config.repo>`):
+
+```bash
+THREADS=$(gh api graphql --paginate -F owner=<owner> -F name=<name> -F pr=<PR> -f query='
+  query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            isResolved
+            opener: comments(first: 1) { nodes { databaseId body author { login } } }
+            comments(last: 100) { nodes { databaseId body author { login } } }
+          }
+        }
+      }
+    }
+  }' --jq '.data.repository.pullRequest.reviewThreads.nodes') || { echo "thread read failed"; exit 1; }
+THREADS=$(printf '%s\n' "$THREADS" | jq -s 'add // []')
+```
+
+`--paginate` follows `$endCursor` until every thread is read, and prints one `nodes` array per
+page; `jq -s 'add'` joins them. A failed read is not an empty answer: if `gh` exits non-zero, stop
+and read again rather than run the filter on nothing. Each thread carries its opening comment
+(`opener`, the id to reply to) and its latest 100 comments, so a reply on a long thread is always
+read.
+
+List the threads still owing an answer with this filter. Its input is the joined `$THREADS`
+array. `$bots` is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and
+`$dispute` is `review.firstLine.disputePrefix`. It prints the opening comment's `databaseId` (the id to reply to)
+of every unresolved final-reviewer thread that has no reply, from anyone outside `$bots`, which
+passes the reply check and comes after the final reviewer's latest comment on the thread. A
+question, a "thanks" or "will do" is not an answer, and neither is an answer that the final
+reviewer has since followed up on, so neither takes a thread off the list:
+
+```jq
+# address-review final-gate thread filter
+def norm: ltrimstr("app/") | rtrimstr("[bot]");
+def answer: (test("^Fixed in [0-9a-f]{7,40}\\b"))
+  or startswith($dispute) or startswith("Declined:")
+  or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"));
+def by($set): (.author.login // "" | norm) as $a | $set | map(norm) | index($a);
+[.[] | select(.isResolved | not)
+     | .opener.nodes[0] as $o
+     | .comments.nodes as $c
+     | select($o | by($final))
+     | (([range($c | length) | select($c[.] | by($final))] | last) // -1) as $last
+     | select([$c[($last + 1):][] | select(.databaseId != $o.databaseId)
+               | select(by($bots) | not) | select(.body // "" | answer)]
+              | length == 0)
+     | $o.databaseId]
+```
+
+Check each reply you write against the same rule before posting (input is the reply body). It
+prints `true` only for an acceptable answer:
+
+```jq
+# address-review final-gate reply check
+(test("^Fixed in [0-9a-f]{7,40}\\b"))
+or startswith($dispute) or startswith("Declined:")
+or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"))
+```
 
 ### Stage 2: the final reviewer
 
@@ -758,7 +856,8 @@ When you wake, re-run Phase 1 — including the score read — and compare again
 IDs and head SHA:
 - New comments → loop back to Phase 2.
 - No new comments and the exit conditions unmet → wait again (longer; the human is busy).
-- A score that is still for an older head → wait, then request a re-review; don't push edits to
+- A score that is still for an older head → wait, then request a re-review (not in first-line
+  mode: there you only wait, since the first-line reviewer makes the request); don't push edits to
   move a number the bot hasn't recomputed.
 - All of [Loop exit conditions](#loop-exit-conditions) met → **done**, report and stop.
 
