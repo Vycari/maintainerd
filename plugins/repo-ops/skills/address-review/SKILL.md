@@ -422,8 +422,9 @@ List the threads still owing an answer with this filter. Its input is that `node
 is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and `$dispute` is
 `review.firstLine.disputePrefix`. It prints the opening comment's `databaseId` (the id to reply to)
 of every unresolved final-reviewer thread that has no reply, from anyone outside `$bots`, which
-passes the reply check. A question, a "thanks" or "will do" is not an answer, so it does not take
-a thread off the list:
+passes the reply check and comes after the final reviewer's latest comment on the thread. A
+question, a "thanks" or "will do" is not an answer, and neither is an answer that the final
+reviewer has since followed up on, so neither takes a thread off the list:
 
 ```jq
 # address-review final-gate thread filter
@@ -431,12 +432,13 @@ def norm: ltrimstr("app/") | rtrimstr("[bot]");
 def answer: (test("^Fixed in [0-9a-f]{7,40}\\b"))
   or startswith($dispute) or startswith("Declined:")
   or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"));
+def by($set): (.author.login // "" | norm) as $a | $set | map(norm) | index($a);
 [.[] | select(.isResolved | not)
      | .comments.nodes as $c
-     | select(($c[0].author.login // "" | norm) as $a | $final | map(norm) | index($a))
-     | select([$c[1:][]
-               | select((.author.login // "" | norm) as $a | ($bots | map(norm) | index($a)) | not)
-               | select(.body // "" | answer)] | length == 0)
+     | select($c[0] | by($final))
+     | ([range($c | length) | select($c[.] | by($final))] | last) as $last
+     | select([$c[($last + 1):][] | select(by($bots) | not) | select(.body // "" | answer)]
+              | length == 0)
      | $c[0].databaseId]
 ```
 

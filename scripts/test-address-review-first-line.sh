@@ -41,11 +41,11 @@ t() { # thread JSON helper: id resolved author [reply-author:reply-body]...
   done
   printf '{"isResolved":%s,"comments":{"nodes":[%s]}}' "$res" "$cs"
 }
-THREADS="[$(t 1 false 'final-bot[bot]'),$(t 2 false 'final-bot[bot]' 'alice:Disputed: validated upstream'),$(t 3 true 'final-bot[bot]'),$(t 4 false 'first-bot[bot]'),$(t 5 false 'final-bot[bot]' 'final-bot[bot]:Fixed in abc1234'),$(t 6 false 'app/final-bot'),$(t 7 false 'final-bot[bot]' 'alice:thanks, will look'),$(t 8 false 'final-bot[bot]' 'alice:Fixed in abc1234')]"
+THREADS="[$(t 1 false 'final-bot[bot]'),$(t 2 false 'final-bot[bot]' 'alice:Disputed: validated upstream'),$(t 3 true 'final-bot[bot]'),$(t 4 false 'first-bot[bot]'),$(t 5 false 'final-bot[bot]' 'final-bot[bot]:Fixed in abc1234'),$(t 6 false 'app/final-bot'),$(t 7 false 'final-bot[bot]' 'alice:thanks, will look'),$(t 8 false 'final-bot[bot]' 'alice:Fixed in abc1234'),$(t 9 false 'final-bot[bot]' 'alice:Declined: intentional' 'final-bot[bot]:still allocates per call')]"
 
 got="$(printf '%s' "$THREADS" | jq -c --arg dispute 'Disputed:' --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]","first-bot[bot]"]' -f "$TMP/threads.jq")"
-[ "$got" = "[1,5,6,7]" ] && ok "lists final-gate threads with no acceptable non-bot answer (resolved, answered and first-line threads excluded; a 'thanks' or a bot's reply is not an answer)" \
-  || bad "lists final-gate threads with no acceptable non-bot answer" "got $got, want [1,5,6,7]"
+[ "$got" = "[1,5,6,7,9]" ] && ok "lists final-gate threads with no acceptable non-bot answer (resolved, answered and first-line threads excluded; a 'thanks', a bot's reply, or an answer the final reviewer followed up on is not an answer)" \
+  || bad "lists final-gate threads with no acceptable non-bot answer" "got $got, want [1,5,6,7,9]"
 
 # Order: a Fixed in reply goes up after the push, on a sha checked against the pushed head.
 grep -q 'merge-base --is-ancestor <sha> "$NEW_HEAD"' "$SKILL" && ok "Fixed in sha is checked against the pushed head" || bad "Fixed in sha is checked against the pushed head"
