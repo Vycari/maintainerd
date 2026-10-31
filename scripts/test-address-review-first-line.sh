@@ -33,17 +33,26 @@ block "final-gate reply check" > "$TMP/reply.jq"
 [ -s "$TMP/threads.jq" ] && ok "SKILL.md carries the thread filter" || bad "SKILL.md carries the thread filter"
 [ -s "$TMP/reply.jq" ] && ok "SKILL.md carries the reply check" || bad "SKILL.md carries the reply check"
 
-t() { # thread JSON helper: id resolved author reply-authors...
+t() { # thread JSON helper: id resolved author [reply-author:reply-body]...
   local id="$1" res="$2" au="$3"; shift 3
-  local cs="{\"databaseId\":$id,\"author\":{\"login\":\"$au\"}}" r
-  for r in "$@"; do cs="$cs,{\"databaseId\":0,\"author\":{\"login\":\"$r\"}}"; done
-  printf '{"id":"T%s","isResolved":%s,"comments":{"nodes":[%s]}}' "$id" "$res" "$cs"
+  local cs="{\"databaseId\":$id,\"body\":\"finding\",\"author\":{\"login\":\"$au\"}}" r
+  for r in "$@"; do
+    cs="$cs,{\"databaseId\":0,\"body\":\"${r#*:}\",\"author\":{\"login\":\"${r%%:*}\"}}"
+  done
+  printf '{"isResolved":%s,"comments":{"nodes":[%s]}}' "$res" "$cs"
 }
-THREADS="[$(t 1 false 'final-bot[bot]'),$(t 2 false 'final-bot[bot]' 'alice'),$(t 3 true 'final-bot[bot]'),$(t 4 false 'first-bot[bot]'),$(t 5 false 'final-bot[bot]' 'final-bot[bot]'),$(t 6 false 'app/final-bot')]"
+THREADS="[$(t 1 false 'final-bot[bot]'),$(t 2 false 'final-bot[bot]' 'alice:Disputed: validated upstream'),$(t 3 true 'final-bot[bot]'),$(t 4 false 'first-bot[bot]'),$(t 5 false 'final-bot[bot]' 'final-bot[bot]:Fixed in abc1234'),$(t 6 false 'app/final-bot'),$(t 7 false 'final-bot[bot]' 'alice:thanks, will look'),$(t 8 false 'final-bot[bot]' 'alice:Fixed in abc1234')]"
 
-got="$(printf '%s' "$THREADS" | jq -c --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]","first-bot[bot]"]' -f "$TMP/threads.jq")"
-[ "$got" = "[1,5,6]" ] && ok "lists unanswered final-gate threads only (resolved, answered and first-line threads excluded)" \
-  || bad "lists unanswered final-gate threads only" "got $got, want [1,5,6]"
+got="$(printf '%s' "$THREADS" | jq -c --arg dispute 'Disputed:' --argjson final '["final-bot[bot]"]' --argjson bots '["final-bot[bot]","first-bot[bot]"]' -f "$TMP/threads.jq")"
+[ "$got" = "[1,5,6,7]" ] && ok "lists final-gate threads with no acceptable non-bot answer (resolved, answered and first-line threads excluded; a 'thanks' or a bot's reply is not an answer)" \
+  || bad "lists final-gate threads with no acceptable non-bot answer" "got $got, want [1,5,6,7]"
+
+# Order: a Fixed in reply goes up after the push, on a sha checked against the pushed head.
+grep -q 'merge-base --is-ancestor <sha> "$NEW_HEAD"' "$SKILL" && ok "Fixed in sha is checked against the pushed head" || bad "Fixed in sha is checked against the pushed head"
+grep -q 'If the push fails, post no `Fixed in` reply' "$SKILL" && ok "no Fixed in reply when the push fails" || bad "no Fixed in reply when the push fails"
+# The filter's input is a read the skill actually spells out.
+grep -q 'reviewThreads(first: 100)' "$SKILL" && grep -q 'databaseId body author { login }' "$SKILL" \
+  && ok "the skill spells out the GraphQL read the filter consumes" || bad "the skill spells out the GraphQL read the filter consumes"
 
 chk() { # want body
   local g

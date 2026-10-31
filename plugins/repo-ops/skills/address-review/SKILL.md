@@ -369,12 +369,12 @@ request the final review, and do not resolve the thread. Report the PR, the find
 you made and the reviewer's last word, and say the maintainer has to decide. The reviewer posts no
 final-review request while a P0 is escalated, so nothing else will move until they do.
 
-### Before every push: answer the final reviewer's threads
+### Around every push: answer the final reviewer's threads
 
 The first-line reviewer holds the hand-off until every finding the final reviewer (the bots in
 `review.bots`) has left is fixed in the code **and** answered on its thread, P2s included. So before
 you push, in first-line mode, give every unresolved inline thread by a `review.bots` login exactly
-one of these replies:
+one of these replies (a `Fixed in` reply goes up straight after the push; see the order below):
 
 | You | Reply starts with |
 | --- | --- |
@@ -383,30 +383,65 @@ one of these replies:
 | decline it | `Declined:` and the reason |
 | defer it | `Deferred:` and an issue reference (`#N`, `owner/repo#N` or an `/issues/N` URL). File the issue first, as in [Replies that defer must name an issue](#replies-that-defer-must-name-an-issue); that section's gate is mandatory here whatever `createPr.requireIssueForDeferredWork` says. |
 
-A `Fixed in` reply is not an answer on its own: the code has to show the fix. Commit the fix, post
-the replies, then push (this reverses Phase 5's push-then-reply order for these threads, so the
-replies are already on the PR when the first-line reviewer looks at the new head). Do not resolve
-the threads. Never post `review.rereviewCommand` or any `@`-mention of the final reviewer; the
-first-line reviewer requests it when it is happy.
+A `Fixed in` reply is not an answer on its own: the code has to show the fix, so a `Fixed in`
+reply names a commit that is already on the PR. The order:
 
-List the threads still owing an answer with this filter. Input is the `reviewThreads.nodes` array
-from the GraphQL read in Phase 1 (`id`, `isResolved`, `comments.nodes[].{databaseId,author.login}`);
-`$bots` is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone. It prints
-the opening comment's `databaseId` of every unresolved final-reviewer thread with no reply from
-anyone outside `$bots`:
+1. Post the `Disputed:`/`Declined:`/`Deferred:` replies whenever they are written; they name no
+   commit.
+2. Commit the fixes and run the Phase 4 pre-flight. Fix any failure before you go on.
+3. Push (Phase 5). If the push fails, post no `Fixed in` reply until a push succeeds.
+4. Straight after the push, post each `Fixed in <sha>` reply. Use the short sha of the commit
+   that holds that fix, and first check it is on the pushed head:
+   `git merge-base --is-ancestor <sha> "$NEW_HEAD"`. An amend or rebase after step 2 changes the
+   sha, so take it from the pushed history, never from memory. The first-line reviewer waits out
+   its push cooldown before a round, so replies posted right after the push are on the PR when it
+   reads the new head.
+5. Read the threads again and run the filter below. It must print `[]`. Anything it lists still
+   owes an answer: answer it now, before you wait for the review.
+
+Do not resolve the threads. Never post `review.rereviewCommand` or any `@`-mention of the final
+reviewer; the first-line reviewer requests it when it is happy.
+
+Phase 1's REST reads do not group comments into threads or say whether a thread is resolved, so
+read the threads with GraphQL (owner and name from `<config.repo>`):
+
+```bash
+gh api graphql -F owner=<owner> -F name=<name> -F pr=<PR> -f query='
+  query($owner: String!, $name: String!, $pr: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          nodes { isResolved comments(first: 100) { nodes { databaseId body author { login } } } }
+        }
+      }
+    }
+  }' --jq '.data.repository.pullRequest.reviewThreads.nodes'
+```
+
+List the threads still owing an answer with this filter. Its input is that `nodes` array. `$bots`
+is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone, and `$dispute` is
+`review.firstLine.disputePrefix`. It prints the opening comment's `databaseId` (the id to reply to)
+of every unresolved final-reviewer thread that has no reply, from anyone outside `$bots`, which
+passes the reply check. A question, a "thanks" or "will do" is not an answer, so it does not take
+a thread off the list:
 
 ```jq
 # address-review final-gate thread filter
 def norm: ltrimstr("app/") | rtrimstr("[bot]");
+def answer: (test("^Fixed in [0-9a-f]{7,40}\\b"))
+  or startswith($dispute) or startswith("Declined:")
+  or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"));
 [.[] | select(.isResolved | not)
      | .comments.nodes as $c
      | select(($c[0].author.login // "" | norm) as $a | $final | map(norm) | index($a))
-     | select([$c[1:][] | select((.author.login // "" | norm) as $a | ($bots | map(norm) | index($a)) | not)] | length == 0)
+     | select([$c[1:][]
+               | select((.author.login // "" | norm) as $a | ($bots | map(norm) | index($a)) | not)
+               | select(.body // "" | answer)] | length == 0)
      | $c[0].databaseId]
 ```
 
-Check each reply you wrote against this predicate before posting (input is the reply body; `$dispute`
-is `review.firstLine.disputePrefix`). It prints `true` only for an acceptable answer:
+Check each reply you write against the same rule before posting (input is the reply body). It
+prints `true` only for an acceptable answer:
 
 ```jq
 # address-review final-gate reply check
