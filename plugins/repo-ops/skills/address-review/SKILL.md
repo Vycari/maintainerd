@@ -201,8 +201,8 @@ may count as *covered*. Read that section instead of this one.)
 
 Treat STALE as **not met**, and do not push edits to move the number — there is nothing to act on
 until the bot has seen the current head. Wait one poll cycle (Phase 6 cadence). If the sha still
-hasn't moved after roughly two cycles, request the re-review explicitly, and say which of these you
-used:
+hasn't moved after roughly two cycles, request the re-review explicitly (**not in first-line mode:
+there you never request it**), and say which of these you used:
 
 ```bash
 gh pr comment <PR> --repo <config.repo> --body "@greptileai please re-review <headRefOid>"
@@ -368,6 +368,52 @@ finding you cannot refute is fixed.
 request the final review, and do not resolve the thread. Report the PR, the finding id, the reply
 you made and the reviewer's last word, and say the maintainer has to decide. The reviewer posts no
 final-review request while a P0 is escalated, so nothing else will move until they do.
+
+### Before every push: answer the final reviewer's threads
+
+The first-line reviewer holds the hand-off until every finding the final reviewer (the bots in
+`review.bots`) has left is fixed in the code **and** answered on its thread, P2s included. So before
+you push, in first-line mode, give every unresolved inline thread by a `review.bots` login exactly
+one of these replies:
+
+| You | Reply starts with |
+| --- | --- |
+| fixed it | `Fixed in <sha>` (post it once the fix commit exists; use the commit's short sha) |
+| contest it | `review.firstLine.disputePrefix` (default `Disputed:`) and the reason |
+| decline it | `Declined:` and the reason |
+| defer it | `Deferred:` and an issue reference (`#N`, `owner/repo#N` or an `/issues/N` URL). File the issue first, as in [Replies that defer must name an issue](#replies-that-defer-must-name-an-issue); that section's gate is mandatory here whatever `createPr.requireIssueForDeferredWork` says. |
+
+A `Fixed in` reply is not an answer on its own: the code has to show the fix. Commit the fix, post
+the replies, then push (this reverses Phase 5's push-then-reply order for these threads, so the
+replies are already on the PR when the first-line reviewer looks at the new head). Do not resolve
+the threads. Never post `review.rereviewCommand` or any `@`-mention of the final reviewer; the
+first-line reviewer requests it when it is happy.
+
+List the threads still owing an answer with this filter. Input is the `reviewThreads.nodes` array
+from the GraphQL read in Phase 1 (`id`, `isResolved`, `comments.nodes[].{databaseId,author.login}`);
+`$bots` is `review.bots` plus `review.firstLine.bots`, `$final` is `review.bots` alone. It prints
+the opening comment's `databaseId` of every unresolved final-reviewer thread with no reply from
+anyone outside `$bots`:
+
+```jq
+# address-review final-gate thread filter
+def norm: ltrimstr("app/") | rtrimstr("[bot]");
+[.[] | select(.isResolved | not)
+     | .comments.nodes as $c
+     | select(($c[0].author.login // "" | norm) as $a | $final | map(norm) | index($a))
+     | select([$c[1:][] | select((.author.login // "" | norm) as $a | ($bots | map(norm) | index($a)) | not)] | length == 0)
+     | $c[0].databaseId]
+```
+
+Check each reply you wrote against this predicate before posting (input is the reply body; `$dispute`
+is `review.firstLine.disputePrefix`). It prints `true` only for an acceptable answer:
+
+```jq
+# address-review final-gate reply check
+(test("^Fixed in [0-9a-f]{7,40}\\b"))
+or startswith($dispute) or startswith("Declined:")
+or (startswith("Deferred:") and test("(#[0-9]+|/issues/[0-9]+)"))
+```
 
 ### Stage 2: the final reviewer
 
