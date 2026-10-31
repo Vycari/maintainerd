@@ -93,6 +93,9 @@ printf '%s' "$sec" | grep -qi 'never post `review.rereviewCommand`' && ok "first
 printf '%s' "$sec" | grep -q 'gh pr comment.*@[a-z]' && bad "first-line section posts a re-review mention" || ok "first-line section never posts a re-review mention"
 grep -q 'gh pr comment <PR> --repo <config.repo> --body "@[a-z]*ai please re-review' "$SKILL" && ok "non-first-line stale-score re-review request unchanged" || bad "non-first-line stale-score re-review request unchanged"
 grep -q 'not in first-line mode' "$SKILL" && ok "stale-score re-review is gated off in first-line mode" || bad "stale-score re-review is gated off in first-line mode"
+# Every "request a re-review" instruction outside the first-line section carries the gate.
+ungated="$(awk '/^## First-line mode/ {g=1} /^## The principle/ {g=0} !g && /request a re-review/ && !/not in first-line/' "$SKILL")"
+[ -z "$ungated" ] && ok "every re-review request outside the first-line section is gated" || bad "every re-review request outside the first-line section is gated" "$ungated"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

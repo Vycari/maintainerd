@@ -856,7 +856,8 @@ When you wake, re-run Phase 1 — including the score read — and compare again
 IDs and head SHA:
 - New comments → loop back to Phase 2.
 - No new comments and the exit conditions unmet → wait again (longer; the human is busy).
-- A score that is still for an older head → wait, then request a re-review; don't push edits to
+- A score that is still for an older head → wait, then request a re-review (not in first-line
+  mode: there you only wait, since the first-line reviewer makes the request); don't push edits to
   move a number the bot hasn't recomputed.
 - All of [Loop exit conditions](#loop-exit-conditions) met → **done**, report and stop.
 
