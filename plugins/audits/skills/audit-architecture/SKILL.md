@@ -202,7 +202,7 @@ git push -u origin "$SLUG"
 gh pr create --repo <config.repo> \
   --title "<prefix>: <one-line description>" \
   --label <config.labels.architecture> --label <config.labels.automated> \
-  --label <each config.audits.extraPrLabels entry> \
+  --label <each config.audits.extraPrLabels entry that passed the existence check> \
   --body "$(cat <<'EOF'
 ## Summary
 
