@@ -230,16 +230,18 @@ EOF
 
 Match the conventional prefix to the work (`refactor:`, `chore:`, `fix:`).
 
-Repeat `--label` once per entry in `config.audits.extraPrLabels` (omit the line when it is empty).
-Those labels go on PRs only, never on the issues in step 6. If `gh` reports one of them does not
-exist, do not create it: open the PR without it and name the missing label in the report.
+Repeat `--label` once per `config.audits.extraPrLabels` entry that passed the once-per-run
+existence check (omit the line when none did). They go on PRs only, never on the issues in step 6,
+and they go on the PR whether you open it here or delegate to `create-pr`. The check, the
+delegation and the REST ordering are in
+[`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
 
 **When GraphQL is blocked**, `gh pr create` is 403. Push the branch the same way, then open the PR
 with `POST /repos/{owner}/{repo}/pulls` — **Create a PR** in
 [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Labels are a
 separate `POST /issues/{n}/labels` call there, so `config.labels.architecture` and
-`config.labels.automated` (and every `config.audits.extraPrLabels` entry) land a moment after the
-`opened` webhook rather than with it. For these labels that is fine — they are routing labels, not review-gating ones — so create the PR
+`config.labels.automated` (and the checked `config.audits.extraPrLabels` entries) land a moment
+after the `opened` webhook rather than with it. For these labels that is fine — they are routing labels, not review-gating ones — so create the PR
 non-draft and apply them immediately after, and note the ordering in the report. If this repo's
 labels *do* gate a review bot, take the second branch that reference describes: leave the PR a
 draft, label it, and stop with the PR URL and the one action a human must take. `gh pr ready` is

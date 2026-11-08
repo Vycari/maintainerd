@@ -107,7 +107,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     // audit's own category label and labels.automated, wherever those are applied (create, the
     // follow-up `gh pr edit`, the REST fallback). Use it for a label that hands the PR to
     // downstream automation, e.g. ["foreman:watch"] so a response loop answers its review.
-    // Each must already exist; the audits never create labels. Default [] if absent.
+    // Each must already exist; the audits check once per run, drop a missing one and report it,
+    // and never create labels (audits plugin: references/extra-pr-labels.md). Default [] if absent.
     "extraPrLabels": [],
 
     // audit-architecture: oversized-file line-count threshold, shared across every language

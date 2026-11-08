@@ -32,7 +32,7 @@ Before anything else, load the repo config (see
    - `config.commands.coverage` — coverage command. **If `null`, skip the coverage-gap category entirely** (don't invent one).
    - `config.commands.format` / `config.commands.lint` — pre-flight gates (skip any that are `null`).
    - `config.labels.testQuality` / `config.labels.automated` — labels applied to every PR/issue this skill opens.
-   - `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens (default `[]`). Each must already exist; never create one.
+   - `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens, including through `create-pr` (default `[]`). Check they exist once per run and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
    - `config.audits.testPrCap` / `config.audits.testIssueCap` — per-run caps (default **2 / 2** if absent; note the fallback in your report).
    - `config.audits.promoteThreshold` / `config.audits.promoteLookbackDays` — pattern-promotion knobs (default **3** within **90** days if absent). See step 7.
    - `config.guidelines.testing` — **the repo's own test conventions.** Read this file in full; it holds the repo-specific rules (the DB/fixture pattern, what may and may not be mocked, isolation rules, assertion expectations, redundant framework boilerplate, naming) that this skill checks the suite against. If it's missing or still full of `TODO` markers, say so in your report and proceed with the language-generic checks only.
@@ -209,7 +209,7 @@ gh pr create --repo <config.repo> --base <config.defaultBranch> \
   --title "test: <one-line description>" \
   --body "<template below>"
 gh pr edit <NUM> --add-label <config.labels.testQuality> --add-label <config.labels.automated> \
-  --add-label <each config.audits.extraPrLabels entry>
+  --add-label <each config.audits.extraPrLabels entry that passed the existence check>
 ```
 
 PR body:
