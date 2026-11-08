@@ -6,7 +6,8 @@ usual entry is a label that hands the PR to downstream automation, such as `fore
 
 Every audit that opens PRs follows the same three rules.
 
-1. **Check they exist, once per run, before the first PR.** Run
+1. **Check they exist, once per run, before the first PR.** When the list is absent or empty,
+   skip this check and every report line about it. Otherwise run
    `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` and drop any
    `extraPrLabels` entry it does not list. Name each dropped label once in the run report. Never
    create a label. If the read itself fails (non-zero exit, an error body, or no output at all),
