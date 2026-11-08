@@ -36,6 +36,7 @@ Before anything else, load the repo config (see
    - `config.commands.{format,lint,build,test}` — pre-flight gate before any PR (skip `null` ones).
    - `config.labels.security` — label applied to every PR/issue this skill opens (default `security`).
    - `config.labels.automated` — also applied (default `automated`).
+   - `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens, including through `create-pr` (default `[]`). Run the existence check once, before this run's first PR, and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
    - `config.audits.securityPrCap` / `config.audits.securityIssueCap` — per-run caps (default **3 / 5**).
    - `config.audits.promoteThreshold` / `config.audits.promoteLookbackDays` — pattern-promotion knobs (default **3** within **90** days). See step 6.
    - `config.guidelines.invariants` / `config.guidelines.coding` — **the repo's own security rules.**
@@ -174,7 +175,9 @@ Process findings **highest-severity first**. For each:
   - Branch `sec-<category>-<descriptor>` off `config.defaultBranch`.
   - **Delegate to `create-pr` if installed**; else run `config.commands.{format,lint,build,test}`
     (skip `null`) as pre-flight before pushing. No `--no-verify`. Never auto-merge.
-  - Label `config.labels.security` + `config.labels.automated`. For a dependency bump, the PR body
+  - Label `config.labels.security` + `config.labels.automated`, plus every
+    `config.audits.extraPrLabels` entry that passed the existence check (pass them to `create-pr`
+    when delegating). For a dependency bump, the PR body
     must name the CVE/GHSA, the version delta, and that tests pass.
 - **Issue** (counts against `config.audits.securityIssueCap`) otherwise — describe the vuln, its
   impact, evidence (`file:line`), and a proposed fix; don't write the code.

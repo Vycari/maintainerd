@@ -30,6 +30,9 @@ Keys this skill uses:
 - `config.labels.dependencies` — label applied to every PR/issue this skill opens (default
   `dependencies`).
 - `config.labels.automated` — also applied (default `automated`).
+- `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens,
+  including through `create-pr` (default `[]`). Run the existence check once, before this run's
+  first PR, and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
 - `config.audits.depsPrCap` / `config.audits.depsIssueCap` — per-run caps (default **3 / 5**).
 - `config.guidelines.*` — if the repo documents a **dependency or license policy** (an allowed-license
   allowlist, a "pin exactly / never auto-bump X" rule, a "stay on major N of Y" constraint), honor
@@ -155,7 +158,8 @@ Everything else is its **own** unit of work:
 
 For every PR: branch `deps-<category>-<descriptor>` off `config.defaultBranch`, **delegate to
 `create-pr` if installed** (else run `config.commands.*` as pre-flight; no `--no-verify`), label
-`config.labels.dependencies` + `config.labels.automated`, never auto-merge. Caps default **3 PRs /
+`config.labels.dependencies` + `config.labels.automated` plus every checked `config.audits.extraPrLabels`
+entry (pass them to `create-pr` when delegating), never auto-merge. Caps default **3 PRs /
 5 issues**; defer overflow to the next run and note it in the report.
 
 ### 6. Report
