@@ -18,7 +18,7 @@ Before doing anything else, load the repo config (see [`../../references/config-
    > This repo has no `.claude/maintainerd.json`. Run `/bootstrap` to generate it, then re-run me.
 
    Do not guess values or hardcode another repo's settings.
-3. Read the keys this skill uses: `config.repo`, `config.defaultBranch`, `config.language`, `config.paths.source`, `config.paths.tests`, `config.paths.skillsDir`, `config.commands.format`/`lint`/`build`/`test`, `config.guidelines.invariants`, `config.guidelines.coding`, `config.labels.architecture`, `config.labels.automated`, `config.audits.prCap`, `config.audits.issueCap`, `config.audits.oversizedLines`, `config.audits.promoteThreshold`, `config.audits.promoteLookbackDays`. Treat any `null` command as *"this repo has no such step — skip it"*. For any key that is **absent**, fall back to the documented default (caps default to 3 PRs / 5 issues; the oversized-files line-count threshold defaults to 500; pattern-promotion defaults to a threshold of 3 within 90 days) and mention the fallback in your run report.
+3. Read the keys this skill uses: `config.repo`, `config.defaultBranch`, `config.language`, `config.paths.source`, `config.paths.tests`, `config.paths.skillsDir`, `config.commands.format`/`lint`/`build`/`test`, `config.guidelines.invariants`, `config.guidelines.coding`, `config.labels.architecture`, `config.labels.automated`, `config.audits.extraPrLabels` (default `[]`), `config.audits.prCap`, `config.audits.issueCap`, `config.audits.oversizedLines`, `config.audits.promoteThreshold`, `config.audits.promoteLookbackDays`. Treat any `null` command as *"this repo has no such step — skip it"*. For any key that is **absent**, fall back to the documented default (caps default to 3 PRs / 5 issues; the oversized-files line-count threshold defaults to 500; pattern-promotion defaults to a threshold of 3 within 90 days) and mention the fallback in your run report.
 
 Throughout this skill, `config.<path>` refers to a value from that file. In the detection commands below, `config.paths.source` stands for your configured source root (e.g. `src/pepper/` or `src/`) and `config.paths.tests` your test root — substitute the literal value when you run them.
 
@@ -202,6 +202,7 @@ git push -u origin "$SLUG"
 gh pr create --repo <config.repo> \
   --title "<prefix>: <one-line description>" \
   --label <config.labels.architecture> --label <config.labels.automated> \
+  --label <each config.audits.extraPrLabels entry> \
   --body "$(cat <<'EOF'
 ## Summary
 
@@ -229,12 +230,16 @@ EOF
 
 Match the conventional prefix to the work (`refactor:`, `chore:`, `fix:`).
 
+Repeat `--label` once per entry in `config.audits.extraPrLabels` (omit the line when it is empty).
+Those labels go on PRs only, never on the issues in step 6. If `gh` reports one of them does not
+exist, do not create it: open the PR without it and name the missing label in the report.
+
 **When GraphQL is blocked**, `gh pr create` is 403. Push the branch the same way, then open the PR
 with `POST /repos/{owner}/{repo}/pulls` — **Create a PR** in
 [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md). Labels are a
 separate `POST /issues/{n}/labels` call there, so `config.labels.architecture` and
-`config.labels.automated` land a moment after the `opened` webhook rather than with it. For these
-two labels that is fine — they are routing labels, not review-gating ones — so create the PR
+`config.labels.automated` (and every `config.audits.extraPrLabels` entry) land a moment after the
+`opened` webhook rather than with it. For these labels that is fine — they are routing labels, not review-gating ones — so create the PR
 non-draft and apply them immediately after, and note the ordering in the report. If this repo's
 labels *do* gate a review bot, take the second branch that reference describes: leave the PR a
 draft, label it, and stop with the PR URL and the one action a human must take. `gh pr ready` is

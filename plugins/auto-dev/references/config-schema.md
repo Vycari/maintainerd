@@ -108,6 +108,13 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "depsPrCap":    3, // audit-deps: max PRs per run (a batched routine-bump PR counts as one)
     "depsIssueCap": 5, // audit-deps: max issues per run
 
+    // OPTIONAL extra label names applied to every PR (not issue) any audit opens, alongside the
+    // audit's own category label and labels.automated, wherever those are applied (create, the
+    // follow-up `gh pr edit`, the REST fallback). Use it for a label that hands the PR to
+    // downstream automation, e.g. ["foreman:watch"] so a response loop answers its review.
+    // Each must already exist; the audits never create labels. Default [] if absent.
+    "extraPrLabels": [],
+
     // audit-architecture: oversized-file line-count threshold, shared across every language
     // block (Python, TypeScript, and the language-generic fallback). Raise it on a repo with
     // many large-but-legitimate files rather than let the category flag dozens of files and
