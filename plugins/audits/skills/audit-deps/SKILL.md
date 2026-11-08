@@ -31,8 +31,8 @@ Keys this skill uses:
   `dependencies`).
 - `config.labels.automated` — also applied (default `automated`).
 - `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens,
-  including through `create-pr` (default `[]`). Check they exist once per run and drop missing
-  ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
+  including through `create-pr` (default `[]`). Run the existence check once, before this run's
+  first PR, and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
 - `config.audits.depsPrCap` / `config.audits.depsIssueCap` — per-run caps (default **3 / 5**).
 - `config.guidelines.*` — if the repo documents a **dependency or license policy** (an allowed-license
   allowlist, a "pin exactly / never auto-bump X" rule, a "stay on major N of Y" constraint), honor

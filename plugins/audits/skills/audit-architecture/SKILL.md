@@ -230,6 +230,7 @@ EOF
 
 Match the conventional prefix to the work (`refactor:`, `chore:`, `fix:`).
 
+Before the first PR of the run, run the extra-label existence check (rule 1 of the reference below).
 Repeat `--label` once per `config.audits.extraPrLabels` entry that passed the once-per-run
 existence check (omit the line when none did). They go on PRs only, never on the issues in step 6,
 and they go on the PR whether you open it here or delegate to `create-pr`. The check, the

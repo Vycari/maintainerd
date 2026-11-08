@@ -9,7 +9,11 @@ Every audit that opens PRs follows the same three rules.
 1. **Check they exist, once per run, before the first PR.** Run
    `gh api "repos/<config.repo>/labels" --paginate --jq '.[].name'` and drop any
    `extraPrLabels` entry it does not list. Name each dropped label once in the run report. Never
-   create a label. This matters for three reasons: `gh pr create --label` fails outright on an
+   create a label. If the read itself fails (non-zero exit, an error body, or no output at all),
+   that is not an empty list: fail closed per rule 1 of
+   [`gh-rest-fallbacks.md`](gh-rest-fallbacks.md). Apply none of the extra labels, open PRs with
+   the category labels only, and report "extra labels not applied: label check failed", never
+   that the labels are missing. This matters for three reasons: `gh pr create --label` fails outright on an
    unknown name after the branch is already pushed; a single `gh pr edit --add-label …` fails as a
    whole, so one missing name would also cost the category and `automated` labels; and the REST
    `POST /issues/{n}/labels` call **creates** a missing label as a side effect.
