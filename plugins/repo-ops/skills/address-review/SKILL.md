@@ -618,7 +618,16 @@ issue.
 - **A finding that needs a behaviour choice the brief does not make** — two reasonable answers,
   each with a cost a person would weigh — is neither fixed nor deferred silently. Reply
   `Disputed:` (a P0/P1) or `Deferred:` (a P2) saying the choice is the maintainer's, and list it
-  under **Needs the maintainer** in the round summary.
+  under **Needs the maintainer** in the round summary. A new user-facing rule added only to clear a
+  finding is such a choice: a new refusal, limit, uniqueness check or required field that the brief
+  does not ask for (for example, refusing a create whose name is already taken, to clear a
+  duplicate-on-retry finding). Propose it under **Needs the maintainer**; do not ship it.
+- **A mitigation is not a fix.** When you change something smaller than what the finding asks for
+  (reworded copy, a log line, a guard on one path) and move the real fix to an issue, the reply is
+  `Disputed:` (a P0/P1) or `Deferred:` (a P2), saying what you changed, why it is in proportion to
+  the risk, and the issue that holds the rest. Never `Fixed in`: the reviewer checks the code for the
+  fix the finding asked for, judges it incomplete, and the next round argues it again. A disputed
+  P1 is cleared and the final reviewer weighs it.
 - **A finding that asks you to reverse an earlier fix** — undo or invert a behaviour you changed in
   an earlier round of this PR because a reviewer asked for it, so the two findings want opposite
   behaviour — is never fixed. Two reviewers (or one reviewer in two rounds) disagreeing about how
