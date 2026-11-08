@@ -619,6 +619,13 @@ issue.
   each with a cost a person would weigh — is neither fixed nor deferred silently. Reply
   `Disputed:` (a P0/P1) or `Deferred:` (a P2) saying the choice is the maintainer's, and list it
   under **Needs the maintainer** in the round summary.
+- **A finding that asks you to reverse an earlier fix** — undo or invert a behaviour you changed in
+  an earlier round of this PR because a reviewer asked for it, so the two findings want opposite
+  behaviour — is never fixed. Two reviewers (or one reviewer in two rounds) disagreeing about how
+  the code should behave is a behaviour choice, and changing it again only starts the next round's
+  finding. Stop, reply `Disputed:` (a P0/P1) or `Deferred:` (a P2) naming both findings and the
+  fix commit between them, and list it under **Needs the maintainer** with the two behaviours as
+  the options. Wait for the maintainer before touching that behaviour again.
 - **A finding that contradicts the brief** — the linked issue's acceptance criteria, or a scope
   line in the PR body that the maintainer set, ask for exactly the flagged behaviour — is disputed,
   quoting the criterion.
