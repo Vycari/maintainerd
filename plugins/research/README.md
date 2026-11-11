@@ -8,6 +8,7 @@ scoping — a generic "AI papers this week" digest is worthless.
 | Skill | What it does | Typical trigger |
 | --- | --- | --- |
 | [`research-radar`](skills/research-radar/SKILL.md) | Build an interest profile from what the repo has been shipping, harvest arXiv since the last complete run, prefilter and rank the few genuinely relevant papers, and ship a dated digest as a PR. | scheduled weekly, or "scan arxiv" |
+| [`changelog-radar`](skills/changelog-radar/SKILL.md) | Scan developer changelogs and blogs (like GitHub Changelog) for platform updates, new CI tools, and ecosystem features relevant to this repo, and draft an issue. | scheduled weekly, or "scan github changelog" |
 
 ## A note on trust
 

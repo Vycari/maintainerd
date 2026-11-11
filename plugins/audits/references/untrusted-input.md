@@ -67,6 +67,7 @@ you can't tell whether a value is sensitive, leave it out and describe it.
 | Skill | Untrusted input | Durable output |
 | --- | --- | --- |
 | `research-radar` | arXiv titles + abstracts — **an open submission channel**, so fully attacker-controlled | committed digest file + PR body |
+| `changelog-radar` | external changelog and blog entries (titles, summaries, categories) | issue title + body |
 | `dependabot` | CI logs, changelogs, release notes on bot PRs | issue + PR comments |
 | `audit-deps` | registry deprecation messages (publisher-authored free text), changelogs | issue + PR |
 | `audit-security` | dependency advisories, CI output | issue + PR |
