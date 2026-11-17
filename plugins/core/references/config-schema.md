@@ -192,6 +192,29 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "userAgent":     "research-radar/1.0 (mailto:you@example.com)" // arXiv API courtesy UA
   },
 
+  // ── auto-merge gate (optional; read by an external merge gate, not by a maintainerd skill) ──
+  // TOP-LEVEL, not under `autoDev`: it governs any maintainer-authored PR, not only the auto-dev
+  // pipeline's. Absent, or `enabled` anything other than `true` = off. Every key below is optional
+  // and every default is the conservative one: a repo that merely HAS this block merges nothing.
+  "autoMerge": {
+    "enabled":       false,        // explicit opt-in; must be read from the default branch, never a PR head
+    "maintainers":   [],           // logins whose PRs may be merged; [] = merge nothing. Humans only: a bot login never matches
+    "settleMinutes": 30,           // minutes the review verdict must hold, unchanged, on the PR's head before it counts
+    "vetoLabel":     "auto:no-merge", // a person applies it to hold a PR out of the gate; a hard exclude
+    "maxChangedFiles": 20,         // PRs touching more files are held
+    "maxChangedLines": 400,        // PRs changing more lines (additions + deletions) are held
+    "naPattern":     "(?i)\\bn/?a\\b|not applicable|done", // regex: an unchecked "Human required" item whose text matches is treated as done
+    "humanActionPhrases": [],      // regexes; [] = the gate's built-in list. A PR body matching one needs a person
+    "toolMarkers":   null,         // single-line markers the gate ignores as tool output; null/absent = the gate's built-in list, [] = none
+    "paths": {
+      "allowTests":  true,         // diffs touching only the tests tree
+      "allowDocs":   false,        // diffs touching only docs / markdown
+      "allowSrc":    false,        // ordinary source changes
+      "allowDependencyManifests": false, // lockfiles and dependency manifests (they have their own flow)
+      "allowlist":   null          // globs; when set (even []) ONLY matching diffs are eligible; null = unset
+    }
+  },
+
   // ── create-pr gates (optional) ───────────────────────────────────────────
   // Absent → the whole block defaults, which is today's behavior: no extra gate.
   "createPr": {
@@ -353,7 +376,7 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `review`, `release`, `deploy`
+### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `autoMerge`, `researchRadar`, `review`, `release`, `deploy`
 
 - `coverage.*` *(optional; absent = the ratchet has not been adopted here)* — `floor`, the whole
   percent of line coverage CI refuses to drop below, and `floorCommit`, the default-branch commit it
@@ -411,6 +434,45 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   the token cannot read collaborator permissions. It widens who decides, never who may comment — on
   a public repo everyone else's comments are still read, as information rather than as decisions.
   All optional; absent → the documented defaults.
+- `autoMerge.*` *(optional; **the second block whose absence means "off"**)* — the opt-in and
+  caps for an external gate that enqueues maintainer-authored PRs for merge once review is stable
+  and nothing needs a person. No maintainerd skill reads it; it is documented here because it
+  lives in this file and `doctor` validates it. It is a **top-level** block, not `autoDev.autoMerge`
+  (an earlier draft nested it; the gate reads the top level). The gate reads exactly these keys,
+  each optional, plus existing ones: `review.approvalThreshold`, `review.bots`, `review.checkName`,
+  `review.blockMarker`, `review.skipLabel`, `labels.security` and `paths.prTemplate`.
+  - `enabled` *(`false`)* — only the literal `true` opts in; anything else is off. **Read from the
+    default branch**, never the PR's own head, and the gate treats `.claude/maintainerd.json` as a
+    path it never merges, so a PR cannot widen its own authority.
+  - `maintainers` *(`[]`)* — logins whose PRs are eligible, matched exactly (case-insensitive). A
+    bot login never matches. Must be a list of strings; `[]` merges nothing. The deployment running
+    the gate keeps its own list and a PR's author must be named in both.
+  - `settleMinutes` *(`30`)* — how long the head commit and review verdict must stay unchanged. A
+    **floor**: the deployment has its own minimum and the larger of the two applies, so a repo may
+    raise it and can never lower it.
+  - `vetoLabel` *(`"auto:no-merge"`)* — a label a person applies to keep a PR out; must already
+    exist.
+  - `maxChangedFiles` *(`20`)* / `maxChangedLines` *(`400`)* — size ceilings; a larger diff is held.
+    These bound review attention, not safety. Lowering one is the cautious direction; raising one
+    past its default widens the gate and is a reviewable decision.
+  - `naPattern` *(`(?i)\bn/?a\b|not applicable|done`)* — regex deciding when an unchecked item in
+    the PR template's *Human required* list counts as not applicable. `humanActionPhrases` *(`[]`)*
+    — regexes; a PR body matching one is held for a person, and `[]` means the gate's built-in list,
+    not "none". `toolMarkers` — single-line markers ignored as tool output; absent or `null` means
+    the built-in list, `[]` means none.
+  - `paths.allowTests` *(`true`)*, `paths.allowDocs`, `paths.allowSrc`,
+    `paths.allowDependencyManifests` *(each `false`)* — which classes of diff are eligible; only the
+    literal `true` enables one. `paths.allowlist` *(`null`)* — when a list of globs is present, only
+    diffs entirely inside it are eligible (`[]` admits nothing); `null` or absent means unset.
+  - **Validation** (`doctor` check 2): the block must be an object; `maintainers`,
+    `humanActionPhrases`, `toolMarkers` and `paths.allowlist` lists of strings; `naPattern` a string
+    that compiles as a regex; the numeric keys integers; the `allow*` keys and `enabled` booleans.
+    A wrong shape in the first group makes the gate hold every PR in the repo rather than guess, so
+    those are **FAIL**; a non-integer number or non-boolean, which the gate silently replaces with
+    the default, is **WARN**. Relationships against the defaults above: `settleMinutes` below `30`
+    is **WARN** (a lowering the gate ignores); `maxChangedFiles` above `20` or `maxChangedLines`
+    above `400` is **WARN** (a widening); `enabled: true` with empty `maintainers` is **WARN** (opts
+    in and merges nothing). Keys not listed here are unknown keys (**WARN**).
 - `depsFlow.*` *(the `dependabot` skill — the only maintainerd skill that merges)* — **the one block
   whose absence means "off", not "use the defaults".** A missing block, or `enabled` anything other
   than `true`, disables the skill entirely; merge authority is never acquired by omission. Once

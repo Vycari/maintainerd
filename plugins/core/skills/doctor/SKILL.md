@@ -65,6 +65,14 @@ the source of truth for what's valid. Then run every check below, collecting fin
   commits keep making a score stale). Also **WARN** when no `verify` element contains `{sha}`
   (the check would not look at the commit it is vouching for), and when `author` is not
   `*[bot]`-shaped and not an exact login you recognise (advisory).
+- `autoMerge`, when present, validated per the `autoMerge.*` entry in the schema: not an object,
+  a list key that is not a list of strings, a non-string or non-compiling `naPattern`, or
+  `paths.allowlist` that is neither `null` nor a list of strings → **FAIL** (the gate holds every PR
+  in the repo). A non-integer cap or non-boolean `enabled`/`paths.allow*` → **WARN** (the gate
+  substitutes the default). Floor relationships, since a repo may be more cautious than the defaults
+  and never less: `settleMinutes` < 30, `maxChangedFiles` > 20, `maxChangedLines` > 400 → **WARN**
+  naming the key and the default; `enabled: true` with empty `maintainers` → **WARN** (merges
+  nothing). Absent block → no finding (it means off). Prose rule only: no script backs it.
 - **Unknown keys** not in the schema → **WARN** (usually a typo, e.g. `commands.tests` for `test`;
   the skill reading it will silently miss the value).
 
