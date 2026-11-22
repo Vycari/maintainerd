@@ -156,6 +156,27 @@ somewhere this skill does not read — a human has to look before this PR can be
 A score whose denominator doesn't match the threshold (an `8/10` against a `5/5` bar) gets the same
 halt with the obvious substitution: found, not comparable, cannot be evaluated here.
 
+**One exception: a skip-labelled PR with no score is a review that was never scheduled, not one
+that went missing.** When `config.review.skipLabel` is set, the PR carries that label, and it is
+**not** a draft, the repo has said no automated reviewer runs on it (a prose or config-only change),
+so there is no score to find and the halt above would stop a PR that is in fact finished. For such
+a PR, no score anywhere means the score gate does not apply: the PR is done once its checks pass,
+under the [skip-labelled exit](#loop-exit-conditions). Read the labels and draft state from the PR
+itself (`gh api repos/<config.repo>/pulls/<PR> --jq '{draft, labels: [.labels[].name]}'`), never from
+memory of having applied the label. The exception is narrow on purpose:
+
+- **A score that is present still counts.** If a bot reviewed the PR anyway (it raced the label, or
+  someone removed and re-added it), that score is evaluated exactly as on any other PR — a found
+  score below the threshold is not waived by the label.
+- **No `review.skipLabel` configured, or the PR lacks it, or it is still a draft**: the halt
+  above applies unchanged. A draft has no review scheduled for a different reason, and is not done.
+- **Say it in the round summary**: "no score; PR carries `<skipLabel>`, so the score gate is waived
+  and checks are the gate". A silent pass is the failure this section exists to prevent, so the
+  waiver is always written down.
+
+`wait-for-review.sh` reports such a PR as `no-review-scheduled` rather than waiting out its
+deadline; with the skip label present (and the PR not a draft), read that verdict as this exception.
+
 **The PR body is editable by anyone with write access**, including the PR author and including this
 skill — which makes rung (a) the one rung whose provenance is worth a line. Check who last edited
 the body:
@@ -954,6 +975,17 @@ and running the wrong one is the bug this section exists to prevent.
 - No unresolved review threads, no new comments since the last push, checks green — as above.
 - No human has `CHANGES_REQUESTED` outstanding. A human block outranks any score.
 
+**A skip-labelled PR with no score** (`config.review.skipLabel` set, the PR carries it, not a
+draft, and no rung found a score) — the checks gate. Done when **all** of:
+- Required status checks pass (`statusCheckRollup`, or the check runs on the head, roll up to
+  `SUCCESS`; a check that is not `completed` is not a pass).
+- No unresolved review threads and no new comments since the last push — a human may still have
+  reviewed it by hand.
+- No human has `CHANGES_REQUESTED` outstanding.
+
+The round summary names the label and says the score gate was waived for it. If a score *was*
+found, this exit does not apply: use the score gate above.
+
 `reviewDecision == APPROVED` is **not** required here, and waiting for it is how this loop hangs: a
 scoring bot grades rather than approves, so on a repo with no human reviewer `reviewDecision` may
 sit `REVIEW_REQUIRED` forever at 5/5. The mirror error is the worse one — treating a missing score
@@ -987,7 +1019,9 @@ maintainer's.
   than pushing anything to provoke one.
 - **No score anywhere and `approvalThreshold` is set**: halt with the three-places message. A bot
   that didn't run, an integration that lost the repo, and a PR that genuinely passed all look
-  identical from inside this loop, and only one of them is safe to assume.
+  identical from inside this loop, and only one of them is safe to assume. The exception is a
+  non-draft PR carrying `config.review.skipLabel`: the repo said no bot runs there, so it takes the
+  skip-labelled exit (checks green) instead.
 - **A reviewer requests scope creep**: reply acknowledging, file a follow-up issue, link it from the
   reply. Don't expand the PR. (If `create-issue` is installed, use it to file the follow-up.) Under
   `createPr.requireIssueForDeferredWork` this stops being a convention and becomes a gate on the
