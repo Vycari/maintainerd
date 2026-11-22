@@ -251,7 +251,10 @@ block those lower rungs read. See `config-schema.md`.
 Policy comes from the repository being waited on: the checkout's `.claude/maintainerd.json` when
 the checkout is that repo, otherwise the target's file read from its default branch (so `-R` or a
 PR URL for another repo is never judged by this checkout's bots, threshold or skip label). A PR URL
-names its repository, and contradicting it with `-R` is an error.
+names its repository, and contradicting it with `-R` is an error. It names its host too: every `gh`
+call then goes to that host (`GH_HOST`, which wins over one already set), so a GitHub Enterprise
+URL is never resolved on github.com, and the checkout counts as the target only when its repository
+is on that host. Both tools share this.
 
 **First-line mode (opt-in).** With `review.mode: "first-line"` (see `config-schema.md`):
 

@@ -22,7 +22,8 @@ is_uint() {
   esac
 }
 
-# parse_common_args "$@" — sets WAIT_PR, WAIT_REPO (may be empty), WAIT_TIMEOUT_SECONDS (may be empty),
+# parse_common_args "$@" — sets WAIT_PR, WAIT_REPO (may be empty), WAIT_HOST (the PR URL's host, else
+# empty; when set it is exported as GH_HOST), WAIT_TIMEOUT_SECONDS (may be empty),
 # WAIT_INTERVAL_SECONDS (may be empty), WAIT_CONFIG (may be empty), WAIT_STAGE (may be empty; only
 # wait-for-review.sh accepts one), and leaves any flag it does
 # not recognise in WAIT_REST (space-joined) for the caller. Usage errors exit 3.
@@ -34,6 +35,7 @@ parse_common_args() {
   WAIT_CONFIG=""
   WAIT_STAGE=""
   WAIT_REST=""
+  WAIT_HOST=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -R | --repo)
@@ -92,6 +94,20 @@ parse_common_args() {
           die 3 "-R $WAIT_REPO contradicts the repository in the PR URL ($url_repo)"
         fi
         WAIT_REPO="$url_repo"
+        # The URL names its host too. `gh` queries GH_HOST (default github.com), not the host in the
+        # URL, so a GitHub Enterprise URL would otherwise be resolved on github.com: a same-named
+        # repository there, or nothing. Every gh call this tool makes goes to the URL's host, and
+        # that wins over a GH_HOST already in the environment, which the URL contradicts.
+        url_host="${WAIT_PR#*://}"
+        url_host="${url_host%%/*}"
+        url_host="$(printf '%s' "$url_host" | tr 'A-Z' 'a-z')"
+        case "$url_host" in
+          '' | *[!a-z0-9.:-]*) die 3 "the PR URL's host '$url_host' is not a host name" ;;
+          www.github.com) url_host="github.com" ;;
+        esac
+        WAIT_HOST="$url_host"
+        GH_HOST="$url_host"
+        export GH_HOST
         ;;
     esac
     WAIT_PR="${WAIT_PR##*/pull/}"
@@ -126,9 +142,17 @@ load_config() {
   # WAIT_CONFIG_LOCAL=1 only when the working directory is a checkout of the repository being
   # waited on, however the config was chosen: --config names a file, not a checkout, so it does not
   # by itself make the cwd the target repo's. Tools that run commands in the checkout read it.
+  # A PR URL also names a host: the checkout is the target only when its repository is on that
+  # host, so a github.com checkout of o/r is never taken for an Enterprise host's o/r.
   here=""
   if [ "$WAIT_REPO_EXPLICIT" = "1" ]; then
     here="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || here=""
+    if [ -n "$here" ] && [ -n "${WAIT_HOST:-}" ]; then
+      here_url="$(gh repo view --json url -q .url 2>/dev/null)" || here_url=""
+      here_host="${here_url#*://}"
+      here_host="$(printf '%s' "${here_host%%/*}" | tr 'A-Z' 'a-z')"
+      [ "$here_host" = "$WAIT_HOST" ] || here=""
+    fi
   else
     here="$WAIT_REPO"
   fi

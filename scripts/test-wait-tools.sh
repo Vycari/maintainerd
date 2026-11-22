@@ -50,6 +50,7 @@ serve() {
   [ ! -f "$f.fail" ] || exit 1
 }
 echo "$*" >>"$STUB_DIR/.calls"
+echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
 case "$1 $2" in
   "pr view")
     case "$*" in
@@ -102,7 +103,13 @@ case "$1 $2" in
     ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
-  "repo view") echo "o/r" ;;
+  "repo view")
+    # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
+    case "$*" in
+      *"--json url"*) echo "https://${STUB_REPO_HOST:-github.com}/o/r" ;;
+      *) echo "o/r" ;;
+    esac
+    ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
   *) echo "stub: unhandled: $*" >&2; exit 1 ;;
 esac
@@ -391,6 +398,42 @@ touch "$STUB_DIR/remoteconfig.fail"
 write_threads "" '[]'
 run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
 [ "$RC" = "3" ] && ok "an unreadable remote config fails closed (exit 3)" || bad "remote config error" "rc=$RC out=$OUT"
+
+# A PR URL on another host (GitHub Enterprise) is resolved on that host: every gh call goes there.
+new_case review-pr-url-enterprise
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+echo "$CFG_5" >"$STUB_DIR/remoteconfig"
+run_tool "$WFR" https://GHE.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL is accepted" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "every gh call goes to the URL's host (GH_HOST)" ||
+  bad "enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+grep -q 'pr view 7 -R o/r' "$STUB_DIR/.calls" && ok "the URL's repository is polled on that host" || bad "enterprise repo" "$(cat "$STUB_DIR/.calls")"
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  ok "a github.com checkout of the same owner/name is not the Enterprise repo: its config is read there" ||
+  bad "enterprise: local config used for another host's repo" "$(cat "$STUB_DIR/.calls")"
+
+new_case review-pr-url-enterprise-checkout
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+STUB_REPO_HOST=ghe.example.com run_tool "$WFR" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL from a checkout of that repo" no-review-scheduled 0
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  bad "enterprise: a checkout on the URL's host is the target, its config is local" "$(cat "$STUB_DIR/.calls")" ||
+  ok "a checkout of the repo on the URL's host reads its own config"
+
+new_case review-pr-url-overrides-gh-host
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+GH_HOST=ghe.example.com run_tool "$WFR" https://github.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "a github.com PR URL with GH_HOST set elsewhere" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "github.com" ] && ok "the URL's host wins over a contradicting GH_HOST" ||
+  bad "GH_HOST override" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+
+new_case review-pr-url-bad-host
+write_config "$CFG_5"
+run_tool "$WFR" 'https://gh$e.example.com/o/r/pull/7'
+[ "$RC" = "3" ] && ok "a PR URL whose host is not a host name is a usage error" || bad "bad host" "rc=$RC"
 
 new_case review-url-contradicts-R
 write_config "$CFG_5"
@@ -764,6 +807,14 @@ new_case checks-green
 rollup "" "$(check_run build COMPLETED SUCCESS), $(check_run lint COMPLETED SKIPPED), $(check_run docs COMPLETED NEUTRAL)"
 run_tool "$WFC" 7 "${FASTC[@]}"
 expect "all complete, none failed -> green" green 0
+
+new_case checks-pr-url-enterprise
+rollup "" "$(check_run build COMPLETED SUCCESS)"
+echo '{}' >"$STUB_DIR/remoteconfig"
+run_tool "$WFC" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1 --settle-seconds 0
+expect "wait-for-checks: an Enterprise PR URL is read on its host" green 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "wait-for-checks: every gh call goes to the URL's host" ||
+  bad "wait-for-checks enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
 
 new_case checks-green-status-context
 rollup "" "$(check_run build COMPLETED SUCCESS), {\"__typename\":\"StatusContext\",\"context\":\"ci/legacy\",\"state\":\"SUCCESS\"}"
