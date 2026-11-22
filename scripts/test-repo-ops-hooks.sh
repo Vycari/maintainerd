@@ -1097,6 +1097,48 @@ gh pr merge 5
 EOF"
 
 echo
+echo "== an escaped character before # does not start a comment (Greptile 4656447924) =="
+expect "$MERGE_GUARD" warn 'an escaped space before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo \ #; gh pr merge 123'
+expect "$TEMPLATE_GUARD" deny 'an escaped space before # does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo \ #; gh pr create --title x --body "no headings"'
+expect "$MERGE_GUARD" warn 'an escaped tab before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \\	#; gh pr merge 123"
+expect "$MERGE_GUARD" warn 'a line continuation before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a\
+#b; gh pr merge 123'
+expect "$MERGE_GUARD" warn 'control: an unescaped space before # is still a comment, the next line is found' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a #; gh pr merge 4
+gh pr merge 5'
+expect "$MERGE_GUARD" none 'control: a real comment still hides only itself' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a # gh pr merge 5'
+
+echo
+echo "== \${ ... } inside double quotes nests its own quotes (Greptile 4656447931) =="
+expect "$MERGE_GUARD" warn 'a quoted default inside "${...}" does not fake a heredoc opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"<<EOF"}"
+gh pr merge 5
+EOF'
+expect "$TEMPLATE_GUARD" deny 'a quoted default inside "${...}" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "${x:-"<<EOF"}"
+gh pr create --title x --body "no headings"
+EOF'
+expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "${...}" does not swallow a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"'"'"'"}"; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a single-quoted default inside "${...}" does not fake a heredoc opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-'"'"'<<EOF'"'"'}"
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "$(...)" does not swallow a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "$(echo "'"'"'")"; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a brace pair inside ${...} does not end the expansion early' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{a}}; gh pr merge 5'
+expect "$MERGE_GUARD" none 'control: a real heredoc after "${x:-"y"}" is still masked' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"y"}"; cat <<'"'"'EOF'"'"'
+gh pr merge 5
+EOF'
+
+echo
 echo "== one wrapper resolver: gh_pr_subcommand, gh_command_words and gh_exec_words agree (#85/#90) =="
 (
   # shellcheck source=../plugins/repo-ops/hooks/scripts/lib/gh-exec-words.sh
