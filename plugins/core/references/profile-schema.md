@@ -230,6 +230,11 @@ scaffolded CI workflow omits the coverage step and the gate entirely, `bootstrap
 `coverage.floor`, and `doctor`'s check 13 reports the repo exempt. An exemption is the absence of a
 gate, not a floor of zero.
 
+**Dependabot ecosystems need a manifest.** A language block's `dependabot` list is what the repo
+*may* use, not what it must have: `doctor` requires an `updates` entry only for an ecosystem whose
+manifest exists in the repo (npm: `package.json`; pip/uv: `pyproject.toml` or `requirements*.txt`;
+github-actions: `.github/workflows/`) and reports the rest as `n/a (no manifest)`.
+
 ---
 
 ## Required checks must have a producer

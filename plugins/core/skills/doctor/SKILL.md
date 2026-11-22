@@ -92,6 +92,11 @@ the source of truth for what's valid. Then run every check below, collecting fin
 not a source tree, and `paths.source`/`paths.tests` are legitimately `null` there. Report them as
 n/a; never as PASS (nothing was verified) and never as FAIL. Everything else is checked as usual.
 
+**Coverage exemption:** when the effective `coverage` is `null` (a complete exemption — a repo with
+no tests) and `paths.tests` is `null`, `paths.tests` is `n/a (coverage exempt)`: there is no test
+tree to resolve. A `paths.tests` that is set is still checked, and a `null` `paths.tests` with a
+non-null `coverage` is still a finding.
+
 For each `config.paths.*`: the directory/file exists in the repo. `designDocs`/`productDocs` are
 arrays — check each entry. A configured `prTemplate` that doesn't exist → **WARN**. `source`/`tests`
 not existing → **FAIL** (the audits sweep nothing). `skillsDir` missing is fine (it may not exist yet).
@@ -422,9 +427,15 @@ Then, against `effective`:
 | `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
 | `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
 | `ci` is an effective check | `.github/workflows/ci.yml` exists and has a job producing the `ci` check | **FAIL** |
-| `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem | **FAIL** for the file, **WARN** per missing ecosystem |
+| `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem **whose manifest exists** (npm: `package.json`; pip/uv: `pyproject.toml` or `requirements*.txt`; github-actions: `.github/workflows/`) | **FAIL** for the file, **WARN** per missing ecosystem |
 | `claudeSettings` present | `.claude/settings.json` declares each named marketplace and plugin | **WARN** per missing entry |
 | always | `.claude/maintainerd.json` agrees with the effective `commands` and `coverage` | **WARN** per key |
+
+**An ecosystem with no manifest is skipped, not required.** Before reporting a missing `updates`
+entry, look for the ecosystem's manifest (the table above names them; for any other ecosystem, its
+usual manifest). With none present, report that ecosystem as `n/a (no manifest)` — never WARN or
+FAIL — since an entry for it would only fail on every scheduled run. A listed ecosystem whose
+manifest does exist and has no entry is still a WARN.
 
 **A language with no required checks scaffolds no workflow.** A `none`-language repo — tracked but
 not built here — has an empty `requiredChecks` and no `commands`, so there is no `ci` job to look for
