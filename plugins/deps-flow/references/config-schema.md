@@ -46,7 +46,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   // ── Identity ────────────────────────────────────────────────────────────
   "repo": "owner/name",            // GitHub slug, e.g. "Vycari/pepper". Used in every `gh ... --repo`.
   "defaultBranch": "main",         // Branch PRs target and audits check out. "main" | "master" | ...
-  "language": "python",            // "python" | "typescript". Selects audit/test detection rules.
+  "language": "python",            // Open string; "python" | "typescript" get dedicated audit rules, any other
+                                   // value must resolve against the profile in use and gets generic audit rules.
 
   // ── Commands ────────────────────────────────────────────────────────────
   // The shell commands a skill runs for pre-flight gates. null = step not applicable; skip it.
@@ -351,7 +352,14 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 | --- | --- | --- |
 | `repo` | GitHub `owner/name`; passed to every `gh --repo`. | `Vycari/pepper` |
 | `defaultBranch` | Branch PRs target; audits `git checkout` it before sweeping. | `main`, `master` |
-| `language` | Selects the language-specific detection rules in `audit-architecture` and `audit-tests`. | `python`, `typescript` |
+| `language` | An open string. `python` and `typescript` select the language-specific detection rules in `audit-architecture`, `audit-tests`, `audit-security` and `audit-deps`; any other value (`static-site`, `shell`, …) must be a key in the profile's `languages` table when a profile is in use, and the audits fall back to their language-generic checks. | `python`, `typescript`, `static-site` |
+
+`language` is deliberately not an enum: the profile owns the list of build shapes a fleet names, and a
+closed list here would duplicate it. The one hard requirement is that the value resolves against the
+profile (`profile-resolve.sh` fails closed on a language with no entry); `doctor` check 2 reports a
+value outside `python`/`typescript` as informational when a profile resolves it, and as **WARN** only
+when no profile is in play. Per-language adapters (coverage, scaffolded CI, audit rules) stay keyed
+on what maintainerd actually ships.
 
 ### `commands`
 
@@ -1107,8 +1115,8 @@ A complete umbrella-repo config lives alongside this file as
 lives in the config every skill already reads.
 
 **`language` here is not the top-level `language`.** The top-level key selects language-specific
-audit rules and is `python` | `typescript`. A `repos[].language` is a key into the *profile's*
-language table, which is a different and larger vocabulary (it names build/CI shapes, and includes
+audit rules (`python` | `typescript` get dedicated ones; anything else is open, see above). A `repos[].language` is a key into the *profile's*
+language table, which is a larger vocabulary (it names build/CI shapes, and includes
 `none` for a repo that is tracked but not built). They are deliberately separate namespaces; a repo
 config carries the first, the workspace list carries the second.
 

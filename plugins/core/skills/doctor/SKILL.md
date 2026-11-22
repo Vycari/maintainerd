@@ -66,7 +66,9 @@ the source of truth for what's valid. Then run every check below, collecting fin
 ### 2. Schema conformance
 - Required top-level keys present: `repo`, `defaultBranch`, `language`, `commands`, `paths`,
   `guidelines`. Missing → **FAIL**.
-- `language` is `python` | `typescript` (else **WARN**: audits fall back to language-generic checks).
+- `language` is an open string. `python` | `typescript` get dedicated audit rules. Any other value is
+  **info** (not WARN) when a profile is in play and resolves it (check 14 verifies the resolution), and
+  **WARN** only when no profile resolves it: audits fall back to language-generic checks either way.
 - Types match the schema (arrays are arrays, caps are numbers, `commands.*` are strings or `null`).
 - `review.mechanicalCommits`, when present, is an array of objects that each carry `name`, `author`
   and `trailer` as non-empty strings and `verify` as a non-empty array of strings → else **WARN**
