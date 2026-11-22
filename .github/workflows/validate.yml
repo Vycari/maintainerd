@@ -106,8 +106,14 @@ jobs:
       - name: The research-radar harvester fails closed, windows from its mark, and dedupes
         run: python3 scripts/test-research-radar.py
 
+      - name: The deps-flow bump classifier levels ranges and lockfiles from the diff, and fails closed
+        run: python3 scripts/test-classify-bump.py
+
       - name: The auto-dev tick's digest-skip filter drops planner digest issues
         run: ./scripts/test-auto-dev-digest-skip.sh
+
+      - name: The auto-dev closed-sweep candidate read falls back and fails closed
+        run: ./scripts/test-auto-dev-closed-sweep.sh
 
       - name: address-review's first-line step answers the final reviewer's threads
         run: ./scripts/test-address-review-first-line.sh

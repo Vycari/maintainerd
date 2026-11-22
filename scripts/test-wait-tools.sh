@@ -50,6 +50,7 @@ serve() {
   [ ! -f "$f.fail" ] || exit 1
 }
 echo "$*" >>"$STUB_DIR/.calls"
+echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
 case "$1 $2" in
   "pr view")
     case "$*" in
@@ -60,12 +61,13 @@ case "$1 $2" in
       # rereadfail: this re-read fails once (a transient API error).
       *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
         [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
-        h="$(serve prhead)" || exit 1
-        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
         n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
         f="$STUB_DIR/prview.$n"
         [ -f "$f" ] || f="$STUB_DIR/prview"
         [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+        # A case with no prhead fixture (no mechanical commits) re-reads the PR fixture's own head.
+        if ls "$STUB_DIR"/prhead* >/dev/null 2>&1; then h="$(serve prhead)" || exit 1; else h="$(jq -r .headRefOid "$f")"; fi
+        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null || jq -r .baseRefOid "$f")"
         jq -c --arg h "$h" --arg b "${b:-dddddddd44444444444444444444444444444444}" \
           '.headRefOid = $h | .baseRefOid = $b' "$f"
         ;;
@@ -75,7 +77,25 @@ case "$1 $2" in
     ;;
   "api graphql")
     # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
-    case "$*" in *"checkName=Vycari Review"*) [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")" ;; esac
+    # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
+    # rung0late: a jq filter applied to the second and later rung-0 (Greptile Review) reads, so a
+    # thread or a review decision lands after the poll's own read (only the re-read can see it).
+    case "$*" in *"checkName=Vycari Review"*)
+      [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")"
+      [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
+      ;;
+    *"checkName=Greptile Review"*)
+      if [ -f "$STUB_DIR/rung0late" ]; then
+        n=$(($(cat "$STUB_DIR/.count.rung0" 2>/dev/null || echo 0) + 1))
+        printf '%s' "$n" >"$STUB_DIR/.count.rung0"
+        if [ "$n" -ge 2 ]; then
+          out="$(serve threads)" || exit 1
+          printf '%s\n' "$out" | jq -c "$(cat "$STUB_DIR/rung0late")"
+          exit 0
+        fi
+      fi
+      ;;
+    esac
     serve threads
     ;;
   "api -H")
@@ -102,7 +122,13 @@ case "$1 $2" in
     ;;
   "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
-  "repo view") echo "o/r" ;;
+  "repo view")
+    # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
+    case "$*" in
+      *"--json url"*) echo "https://${STUB_REPO_HOST:-github.com}/o/r" ;;
+      *) echo "o/r" ;;
+    esac
+    ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
   *) echo "stub: unhandled: $*" >&2; exit 1 ;;
 esac
@@ -370,6 +396,7 @@ new_case review-pr-url-other-repo
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
 echo '{"review":{"skipLabel":"greptile:skip","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}' >"$STUB_DIR/remoteconfig"
+write_threads "" '[]'
 run_tool "$WFR" https://github.com/x/y/pull/7 --timeout-seconds 3 --interval-seconds 1
 expect "a PR URL for another repo is polled there and judged by THAT repo's config" no-review-scheduled 0
 grep -q 'pr view 7 -R x/y' "$STUB_DIR/.calls" && ok "the URL's repository, not the checkout's, is polled" || bad "url repo" "$(cat "$STUB_DIR/.calls")"
@@ -392,6 +419,42 @@ write_threads "" '[]'
 run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
 [ "$RC" = "3" ] && ok "an unreadable remote config fails closed (exit 3)" || bad "remote config error" "rc=$RC out=$OUT"
 
+# A PR URL on another host (GitHub Enterprise) is resolved on that host: every gh call goes there.
+new_case review-pr-url-enterprise
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+echo "$CFG_5" >"$STUB_DIR/remoteconfig"
+run_tool "$WFR" https://GHE.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL is accepted" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "every gh call goes to the URL's host (GH_HOST)" ||
+  bad "enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+grep -q 'pr view 7 -R o/r' "$STUB_DIR/.calls" && ok "the URL's repository is polled on that host" || bad "enterprise repo" "$(cat "$STUB_DIR/.calls")"
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  ok "a github.com checkout of the same owner/name is not the Enterprise repo: its config is read there" ||
+  bad "enterprise: local config used for another host's repo" "$(cat "$STUB_DIR/.calls")"
+
+new_case review-pr-url-enterprise-checkout
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+STUB_REPO_HOST=ghe.example.com run_tool "$WFR" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL from a checkout of that repo" no-review-scheduled 0
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  bad "enterprise: a checkout on the URL's host is the target, its config is local" "$(cat "$STUB_DIR/.calls")" ||
+  ok "a checkout of the repo on the URL's host reads its own config"
+
+new_case review-pr-url-overrides-gh-host
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+GH_HOST=ghe.example.com run_tool "$WFR" https://github.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "a github.com PR URL with GH_HOST set elsewhere" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "github.com" ] && ok "the URL's host wins over a contradicting GH_HOST" ||
+  bad "GH_HOST override" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+
+new_case review-pr-url-bad-host
+write_config "$CFG_5"
+run_tool "$WFR" 'https://gh$e.example.com/o/r/pull/7'
+[ "$RC" = "3" ] && ok "a PR URL whose host is not a host name is a usage error" || bad "bad host" "rc=$RC"
+
 new_case review-url-contradicts-R
 write_config "$CFG_5"
 run_tool "$WFR" https://github.com/x/y/pull/7 -R o/r
@@ -400,8 +463,55 @@ run_tool "$WFR" https://github.com/x/y/pull/7 -R o/r
 new_case review-skip-label
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
+write_threads "" '[]' # the scores are read first: a score on the head would still count
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "skipLabel on the PR -> no-review-scheduled" no-review-scheduled 0
+
+new_case review-skip-label-head-score-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score on the head -> findings:0, the label does not waive it" "findings:0" 1
+expect_contains "the found score is named" "scored 3/5"
+
+new_case review-skip-label-head-score-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[{"resolved":false,"path":"a.sh","line":2,"body":"P1: raced the label"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a head score with an open thread -> findings:1" "findings:1" 1
+
+new_case review-skip-label-stale-score
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 bbbbbbb)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a score on an OLDER commit -> no-review-scheduled, not a wait" no-review-scheduled 0
+expect_contains "the older-commit score is named in the detail" "scored 3/5 on bbbbbbb, not the head"
+
+new_case review-skip-label-unreadable-commit-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 3/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score whose commit is unreadable -> findings:0, never waived" "findings:0" 1
+expect_contains "the unreadable-commit score is named" "scored 3/5 on an unreadable commit, below"
+
+new_case review-skip-label-unreadable-commit-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 5/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 5/5 score whose commit is unreadable -> no-review-scheduled (nothing failing to waive)" no-review-scheduled 0
+expect_contains "the passing unreadable-commit score is named" "scored 5/5 on an unreadable commit, at or above"
+
+new_case review-skip-label-vr-stage
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 --stage vr "${FAST[@]}"
+expect "--stage vr with skipLabel -> no-review-scheduled (the final stage reads the score)" no-review-scheduled 0
 
 new_case review-draft
 write_config "$CFG_5"
@@ -765,6 +875,14 @@ rollup "" "$(check_run build COMPLETED SUCCESS), $(check_run lint COMPLETED SKIP
 run_tool "$WFC" 7 "${FASTC[@]}"
 expect "all complete, none failed -> green" green 0
 
+new_case checks-pr-url-enterprise
+rollup "" "$(check_run build COMPLETED SUCCESS)"
+echo '{}' >"$STUB_DIR/remoteconfig"
+run_tool "$WFC" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1 --settle-seconds 0
+expect "wait-for-checks: an Enterprise PR URL is read on its host" green 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "wait-for-checks: every gh call goes to the URL's host" ||
+  bad "wait-for-checks enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+
 new_case checks-green-status-context
 rollup "" "$(check_run build COMPLETED SUCCESS), {\"__typename\":\"StatusContext\",\"context\":\"ci/legacy\",\"state\":\"SUCCESS\"}"
 run_tool "$WFC" 7 "${FASTC[@]}"
@@ -1093,6 +1211,57 @@ mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
 jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "covered: a thread in the first-line read is never approved"
+
+# late_score_hook — makes the first-line read land a below-bar score on the head (the newest bot
+# comment) before it is served, so only a read of the scores after the first-line read can see it.
+late_score_hook() {
+  local new
+  new="$(jq -c ".comments += [$(bot_comment "$(greptile_text 3/5 "${HEAD_SHA:0:7}")")]" "$STUB_DIR/prview")"
+  printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/prview"\n' "$new" "$STUB_DIR" >"$STUB_DIR/flhook"
+  chmod +x "$STUB_DIR/flhook"
+}
+# The scores are read again after the first-line read: a below-bar score that lands mid-poll is
+# never approved over. (VR-286a8092)
+cov_case cov-late-score "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered: a below-bar score that lands during the first-line read is never approved over"
+expect "covered: ...the next poll reports it (findings:0)" findings:0 1
+
+# ...and a head that moves meanwhile is not covered either.
+cov_case cov-late-head "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf 'cccccccc33333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a head that moved by the score re-read is not covered (timeout)" timeout 2
+
+# With rung 0 configured, the re-read reads the scores through rung 0's own check name.
+cov_case cov-rung0-reread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered, rung 0 configured but silent: the ladder's score is re-read the same way -> approved" approved 0
+[ "$(calls_of 'checkName=Greptile Review')" -ge 2 ] && ok "covered, rung 0: ...through rung 0's check name" ||
+  bad "covered, rung 0: re-read" "$(cat "$STUB_DIR/.calls")"
+
+# The rung-0 re-read is the last read before a covered approval, so its threads and review
+# decision must still be the ones the poll judged on, not only its scores: a thread or a "changes
+# requested" that only that read shows is never approved over. (Greptile 4656446068 on #140)
+CFG_FL_RUNG0='{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+cov_case cov-rung0-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' "$LATE_THREAD" >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a thread that only the rung-0 re-read shows is never approved over"
+cov_case cov-rung0-late-decision "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested that only the rung-0 re-read shows is never approved over"
+# ...on a later page of that read too.
+cov_case cov-rung0-late-decision-page2 "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '., (.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED")' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested on a later page of the rung-0 re-read is never approved over"
 
 new_case fl-final-on-head
 write_config "$CFG_FL"
@@ -1746,14 +1915,50 @@ expect "mechanical, first-line: a verify that keeps timing out stops holding -> 
 [ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
   bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
 
+# A verifier that really hangs (not an immediate 124): it is stopped at --verify-seconds, the poll
+# holds, and the next poll approves through the first-line path, within the wait. (Greptile P2 on #117)
+mech_fl_case mech-fl-verify-really-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 15 --interval-seconds 1 --verify-seconds 2
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier that really hangs is stopped, then the first-line path approves" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
+  bad "mechanical, first-line: real hang, verify runs" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+[ $((t1 - t0)) -le 10 ] && ok "mechanical, first-line: ...in the verify cap plus one interval, not the whole wait" ||
+  bad "mechanical, first-line: real hang took too long" "$((t1 - t0))s"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived" "pid $(cat "$CASE/verify-pid")"
+
+# A real hang near the deadline uses what is left: no time for the first-line path, so the wait
+# reports timeout, on time, and never an approval from the state read before verify.
+mech_fl_case mech-fl-verify-hangs-at-deadline true '[]'
+printf '#!/usr/bin/env bash\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...and the hang cannot overrun the deadline" ||
+  bad "mechanical, first-line: hang overran" "took $((t1 - t0))s against a 4s deadline"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived the deadline" "pid $(cat "$CASE/verify-pid")"
+
+# The waiver's own first-line read is followed by a score re-read too: a below-bar score that lands
+# after the mechanical re-read is never approved over. (VR-286a8092)
+mech_fl_case mech-fl-waiver-late-score true '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a below-bar score in the waiver's window is never approved over"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
 # The same for a fetch that keeps failing: it holds one poll only.
 mech_fl_case mech-fl-fetch-fails true '[]'
 rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
 run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
 expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
 
-# A verify workspace that cannot be reset runs no verify, so it does not hold: the first-line path
-# approves. (VR-43e42c3f)
+# A verify workspace that cannot be reset runs no verify, but the reset may have used its whole
+# bound, so the poll holds; the next poll approves through the first-line path. (VR-43e42c3f, #118)
 mech_fl_case mech-fl-reset-fails true '[]'
 printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 0\n' "$CASE" >"$CASE/bin/verify"
 cat >"$CASE/bin/git" <<GITSTUB
@@ -1763,9 +1968,30 @@ exec $(command -v git) "\$@"
 GITSTUB
 chmod +x "$CASE/bin/git"
 PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
-expect "mechanical, first-line: a verify workspace that cannot be reset does not hold -> approved" approved 0
+expect "mechanical, first-line: a verify workspace that cannot be reset holds one poll -> approved" approved 0
 [ ! -f "$CASE/verify-runs" ] && ok "mechanical, first-line: ...and verify never ran" ||
   bad "mechanical, first-line: verify ran after a failed reset" "$(cat "$CASE/verify-runs")"
+[ "$(calls_of 'number,isDraft')" -ge 2 ] && ok "mechanical, first-line: ...the failed reset held its poll (approved on a later read)" ||
+  bad "mechanical, first-line: a failed reset did not hold" "polls: $(calls_of 'number,isDraft')"
+
+# A reset that hangs into the deadline is never followed by an approval from the pre-reset read.
+mech_fl_case mech-fl-reset-hangs true '[]'
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exec sleep 60 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+t0=$(date +%s)
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a reset hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...on time" || bad "mechanical, first-line: reset hang overran" "$((t1 - t0))s"
+
+new_case verify-seconds-bad
+write_config "$CFG_5"
+run_tool "$WFR" 7 -R o/r --verify-seconds 0
+expect "--verify-seconds must be a positive integer" "" 3
 
 # The last read before a covered approval re-checks the review decision: a "changes requested"
 # that lands after the mechanical re-read is not approved. (VR-cb8d0d4c)

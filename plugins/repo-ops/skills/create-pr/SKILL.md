@@ -34,23 +34,141 @@ Before creating a branch or pushing any code, run all of the applicable checks b
 order** and fix any failures. Run each command from `config.commands.*`; **skip any whose value is
 `null`** (that step does not apply to this repo).
 
+**Run the review gates against the PR's tree, not the session's.** `/simplify` takes no target: it
+reviews the diff of the shell's current directory, and `code-review` does the same when given no
+target. When the branch lives in a separate worktree (the recommended pattern) and the session was
+started in another checkout, a gate run from there reviews that other checkout's diff, and the PR
+body would report a review that never looked at the change. So before the gates:
+
+- **Get the PR branch checked out before looking for it.** `BRANCH` is the branch the caller named
+  (a delegating skill such as **research-radar** names one and asks for it to be created from
+  `config.defaultBranch`), or one you name for this change. Resolve it in this order:
+
+  ```bash
+  BRANCH=<the PR branch>
+  SESSION=$(git rev-parse --show-toplevel)   # the session's own checkout
+  wt_for() { git worktree list --porcelain | awk -v b="refs/heads/$1" \
+    '/^worktree /{p=substr($0,10)} $0=="branch "b{print p}'; }
+  WT=$(wt_for "$BRANCH")
+  git -C "$SESSION" fetch origin <config.defaultBranch>
+  ```
+
+  1. **`WT` is set**: the branch is checked out there. Use it.
+  2. **The branch exists (locally, or on the remote: `git -C "$SESSION" ls-remote --exit-code
+     --heads origin "$BRANCH"`) but is checked out nowhere**: fetch it
+     (`git -C "$SESSION" fetch origin "$BRANCH"`) and check it out in the session checkout with
+     `git -C "$SESSION" switch "$BRANCH"`, and only when
+     `git -C "$SESSION" status --porcelain` is empty. A dirty session checkout here means work that
+     belongs to some other branch: stop and say so rather than carrying it across.
+  3. **The branch exists neither locally nor on the remote** (a new PR, e.g. a new research-radar digest): create it where
+     the change was made, with `git -C "$SESSION" switch -c "$BRANCH"`, which carries the session's
+     uncommitted work onto it. When the caller asked to branch from `config.defaultBranch`, first
+     confirm `git -C "$SESSION" rev-parse HEAD` equals `git -C "$SESSION" rev-parse
+     origin/<config.defaultBranch>`; if it does not, stop and say so, because the new branch would
+     carry commits the caller did not ask for.
+
+  Then re-run `WT=$(wt_for "$BRANCH")` and `git -C "$WT" fetch origin <config.defaultBranch>`.
+  Only if `WT` is **still** empty, stop and say the branch could not be checked out.
+- **Compute the change set**: committed changes against the fetched base, plus anything not yet
+  committed (an earlier `--fix` pass, a staged edit, a new file). This is what the gates must cover
+  and what "this PR's scope" means below. Keep it as one sorted list:
+
+  ```bash
+  EXPECTED=$( { git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
+                git -C "$WT" diff --name-only HEAD          # uncommitted, staged or not
+                git -C "$WT" ls-files --others --exclude-standard; } | sort -u )
+  ```
+
+- **`cd "$WT"` as its own command before invoking each gate**, so the diff the gate reads is the
+  PR's. If the shell cannot stay in `$WT` (some harnesses reset the working directory between
+  calls), do not run `/simplify`: record it in the PR body as not run because the session could
+  not point it at the PR worktree.
+- **Confirm each gate covered `$EXPECTED`.** Recompute `$EXPECTED` just before each gate (an edit
+  Simplify kept can change it), and compare it with what the gate reviewed:
+  - **When the gate names the files it read** (in its summary, findings or the diff it printed),
+    sort that list and compare it with `$EXPECTED`. A missing file or an extra one is a mismatch.
+  - **When it names none**, its input is the diff of the directory it ran in, so confirm that input
+    in the same shell, immediately before invoking it: `git rev-parse --show-toplevel` must print
+    `$WT`, and the three commands above run from `.` (not `-C "$WT"`) must give exactly
+    `$EXPECTED`.
+
+  Record a review line for the gate only when that comparison matches. On a mismatch, or when
+  neither check could be made, its coverage is unconfirmed: **stop before recording a result for
+  it**, and either re-run it pointed at the PR (for `code-review`, with `<branch>` as the target,
+  from `$WT`) and compare again, or say in the PR body that it ran but its coverage of the PR could
+  not be confirmed. Never report an unconfirmed gate as run over the PR.
+- **Check both trees after each gate, by content.** `git status --porcelain` cannot tell a gate's
+  edit to a file that was already dirty from no edit at all, so compare content hashes instead.
+  Hash with `git hash-object`, which every checkout has (stock macOS has no `sha256sum`). Unless
+  `$SESSION` is `$WT`, snapshot the session checkout before the gate (define `manifest` in every
+  shell that uses it; a harness that resets the shell between calls drops it):
+
+  ```bash
+  manifest() (   # HEAD, staged and unstaged content, every untracked file's hash; non-zero on any failure
+    # Explicit checks, not `set -e`: errexit is ignored when the caller runs this under `||`, `&&` or `if`.
+    set -o pipefail
+    git -C "$1" rev-parse HEAD || exit 1
+    git -C "$1" diff --cached --binary | git hash-object --stdin || exit 1
+    git -C "$1" diff --binary | git hash-object --stdin || exit 1
+    t=$(mktemp) && git -C "$1" ls-files -z --others --exclude-standard > "$t" || exit 1
+    while IFS= read -r -d '' f; do
+      h=$(git -C "$1" hash-object -- "$f") || exit 1; printf '%s %s\n' "$h" "$f"
+    done < "$t"; rm -f "$t"
+  )
+  SNAP=$(mktemp -d) &&
+  git -C "$SESSION" rev-parse HEAD > "$SNAP/head" &&
+  git -C "$SESSION" diff --cached --binary > "$SNAP/staged.patch" &&
+  git -C "$SESSION" diff --binary > "$SNAP/unstaged.patch" &&
+  git -C "$SESSION" ls-files -z --others --exclude-standard > "$SNAP/untracked.list" &&
+  tar -C "$SESSION" --null -T "$SNAP/untracked.list" -cf "$SNAP/untracked.tar" &&
+  manifest "$SESSION" > "$SNAP/before" && echo SNAPSHOT-OK
+  ```
+
+  Go on to the gate only when that prints `SNAPSHOT-OK`. Any failed snapshot or manifest command
+  means nothing can be compared afterwards: stop and say so rather than running the gate.
+
+  After the gate, run `manifest "$SESSION" > "$SNAP/after"` and `git -C "$WT" status --porcelain`.
+  If that `manifest` exits non-zero, or `cmp -s "$SNAP/before" "$SNAP/after"` fails, the gate may
+  have worked on the wrong tree: **stop and say so**, and do not record a review line for that
+  gate. Do not reset, clean or stash the session checkout yourself: it may be the user's
+  interactive checkout, and their earlier work is in it. Keep `$SNAP`, show the user
+  `diff "$SNAP/before" "$SNAP/after"`, and hand them these commands, which put the checkout back to
+  the snapshot: they undo only the gate's edits and restore the user's earlier staged, unstaged and
+  untracked work exactly. The patches go back before the untracked files (a staged `git rm --cached`
+  whose file is kept untracked only applies to a clean tree), and the first failing step stops the
+  rest:
+
+  ```bash
+  git -C "$SESSION" reset -q --hard "$(cat "$SNAP/head")" &&
+  git -C "$SESSION" clean -fdq &&     # ignored files are untouched; the user's untracked ones come back last
+  { [ ! -s "$SNAP/staged.patch" ] || git -C "$SESSION" apply --index --binary "$SNAP/staged.patch"; } &&
+  { [ ! -s "$SNAP/unstaged.patch" ] || git -C "$SESSION" apply --binary "$SNAP/unstaged.patch"; } &&
+  tar -C "$SESSION" -xf "$SNAP/untracked.tar" &&
+  manifest "$SESSION" | cmp -s - "$SNAP/before" && echo RESTORED
+  ```
+
+  Anything but `RESTORED` means the snapshot did not restore cleanly: stop there, and `$SNAP` is the
+  only copy of the pre-gate work. Never delete `$SNAP` unless the after-manifest matched the
+  before-manifest. Every edit a gate keeps must be inside `$WT`.
+
 1. **Simplify** — invoke the built-in `/simplify` skill (Skill tool, `skill: "simplify"`) on the
    branch's changes. It runs **first** because it may edit code, and every later gate has to check
-   the simplified result, not the code as it stood before. Review what it changed with `git diff`
-   and keep only the edits that preserve behaviour and belong in this PR's scope; revert the rest.
-   Skip it for a diff that touches no code (docs-only or config-only, the same diffs that may skip
-   Build, Type check and Tests below), and say in the PR body that it was skipped and why. If the
-   `simplify` skill is not available in the session, say so in the PR body — never skip it silently
-   and never report it as run.
+   the simplified result, not the code as it stood before. Review what it changed with
+   `git -C "$WT" diff` and keep only the edits that preserve behaviour and belong in this PR's
+   scope; revert the rest. Skip it for a diff that touches no code (docs-only or config-only, the
+   same diffs that may skip Build, Type check and Tests below), and say in the PR body that it was
+   skipped and why. If the `simplify` skill is not available in the session, say so in the PR body
+   — never skip it silently and never report it as run.
 2. **Self-review** — invoke the built-in `code-review` skill (Skill tool, `skill: "code-review"`,
-   `args: "medium --fix"`) on the branch's changes. It runs after Simplify and before Format, so
-   every later gate checks the fixed code: `/simplify` covers quality, `code-review` hunts
-   correctness bugs. Never use the `ultra` level — it is a billed, user-triggered cloud review an
-   agent must not launch. Review what `--fix` changed with `git diff` and keep only the edits that
-   fix a real defect within this PR's scope; revert the rest. Skip it for a diff that touches no
-   code, as for Simplify, and say in the PR body that it was skipped and why. If the `code-review`
-   skill is not available in the session, say so in the PR body — never skip it silently and never
-   report it as run. Record the outcome as one line in the PR body's reviewer-facing section, e.g.
+   `args: "medium --fix <branch>"`, where `<branch>` is the PR branch, run from `$WT` as above) on
+   the branch's changes. Never omit the target: with none, `code-review` reviews the session's own
+   diff. It runs after Simplify and before Format, so every later gate checks the fixed code:
+   `/simplify` covers quality, `code-review` hunts correctness bugs. Never use the `ultra` level —
+   it is a billed, user-triggered cloud review an agent must not launch. Review what `--fix`
+   changed with `git -C "$WT" diff` and keep only the edits that fix a real defect within this
+   PR's scope; revert the rest. Skip it for a diff that touches no code, as for Simplify, and say
+   in the PR body that it was skipped and why. If the `code-review` skill is not available in the
+   session, say so in the PR body — never skip it silently and never report it as run. Record the outcome as one line in the PR body's reviewer-facing section, e.g.
    `code-review (medium): 4 findings, 3 fixed, 1 not a defect — <one-line why>`, so downstream
    reviewers see what was already considered. It runs when the PR is created, not on every later
    push: a review-response loop does not repeat it.
@@ -81,8 +199,8 @@ Do NOT skip these steps. Do NOT push code that fails any of these checks. Do NOT
 to bypass git hooks. **Tests must pass before the PR opens** — never open a PR on a red suite and
 promise to fix it later.
 
-Also confirm the working tree is in a clean, intentional state: review `git status` and `git diff`,
-stage only the changes that belong in this PR, and make sure no stray or generated files are
+Also confirm the PR worktree is in a clean, intentional state: review `git -C "$WT" status` and
+`git -C "$WT" diff`, stage only the changes that belong in this PR, and make sure no stray or generated files are
 included.
 
 One more gate runs later, once the body exists rather than before the push:

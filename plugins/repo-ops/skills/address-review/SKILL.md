@@ -142,8 +142,9 @@ of matching a stray token in another rung. It is a hint, not a restriction: if t
 empty, still walk the other two, and say in the round report that the hint didn't match. A hint
 that has gone stale should be visible, not quietly authoritative.
 
-**No score anywhere, with a threshold configured → stop.** Don't push another round, don't report
-approved, don't report the threshold as met-by-default:
+**No score anywhere, with a threshold configured → stop** (unless the PR takes the skip-label
+exception below). Don't push another round, don't report approved, don't report the threshold as
+met-by-default:
 
 ```text
 Halting: review.approvalThreshold is <threshold> and no score was found on this PR.
@@ -155,6 +156,38 @@ somewhere this skill does not read — a human has to look before this PR can be
 
 A score whose denominator doesn't match the threshold (an `8/10` against a `5/5` bar) gets the same
 halt with the obvious substitution: found, not comparable, cannot be evaluated here.
+
+**One exception: a skip-labelled PR with no score is a review that was never scheduled, not one
+that went missing.** When `config.review.skipLabel` is set, the PR carries that label, and it is
+**not** a draft, the repo has said no automated reviewer runs on it (a prose or config-only change),
+so there is no score to find and the halt above would stop a PR that is in fact finished. For such
+a PR, no score anywhere means the score gate does not apply: the PR is done once its checks pass,
+under the [skip-labelled exit](#loop-exit-conditions). Read the labels and draft state from the PR
+itself (`gh api repos/<config.repo>/pulls/<PR> --jq '{draft, labels: [.labels[].name]}'`), never from
+memory of having applied the label. The exception is narrow on purpose:
+
+- **A score that is present still counts.** If a bot reviewed the PR anyway (it raced the label, or
+  someone removed and re-added it), that score is evaluated exactly as on any other PR — a found
+  score below the threshold is not waived by the label.
+- **No `review.skipLabel` configured, or the PR lacks it, or it is still a draft**: the halt
+  above applies unchanged. A draft has no review scheduled for a different reason, and is not done.
+- **Say it in the round summary**: "no score; PR carries `<skipLabel>`, so the score gate is waived
+  and checks are the gate". A silent pass is the failure this section exists to prevent, so the
+  waiver is always written down.
+
+`wait-for-review.sh` reports such a PR as `no-review-scheduled` rather than waiting out its
+deadline. In the default (final) stage with a numeric threshold it reads the scores first: a score
+a bot already published on the **head** is judged as on any PR (`approved` or `findings:<n>`), and
+only when none is on the head does it report `no-review-scheduled`, with a detail line naming any
+score on an older commit (no bot will refresh that one; name it in the round summary). A score whose
+commit cannot be read is not treated as an older one: below the threshold it reports `findings:<n>`
+like a failing score on the head, so the label never waives it. `--stage vr`
+reports `no-review-scheduled` straight away, since the first-line reviewer reads no score, so after
+a stage 1 `no-review-scheduled` on a skip-labelled PR run the default stage once before deciding.
+With the skip label present (and the PR not a draft), a `no-review-scheduled` from the default
+stage is this exception. Every later step that would halt on a missing score, or wait for an `approved`
+verdict, routes this PR to the checks gate instead: Phase 1's score read, the first-line stage 1
+table, and the first-line exit all say so where they apply.
 
 **The PR body is editable by anyone with write access**, including the PR author and including this
 skill — which makes rung (a) the one rung whose provenance is worth a line. Check who last edited
@@ -359,6 +392,7 @@ Wait with the stage flag (it exits on the first verdict):
 | `vr-findings:<n>` | a round for the head is in, `<n>` open | Triage as in Phase 2, fix the P0/P1s and the P2s you choose to (see [Keep the PR to its brief](#keep-the-pr-to-its-brief)), defer the rest, then push and wait again. |
 | `vr-handoff` | round cap (`firstLine.maxRounds`, default 3) reached; the head was handed to the final reviewer with the open findings listed | Stop chasing them in stage 1. Go to stage 2; the findings are part of what the final reviewer will see. |
 | `vr-unavailable` | the reviewer could not review and asked the final reviewer itself | Go to stage 2. |
+| `no-review-scheduled` | nothing will review this head: the PR is a draft or carries `review.skipLabel` | Non-draft with the skip label: neither reviewer runs, but a score may already exist (a bot that raced the label). Run the default stage once (`wait-for-review.sh <PR>`, no `--stage`): `approved` or `findings:<n>` means a score on the head is judged as usual; `no-review-scheduled` means there is none, so take the [skip-labelled exit](#loop-exit-conditions) (checks gate). A draft is not done: report that it is a draft and stop. |
 | `vr-escalated` | a P0 dispute the reviewer still holds (check title `Needs maintainer: P0 dispute`) | **Halt and escalate** (below). |
 | `timeout` | no verdict in `firstLine.unavailableMinutes` + slack | Keep waiting until 60 minutes have passed since the push with no final-review request on the PR, then halt and escalate: the first-line path is down and a person decides whether to request the final review. |
 
@@ -497,7 +531,10 @@ the response loop is the one in Phases 1-6, with these differences:
 ### Exit
 
 Done when stage 2 is `approved` by the usual exit conditions below, with the stage 1 verdict
-recorded in the round summary. The first-line mode never relaxes a condition; it adds the stage 1
+recorded in the round summary. The one other ending is a non-draft PR carrying `review.skipLabel`
+(stage 1 `no-review-scheduled`): when the default stage also reports `no-review-scheduled` (no score
+on the head), it is done by the [skip-labelled exit](#loop-exit-conditions) (checks green, no open
+thread, no human block); a score it finds on the head is judged by the usual exit instead. The first-line mode never relaxes a condition; it adds the stage 1
 checks in front of them and removes your power to request a review.
 
 ## The principle: never leave silence
@@ -675,6 +712,28 @@ gh pr view --repo <config.repo> --json number,headRefName,baseRefName,state,revi
 
 If multiple PRs match or none exist for the branch, ask which one before doing anything.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one; the `gh` porcelain below is
+GraphQL underneath and returns 403 there while `gh auth status` stays green. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed), say in the report which mode
+ran and how it decided, and use the REST forms in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for the calls below. Its three
+rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
+rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
+
+- `gh pr view <PR> --json …` (the build-record read, the score read, Phase 1 metadata, branch
+  inference): **Read one PR's fields**, and **Check runs** in place of `statusCheckRollup`. The PR body
+  and `head.sha` are on `repos/<config.repo>/pulls/<PR>`. `reviewDecision` has no REST field; take the
+  formal reviews from `pulls/<PR>/reviews` and judge the latest state per reviewer. To infer the PR
+  from the current branch, use **List PRs by state** with `head=<owner>:<branch>`.
+- `gh pr comment` and the re-review request: **Post a comment** (`-F body=@file`, never `-f`).
+- `gh issue create` for deferred work: **Create an issue**.
+- Review threads (`reviewThreads`, `isResolved`), the PR-body editor check and `resolveReviewThread`
+  are GraphQL-only. Treat every thread as unresolved-unknown and answer each reviewer comment with
+  no reply from you; report that resolution state was unreadable; skip the optional resolve; report
+  the body score as unverified for provenance. Never read an unreadable thread as resolved. See the
+  **No REST path** table.
+
 ## Workflow
 
 ### Phase 1 — Fetch the full review state
@@ -765,7 +824,10 @@ one:
 Record the score, the rung that answered, the reviewed sha, and (rung (a) only) whether the body's
 last editor was the bot. If `approvalThreshold` is set and no rung answers, **stop here** with the
 three-places message — do not continue into Phase 2 on the assumption that a missing score is a
-met gate.
+met gate. The one exception is a non-draft PR carrying `config.review.skipLabel` (read from the PR,
+as in [the exception](#where-the-score-lives)): there no rung answering is expected, so carry on
+through the remaining phases for any human threads and judge it by the
+[skip-labelled exit](#loop-exit-conditions).
 
 ### Phase 2 — Triage
 
@@ -954,6 +1016,44 @@ and running the wrong one is the bug this section exists to prevent.
 - No unresolved review threads, no new comments since the last push, checks green — as above.
 - No human has `CHANGES_REQUESTED` outstanding. A human block outranks any score.
 
+**A skip-labelled PR with no score** (`config.review.skipLabel` set, the PR carries it, not a
+draft, and no rung found a score) — the checks gate. Done when **all** of:
+- Required status checks pass on the head, read from **both** places a check can report. Check
+  runs and legacy commit statuses are separate APIs, and either one alone can look green while the
+  other is pending or failed. Use REST (`statusCheckRollup` combines both, but it is GraphQL, which
+  some agent sandboxes block):
+
+  ```bash
+  # Check runs (GitHub Actions and Checks-API apps): every one completed, conclusion success/neutral/skipped
+  gh api "repos/<config.repo>/commits/<headRefOid>/check-runs" --paginate \
+    --jq '.check_runs[] | {name, status, conclusion}'
+  # Commit statuses (older integrations): the combined state must be success
+  gh api "repos/<config.repo>/commits/<headRefOid>/status" \
+    --jq '{state, total_count, statuses: [.statuses[] | {context, state}]}'
+  ```
+
+  **An empty set is not a pass.** Right after a push the head can have zero check runs and zero
+  statuses, and every "all of them passed" test is then vacuously true. Require at least one check
+  run on the head, or a combined status with `total_count` above `0`, before reading either as
+  green; with neither, keep waiting (poll on the same interval `wait-for-checks.sh` uses, to the
+  same `review.waitTimeoutMinutes` deadline, then halt and report that no check ever registered on
+  the head). Once something is green, read both again after a minute and require the same set: the
+  checks that register first can all be green while a slower one has yet to appear.
+  `wait-for-checks.sh <PR>` does exactly this (an empty rollup keeps waiting, `green` only after a
+  settle re-read) and is the tool to use where its GraphQL read works; the REST reads above are the
+  fallback where it does not.
+
+  A check run that is not `completed` is not a pass. A combined status of `pending`, `failure` or
+  `error` is not a pass, with one reading to know: when `total_count` is `0` the repo has no commit
+  statuses at all, and GitHub reports that combined state as `pending`; with no statuses there is
+  nothing pending (but then at least one check run must exist, per the rule above).
+- No unresolved review threads and no new comments since the last push — a human may still have
+  reviewed it by hand.
+- No human has `CHANGES_REQUESTED` outstanding.
+
+The round summary names the label and says the score gate was waived for it. If a score *was*
+found, this exit does not apply: use the score gate above.
+
 `reviewDecision == APPROVED` is **not** required here, and waiting for it is how this loop hangs: a
 scoring bot grades rather than approves, so on a repo with no human reviewer `reviewDecision` may
 sit `REVIEW_REQUIRED` forever at 5/5. The mirror error is the worse one — treating a missing score
@@ -987,7 +1087,9 @@ maintainer's.
   than pushing anything to provoke one.
 - **No score anywhere and `approvalThreshold` is set**: halt with the three-places message. A bot
   that didn't run, an integration that lost the repo, and a PR that genuinely passed all look
-  identical from inside this loop, and only one of them is safe to assume.
+  identical from inside this loop, and only one of them is safe to assume. The exception is a
+  non-draft PR carrying `config.review.skipLabel`: the repo said no bot runs there, so it takes the
+  skip-labelled exit (check runs and commit statuses green) instead.
 - **A reviewer requests scope creep**: reply acknowledging, file a follow-up issue, link it from the
   reply. Don't expand the PR. (If `create-issue` is installed, use it to file the follow-up.) Under
   `createPr.requireIssueForDeferredWork` this stops being a convention and becomes a gate on the

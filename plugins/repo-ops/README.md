@@ -164,7 +164,7 @@ checks the claim after the reply is posted.
 
 - **What it watches:** `gh pr comment`, `gh api repos/…/pulls/N/comments/ID/replies` (inline
   thread reply), and `gh api graphql` carrying `addPullRequestReviewThreadReply`. Scoping is the
-  same structural scan as the other hooks (plus `lib/gh-exec-words.sh`, which resolves `command`/
+  same structural scan as the other hooks (whose `gh_exec_words`, shared with the other hooks, resolves `command`/
   `env`/`exec`/path/`VAR=` prefixes to the gh argv), so an `echo "gh pr comment … fixed"` or a
   heredoc that writes a script is never a reply, and in a compound command each reply is judged
   on its own body.
@@ -251,7 +251,10 @@ block those lower rungs read. See `config-schema.md`.
 Policy comes from the repository being waited on: the checkout's `.claude/maintainerd.json` when
 the checkout is that repo, otherwise the target's file read from its default branch (so `-R` or a
 PR URL for another repo is never judged by this checkout's bots, threshold or skip label). A PR URL
-names its repository, and contradicting it with `-R` is an error.
+names its repository, and contradicting it with `-R` is an error. It names its host too: every `gh`
+call then goes to that host (`GH_HOST`, which wins over one already set), so a GitHub Enterprise
+URL is never resolved on github.com, and the checkout counts as the target only when its repository
+is on that host. Both tools share this.
 
 **First-line mode (opt-in).** With `review.mode: "first-line"` (see `config-schema.md`):
 
@@ -267,8 +270,10 @@ names its repository, and contradicting it with `-R` is an error.
 - Without `--stage`, the verdicts above are unchanged, with one addition (**covered staleness**): a
   score at or above the threshold on an *ancestor* of the head still yields `approved` when no
   review thread is open and the first-line reviewer has a completed, happy round on the head. A
-  `covered:` line says so. The script cannot see whether that score carried a P1; the merge gate
-  judges that, as it does for a score on the head.
+  `covered:` line says so. The first-line read comes last, and the head, review decision, open
+  threads and scores are read again after it: a below-bar score that lands meanwhile is not covered.
+  The script cannot see whether that score carried a P1; the merge gate judges that, as it does for
+  a score on the head.
 - **Mechanical commits** (any mode, `review.mechanicalCommits`): a score at or above the threshold on
   an ancestor G of the head is not stale when G..head is one linear chain of verified mechanical
   commits of one entry in the PR base's config (never one the PR adds): right author and committer, GitHub-verified, trailer present,

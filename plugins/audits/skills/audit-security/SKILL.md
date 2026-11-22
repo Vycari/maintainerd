@@ -31,7 +31,7 @@ Before anything else, load the repo config (see
 3. Keys this skill uses:
    - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
    - `config.defaultBranch` — branch to check out and target PRs at.
-   - `config.language` — `python` | `typescript`; selects the language-specific detection below.
+   - `config.language` — `python` | `typescript` select the language-specific detection below; any other value uses the generic checks.
    - `config.paths.source` — root of the source to sweep.
    - `config.commands.{format,lint,build,test}` — pre-flight gate before any PR (skip `null` ones).
    - `config.labels.security` — label applied to every PR/issue this skill opens (default `security`).
@@ -108,6 +108,20 @@ whatever lockfile exists, secret scan, a read for hardcoded config) and **say so
 - **It doesn't re-file what CI already gates.** If the repo runs `npm audit`/`pip-audit` in CI and
   it's red, that's a CI failure, not an audit finding — flag the gap, don't duplicate.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh issue list`, `gh pr list`, `gh issue create` and `gh pr create` are GraphQL underneath and
+return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRAPHQL_BLOCKED`, or a
+`gh api graphql` call that fails closed) and use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
+and **Edit labels**. Say in the report which mode the run used and how it decided.
+
+Three rules from that file apply here and outrank convenience: a read a decision depends on **fails
+closed** (an unreadable backlog is not an empty one); a step with no REST path (marking a draft PR
+ready) is **stop-and-report**, never skipped; and no unattended step may depend on `gh search` or the
+`search/issues` endpoint, so a search-shaped de-dup becomes a repo-scoped list plus a client-side
+filter.
+
 ## Workflow
 
 Use `TaskCreate` to track each finding — a security sweep sprawls and you'll lose your place.
@@ -150,7 +164,9 @@ gh pr list   --repo <config.repo> --state open --json number,title,headRefName -
 
 `--limit` is well above any realistic count of open, security-labelled issues; if the issue list
 still comes back at exactly `1000`, treat discovery as truncated, not complete — don't dedup against
-a possibly-short list, say so in the report instead.
+a possibly-short list, say so in the report instead. **Dedup fails closed**: if neither the porcelain nor
+the REST form can list open issues and open PRs, open nothing for this run and say which call failed.
+A Critical/High finding is still listed in the report in that case, so it is not lost.
 
 Skip a finding if an open issue/PR already covers the same package/file/pattern, or if it was closed
 `wontfix`/not-planned (a standing human decision). For a **Critical/High** that was previously closed
