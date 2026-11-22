@@ -16,6 +16,14 @@ run would do.
 | --- | --- | --- |
 | [`dependabot`](skills/dependabot/SKILL.md) | Classify the open Dependabot PRs, merge the provably-safe ones, rebase what's stale, and diagnose what's broken — filing one issue per broken update and never attempting a fix. | scheduled, or "/dependabot" · "/dependabot dry-run" |
 
+## How the bump level is decided
+
+Not from the PR title. `scripts/classify-bump.py` reads the PR's actual manifest/lockfile diff and
+returns the highest level of any version change (a range change is judged on both bounds, `0.x`
+minors count as major), and fails closed to "major, not confident" when it cannot tell. The skill
+gates auto-merge on its `eligible` field. Standard library only; tests in
+`scripts/test-classify-bump.py`.
+
 ## What it does with a broken update
 
 It diagnoses from CI logs and files an issue; it never fixes and never merges that PR. It also never
