@@ -97,5 +97,14 @@ grep -q 'not in first-line mode' "$SKILL" && ok "stale-score re-review is gated 
 ungated="$(awk '/^## First-line mode/ {g=1} /^## The principle/ {g=0} !g && /request a re-review/ && !/not in first-line/' "$SKILL")"
 [ -z "$ungated" ] && ok "every re-review request outside the first-line section is gated" || bad "every re-review request outside the first-line section is gated" "$ungated"
 
+# Skip-labelled PRs: no score is a pass once checks are green, but only with the label, not a draft.
+grep -q 'skip-labelled PR with no score' "$SKILL" && ok "a skip-labelled PR with no score has its own exit" || bad "a skip-labelled PR with no score has its own exit"
+grep -q 'A score that is present still counts' "$SKILL" && ok "a found score is not waived by the skip label" || bad "a found score is not waived by the skip label"
+grep -q 'or it is still a draft' "$SKILL" && ok "a draft does not take the skip-label exit" || bad "a draft does not take the skip-label exit"
+grep -q '^| `no-review-scheduled` |' "$SKILL" && ok "the stage 1 table routes no-review-scheduled" || bad "the stage 1 table routes no-review-scheduled"
+grep -q 'commits/<headRefOid>/check-runs' "$SKILL" && grep -q 'commits/<headRefOid>/status"' "$SKILL" && ok "the checks gate reads check runs and commit statuses" || bad "the checks gate reads check runs and commit statuses"
+grep -q 'An empty set is not a pass' "$SKILL" && ok "the checks gate refuses a vacuous pass on zero checks" || bad "the checks gate refuses a vacuous pass on zero checks"
+grep -q 'Run the default stage once' "$SKILL" && ok "stage 1 no-review-scheduled reads an existing score before the checks gate" || bad "stage 1 no-review-scheduled reads an existing score before the checks gate"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

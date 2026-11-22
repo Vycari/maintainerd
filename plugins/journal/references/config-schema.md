@@ -270,6 +270,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // hook, which warns when `gh pr create` carries this label
                                      // without `--draft` — the bot schedules its review on the open
                                      // event, before a label applied in the same command lands.
+                                     // address-review treats a non-draft PR carrying it, with no
+                                     // score found, as done once checks pass.
     "mechanicalCommits": [],         // optional. Verified mechanical bot commits that do not make a
                                      // passing score stale; see the key's entry below. Absent/empty
                                      // = any commit after the scored sha is stale.
@@ -577,6 +579,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   for on a `gh pr create` — many review bots schedule their run on the `opened` webhook, before a
   label applied in the same command lands, so the label alone doesn't reliably suppress the review.
   `null`/absent = this repo has no such label; the hook says nothing.
+  `address-review` reads it too: a non-draft PR carrying the label, on which no score is found, is
+  done once its checks pass (the score gate is waived and the round summary says so), rather than
+  halting on "no score found". A score that is found on such a PR is still evaluated normally.
 - `review.mechanicalCommits` *(optional; default absent = off)* — an array of entries that let a
   score survive small, verified, machine-made commits (a bot that renumbers a migration, say).
   Each entry has four required fields: `name` (a label for the round summary), `author` (the bot's

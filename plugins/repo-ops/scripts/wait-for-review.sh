@@ -14,7 +14,10 @@
 #                          findings:0 means the score is below the threshold with no open thread —
 #                          the shortfall is in the review summary, not on a line.
 #   no-review-scheduled    nothing will review this PR: it is a draft, carries review.skipLabel,
-#                          or review.bots is configured empty.
+#                          or review.bots is configured empty. With the skip label and a numeric
+#                          threshold, a score a bot already published on the HEAD is still judged
+#                          (approved / findings as usual); only when none is on the head is the
+#                          label's verdict reported, with any older-commit score as a detail line.
 #   timeout                no verdict by the deadline (review.waitTimeoutMinutes, default 20).
 #
 # First-line stage (only with review.mode "first-line"; --stage vr is an error otherwise). The
@@ -896,7 +899,7 @@ DETAIL=""
 LAST_ERR=""
 poll_once() {
   local pr gql threads head scores line bot score reviewed num den
-  local unresolved n decision all_met stale held
+  local unresolved n decision all_met stale held skip_labelled head_scored
 
   VERDICT=""
   DETAIL=""
@@ -916,9 +919,16 @@ poll_once() {
     VERDICT="no-review-scheduled"
     return 0
   fi
+  # The skip label: no reviewer is scheduled. In the final stage with a numeric threshold, a score a
+  # bot already published on the head (it raced the label, or the label came later) still counts,
+  # so read the scores first and only report no-review-scheduled when none of them is on the head.
+  skip_labelled=0
   if [ -n "$SKIP_LABEL" ] && printf '%s' "$pr" | jq -e --arg l "$SKIP_LABEL" '[.labels[]?.name] | index($l)' >/dev/null 2>&1; then
-    VERDICT="no-review-scheduled"
-    return 0
+    if [ "$STAGE" = "vr" ] || [ -z "$THR_NUM" ]; then
+      VERDICT="no-review-scheduled"
+      return 0
+    fi
+    skip_labelled=1
   fi
   if [ "$STAGE" = "final" ] && [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
     VERDICT="no-review-scheduled"
@@ -992,6 +1002,41 @@ poll_once() {
     # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
     LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
     return 0
+  fi
+  if [ "$skip_labelled" = "1" ]; then
+    # Skip-labelled: judge a score on the head as on any PR; with none, nothing will review it. A
+    # score on a known older commit is named in the detail (it is not a review of this head, and no
+    # bot will refresh it), never waited on. A score whose commit cannot be read is not "an older
+    # commit": it may well be the head, so it is never waived. Below the threshold it halts as a
+    # found failing score does (findings:<n>); at or above it, it waives nothing.
+    head_scored=0
+    unreadable_below=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+      ! is_head_sha "$reviewed" "$head" || head_scored=1
+      if [ -z "$reviewed" ]; then
+        score="$(printf '%s' "$line" | cut -d' ' -f2)"
+        num="${score%%/*}"
+        den="${score##*/}"
+        if [ "$den" != "$THR_DEN" ] || ! [ "$num" -ge "$THR_NUM" ] 2>/dev/null; then
+          unreadable_below="${unreadable_below}  ${line%% *} scored $score on an unreadable commit, below review.approvalThreshold $THRESHOLD; the skip label does not waive a found score"$'\n'
+        fi
+      fi
+    done <<<"$scores"
+    if [ -n "$unreadable_below" ]; then
+      VERDICT="findings:$n"
+      DETAIL="${unreadable_below%$'\n'}"
+      [ "$n" -eq 0 ] || DETAIL="$(printf '%s' "$unresolved" | jq -r '.[] |
+        "  \(.path // "?"):\((.line // .originalLine // 0))  " +
+        ((.comments.nodes[0].body // "") | gsub("<[^>]*>"; "") | gsub("\\s+"; " ") | sub("^ "; "") | .[0:160])')"$'\n'"$DETAIL"
+      return 0
+    fi
+    if [ "$head_scored" = "0" ]; then
+      VERDICT="no-review-scheduled"
+      [ -z "$scores" ] || DETAIL="$(printf '%s\n' "$scores" | awk 'NF { if ($3 == "") printf "  %s scored %s on an unreadable commit, at or above the threshold; the PR carries the skip label\n", $1, $2; else printf "  %s scored %s on %s, not the head; the PR carries the skip label\n", $1, $2, $3 }')"
+      return 0
+    fi
   fi
   stale=0
   all_met=1

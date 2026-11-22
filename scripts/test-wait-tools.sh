@@ -396,6 +396,7 @@ new_case review-pr-url-other-repo
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
 echo '{"review":{"skipLabel":"greptile:skip","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}' >"$STUB_DIR/remoteconfig"
+write_threads "" '[]'
 run_tool "$WFR" https://github.com/x/y/pull/7 --timeout-seconds 3 --interval-seconds 1
 expect "a PR URL for another repo is polled there and judged by THAT repo's config" no-review-scheduled 0
 grep -q 'pr view 7 -R x/y' "$STUB_DIR/.calls" && ok "the URL's repository, not the checkout's, is polled" || bad "url repo" "$(cat "$STUB_DIR/.calls")"
@@ -462,8 +463,55 @@ run_tool "$WFR" https://github.com/x/y/pull/7 -R o/r
 new_case review-skip-label
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
+write_threads "" '[]' # the scores are read first: a score on the head would still count
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "skipLabel on the PR -> no-review-scheduled" no-review-scheduled 0
+
+new_case review-skip-label-head-score-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score on the head -> findings:0, the label does not waive it" "findings:0" 1
+expect_contains "the found score is named" "scored 3/5"
+
+new_case review-skip-label-head-score-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[{"resolved":false,"path":"a.sh","line":2,"body":"P1: raced the label"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a head score with an open thread -> findings:1" "findings:1" 1
+
+new_case review-skip-label-stale-score
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 bbbbbbb)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a score on an OLDER commit -> no-review-scheduled, not a wait" no-review-scheduled 0
+expect_contains "the older-commit score is named in the detail" "scored 3/5 on bbbbbbb, not the head"
+
+new_case review-skip-label-unreadable-commit-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 3/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score whose commit is unreadable -> findings:0, never waived" "findings:0" 1
+expect_contains "the unreadable-commit score is named" "scored 3/5 on an unreadable commit, below"
+
+new_case review-skip-label-unreadable-commit-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 5/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 5/5 score whose commit is unreadable -> no-review-scheduled (nothing failing to waive)" no-review-scheduled 0
+expect_contains "the passing unreadable-commit score is named" "scored 5/5 on an unreadable commit, at or above"
+
+new_case review-skip-label-vr-stage
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 --stage vr "${FAST[@]}"
+expect "--stage vr with skipLabel -> no-review-scheduled (the final stage reads the score)" no-review-scheduled 0
 
 new_case review-draft
 write_config "$CFG_5"
