@@ -989,6 +989,260 @@ expect "$MERGE_GUARD" warn "delegated: -R on the merge itself still warns" \
   "$(repo "" "$CONFIG_MAY_MERGE")" 'gh pr merge 5 -R Vycari/other'
 
 echo
+echo "== heredoc masking is quote-aware: a quoted << must not hide a later merge (#85) =="
+Q='"'
+expect "$MERGE_GUARD" warn "a << inside double quotes is not a heredoc opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "<<EOF"
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" warn "a << inside single quotes is not a heredoc opener" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo '<<EOF'
+gh pr merge 5
+EOF"
+expect "$MERGE_GUARD" warn "a quoted <<- word mid-line is not an opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a "x <<-END y" b
+gh pr merge 5
+END'
+expect "$MERGE_GUARD" warn "quote state carries across lines of one string" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "line one
+<<EOF
+more"
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" warn "a << in a trailing comment is not an opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo hi # <<EOF
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" warn "an apostrophe in a comment does not open a quote that swallows the merge" \
+  "$(repo "" "$CONFIG_PLAIN")" "# don't do this
+gh pr merge 5"
+expect "$MERGE_GUARD" warn "arithmetic << is a shift, not an opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'x=$((1<<N))
+gh pr merge 5
+N'
+expect "$MERGE_GUARD" warn "an unbalanced quote never hides a merge that precedes it" \
+  "$(repo "" "$CONFIG_PLAIN")" 'gh pr merge 5; echo "<<EOF'
+expect "$MERGE_GUARD" none "a real heredoc after a quoted string on the same line is still masked" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "it'"'"'s" && cat <<'"'"'EOF'"'"'
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" none "a double-quoted delimiter is a real opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'cat <<"EOF" > f
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" none "a heredoc inside a quoted command substitution is a real opener" \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "$(cat <<EOF
+gh pr merge 5
+EOF
+)"'
+expect "$MERGE_GUARD" none "an apostrophe in a comment before a real heredoc does not break masking" \
+  "$(repo "" "$CONFIG_PLAIN")" "# don't
+cat <<'EOF'
+gh pr merge 5
+EOF"
+expect "$TEMPLATE_GUARD" deny "pr-template-guard: a quoted << does not hide a later bad gh pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "<<EOF"
+gh pr create --title x --body "no headings"
+EOF'
+
+echo
+echo "== a # inside a parameter expansion is not a comment (VR-6f4c8e0d, VR-1f3b018b) =="
+expect "$TEMPLATE_GUARD" deny "parameter-length expansion does not hide a later pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo ${#x}; gh pr create --title x --body "no headings"'
+expect "$MERGE_GUARD" warn '${#x} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${#x}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x#y} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x#y}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x##*/} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x##*/}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x/ #y/z} (a space before # inside the braces) does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x/ #y/z}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '$# does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo $#; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a bare $ before ; does not swallow the separator' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo $;gh pr merge 5'
+expect "$MERGE_GUARD" warn '${#x} inside $( ) does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'n=$(echo ${#x}); gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a brace group comment is still a comment, and the next line is still found' \
+  "$(repo "" "$CONFIG_PLAIN")" '{ # a comment; gh pr merge 4
+gh pr merge 5; }'
+expect "$MERGE_GUARD" none 'a ${#x} before a real heredoc opener does not drop the opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${#x}; cat <<'"'"'EOF'"'"'
+gh pr merge 5
+EOF'
+expect "$TEMPLATE_GUARD" none 'a ${#x} before a real heredoc: a pr create in its body is data' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo ${#x}; cat <<'"'"'EOF'"'"' > /tmp/pr.md
+gh pr create --title t --body "x"
+EOF'
+
+echo
+echo "== an ANSI-C \$'...' string is one word with backslash escapes (VR-0eaa724c) =="
+expect "$TEMPLATE_GUARD" deny "an escaped quote in \$'...' does not fake a heredoc opener" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \$'\\'<<EOF'
+gh pr create --title x --body \"no headings\"
+EOF"
+expect "$MERGE_GUARD" warn "an escaped quote in \$'...' does not fake a heredoc opener (merge)" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'\\'<<EOF'
+gh pr merge 5
+EOF"
+expect "$MERGE_GUARD" warn "an escaped quote in \$'...' does not swallow a later ; gh pr merge" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'it\\'s'; gh pr merge 5"
+expect "$MERGE_GUARD" warn "control: a plain '<<EOF' is not an opener either" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo '<<EOF'
+gh pr merge 5
+EOF"
+expect "$MERGE_GUARD" none "a real heredoc after a \$'...' string is still masked" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'a\\'b' && cat <<'EOF'
+gh pr merge 5
+EOF"
+
+echo
+echo "== an escaped character before # does not start a comment (Greptile 4656447924) =="
+expect "$MERGE_GUARD" warn 'an escaped space before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo \ #; gh pr merge 123'
+expect "$TEMPLATE_GUARD" deny 'an escaped space before # does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo \ #; gh pr create --title x --body "no headings"'
+expect "$MERGE_GUARD" warn 'an escaped tab before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \\	#; gh pr merge 123"
+expect "$MERGE_GUARD" warn 'a line continuation before # does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a\
+#b; gh pr merge 123'
+expect "$MERGE_GUARD" warn 'a comment after a continuation that follows a space is a comment: its apostrophe opens no quote (Greptile 4656541507)' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \\
+# don't
+gh pr merge 123"
+expect "$TEMPLATE_GUARD" deny 'a comment after a continuation does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \\
+# don't
+gh pr create --title x --body \"no headings\""
+expect "$MERGE_GUARD" warn 'a { glued to # is one word, not a comment start' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo {#; gh pr merge 9'
+expect "$MERGE_GUARD" warn 'an escaped space, then a continuation, then # is still one word' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo \ \
+#b; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'control: an unescaped space before # is still a comment, the next line is found' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a #; gh pr merge 4
+gh pr merge 5'
+expect "$MERGE_GUARD" none 'control: a real comment still hides only itself' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo a # gh pr merge 5'
+
+echo
+echo "== \${ ... } inside double quotes nests its own quotes (Greptile 4656447931) =="
+expect "$MERGE_GUARD" warn 'a quoted default inside "${...}" does not fake a heredoc opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"<<EOF"}"
+gh pr merge 5
+EOF'
+expect "$TEMPLATE_GUARD" deny 'a quoted default inside "${...}" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "${x:-"<<EOF"}"
+gh pr create --title x --body "no headings"
+EOF'
+expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "${...}" does not swallow a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"'"'"'"}"; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a single-quoted default inside "${...}" does not fake a heredoc opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-'"'"'<<EOF'"'"'}"
+gh pr merge 5
+EOF'
+expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "$(...)" does not swallow a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "$(echo "'"'"'")"; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a brace pair inside ${...} does not end the expansion early' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{a}}; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a comment opening a "$(...)" is a comment: its apostrophe opens no quote (Greptile 4656581888)' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\$(# don't
+echo ok
+)\"; gh pr merge 5"
+expect "$TEMPLATE_GUARD" deny 'a comment opening a "$(...)" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \"\$(# don't
+echo ok
+)\"; gh pr create --title x --body \"no headings\""
+expect "$MERGE_GUARD" warn 'a comment opening a $(...) inside "${...}" is a comment too' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\${x:-\$(# don't
+echo ok
+)}\"; gh pr merge 5"
+expect "$MERGE_GUARD" warn 'control: a # glued to text inside "$(...)" is still a word, not a comment' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\$(echo a#'b')\"; gh pr merge 5"
+expect "$MERGE_GUARD" warn 'a bare { inside "${...}" opens nothing: the first } ends it (Greptile 4656541501)' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-{}"; gh pr merge 1'
+expect "$MERGE_GUARD" warn 'a bare { inside an unquoted ${...} opens nothing either' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{}; gh pr merge 2'
+expect "$TEMPLATE_GUARD" deny 'a bare { inside "${...}" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "${x:-{}"; gh pr create --title x --body "no headings"'
+expect "$MERGE_GUARD" none 'control: a real heredoc after "${x:-"y"}" is still masked' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"y"}"; cat <<'"'"'EOF'"'"'
+gh pr merge 5
+EOF'
+
+echo
+echo "== one wrapper resolver: gh_pr_subcommand, gh_command_words and gh_exec_words agree (#85/#90) =="
+(
+  # shellcheck source=../plugins/repo-ops/hooks/scripts/lib/gh-exec-words.sh
+  . "$ROOT/plugins/repo-ops/hooks/scripts/lib/gh-exec-words.sh"
+  agree_fail=0
+  for seg in 'gh pr create --title x' 'command gh pr edit 5' 'env -i GH_TOKEN=x gh pr create' \
+    'exec /usr/bin/gh pr edit 5' 'FOO="a b" gh pr create' 'if gh pr create; then' '! time -p gh pr edit 5' \
+    '"gh" pr create' 'mygh pr create' 'echo gh pr create' 'gh pr view 5' 'gh' 'command -p gh api x' ''; do
+    words=$(gh_command_words "$seg")
+    first_off=$(gh_exec_words "$seg" | sed -n 1p)
+    # the spans start AT gh, so their count is one more than the words after it
+    nspans=$(gh_exec_words "$seg" | grep -c . || true)
+    nwords=$(printf '%s' "$words" | grep -c '' || true)
+    [ -z "$words" ] && nwords=0
+    sub=$(gh_pr_subcommand "$seg")
+    want_sub=""
+    if [ -n "$first_off" ]; then
+      w1=$(printf '%s\n' "$words" | sed -n 1p); w2=$(printf '%s\n' "$words" | sed -n 2p)
+      if [ "$w1" = "pr" ]; then case "$w2" in create|edit) want_sub="$w2" ;; esac; fi
+    fi
+    if [ -z "$first_off" ] && [ -n "$words" ]; then agree_fail=1; fi
+    if [ -n "$first_off" ] && [ "$nspans" -ne $((nwords + 1)) ]; then agree_fail=1; fi
+    if [ "$sub" != "$want_sub" ]; then agree_fail=1; printf '       disagree on: %s (got %s want %s)\n' "$seg" "$sub" "$want_sub"; fi
+  done
+  exit "$agree_fail"
+)
+if [ $? -eq 0 ]; then
+  PASS=$((PASS + 1)); printf '  ok   the three resolvers agree on every wrapper spelling\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL the three resolvers disagree\n'
+fi
+
+echo
+echo "== merge-guard: config lookup from a subdirectory (#90) =="
+SUBREPO=$(repo "" "$CONFIG_MAY_MERGE")
+git -C "$SUBREPO" init -q 2>/dev/null
+mkdir -p "$SUBREPO/src/deep"
+out=$(run_guard "$MERGE_GUARD" 'gh pr merge 5' "$SUBREPO/src/deep")
+if [ "$(decision "$out")" = "none" ]; then
+  PASS=$((PASS + 1)); printf '  ok   none   delegation is found from a subdirectory of the repo\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL delegation not found from a subdirectory: %s\n' "$out"
+fi
+out=$(run_guard "$MERGE_GUARD" 'cd ../other && gh pr merge 5' "$SUBREPO/src/deep")
+if [ "$(decision "$out")" = "warn" ]; then
+  PASS=$((PASS + 1)); printf '  ok   warn   a cd still defeats delegation from a subdirectory\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL cd from a subdirectory was silenced: %s\n' "$out"
+fi
+rm -rf "$SUBREPO"
+SUBREPO=$(repo "" "$CONFIG_NO_MERGE")
+git -C "$SUBREPO" init -q 2>/dev/null
+mkdir -p "$SUBREPO/src"
+out=$(run_guard "$MERGE_GUARD" 'gh pr merge 5' "$SUBREPO/src")
+if [ "$(decision "$out")" = "warn" ]; then
+  PASS=$((PASS + 1)); printf '  ok   warn   agentsMayMerge=false from a subdirectory still warns\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL subdirectory with agentsMayMerge=false did not warn: %s\n' "$out"
+fi
+rm -rf "$SUBREPO"
+# Not a git repo: only the cwd's own config can delegate, so a subdirectory warns (fail closed).
+SUBREPO=$(repo "" "$CONFIG_MAY_MERGE")
+mkdir -p "$SUBREPO/src"
+out=$(cd "$SUBREPO/src" && GIT_CEILING_DIRECTORIES="$SUBREPO" run_guard "$MERGE_GUARD" 'gh pr merge 5' "$SUBREPO/src")
+if [ "$(decision "$out")" = "warn" ]; then
+  PASS=$((PASS + 1)); printf '  ok   warn   no git root: a subdirectory without its own config fails closed\n'
+else
+  FAIL=$((FAIL + 1)); printf '  FAIL no-git subdirectory was silenced: %s\n' "$out"
+fi
+rm -rf "$SUBREPO"
+echo
 echo "== merge-guard fails LOUDLY if the shared scanner is missing =="
 NOLIB=$(mktemp -d)
 cp "$MERGE_GUARD" "$NOLIB/"
