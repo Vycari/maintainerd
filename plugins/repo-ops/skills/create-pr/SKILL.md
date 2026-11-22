@@ -34,43 +34,62 @@ Before creating a branch or pushing any code, run all of the applicable checks b
 order** and fix any failures. Run each command from `config.commands.*`; **skip any whose value is
 `null`** (that step does not apply to this repo).
 
-**Run the review gates against the PR's tree, not the session's.** `/simplify` and `code-review`
-act on the session's working directory unless told otherwise. When the branch lives in a separate
-worktree (the recommended pattern) and the session was started in another checkout, a gate with no
-target reviews that other checkout's diff and the PR body would report a review that never looked at
-the change. So first resolve the PR worktree (`WT=$(git rev-parse --show-toplevel)` run from inside
-it) and the base (`origin/<config.defaultBranch>`), and compute the change set:
+**Run the review gates against the PR's tree, not the session's.** `/simplify` takes no target: it
+reviews the diff of the shell's current directory, and `code-review` does the same when given no
+target. When the branch lives in a separate worktree (the recommended pattern) and the session was
+started in another checkout, a gate run from there reviews that other checkout's diff, and the PR
+body would report a review that never looked at the change. So before the gates:
 
-```bash
-git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
-```
+- **Find the PR worktree by its branch**, not by where the shell happens to be, and fetch the base:
 
-Check that the session's working directory is `$WT`. If it is not, run both gates with the PR
-worktree as the target (below), keep every edit they make inside `$WT` (never in the session's
-checkout; check `git status` in both afterwards and move or revert any edit that landed in the
-wrong one), and compare the files each gate reports reviewing with the change set above. If the
-gate's file list does not match, **stop and say so**: do not record a review line for a gate that
-did not cover this diff.
+  ```bash
+  BRANCH=<the PR branch>
+  WT=$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH" \
+    '/^worktree /{p=substr($0,10)} $0=="branch "b{print p}')
+  SESSION=$(git rev-parse --show-toplevel)   # the session's own checkout
+  git -C "$WT" fetch origin <config.defaultBranch>
+  ```
+
+  If `WT` is empty, the branch is not checked out anywhere: stop and say so.
+- **Compute the change set**: committed changes against the fetched base, plus anything not yet
+  committed (an earlier `--fix` pass, a staged edit, a new file). This is what the gates must cover
+  and what "this PR's scope" means below.
+
+  ```bash
+  git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
+  git -C "$WT" diff --name-only HEAD          # uncommitted, staged or not
+  git -C "$WT" ls-files --others --exclude-standard
+  ```
+
+- **`cd "$WT"` as its own command before invoking each gate**, so the diff the gate reads is the
+  PR's. If the shell cannot stay in `$WT` (some harnesses reset the working directory between
+  calls), do not run `/simplify`: record it in the PR body as not run because the session could
+  not point it at the PR worktree.
+- **Check both trees after each gate.** Unless `$SESSION` is `$WT`, save
+  `git -C "$SESSION" status --porcelain` before the gate. After it, run
+  `git -C "$WT" status --porcelain` and `git -C "$SESSION" status --porcelain` again. If the
+  session checkout's status changed, the gate worked on the wrong tree: **stop and say so**,
+  revert what it touched there, and do not record a review line for that gate. Every edit a gate
+  keeps must be inside `$WT`.
 
 1. **Simplify** — invoke the built-in `/simplify` skill (Skill tool, `skill: "simplify"`) on the
    branch's changes. It runs **first** because it may edit code, and every later gate has to check
-   the simplified result, not the code as it stood before. Review what it changed with `git diff`
-   and keep only the edits that preserve behaviour and belong in this PR's scope; revert the rest.
-   Skip it for a diff that touches no code (docs-only or config-only, the same diffs that may skip
-   Build, Type check and Tests below), and say in the PR body that it was skipped and why. If the
-   `simplify` skill is not available in the session, say so in the PR body — never skip it silently
-   and never report it as run.
+   the simplified result, not the code as it stood before. Review what it changed with
+   `git -C "$WT" diff` and keep only the edits that preserve behaviour and belong in this PR's
+   scope; revert the rest. Skip it for a diff that touches no code (docs-only or config-only, the
+   same diffs that may skip Build, Type check and Tests below), and say in the PR body that it was
+   skipped and why. If the `simplify` skill is not available in the session, say so in the PR body
+   — never skip it silently and never report it as run.
 2. **Self-review** — invoke the built-in `code-review` skill (Skill tool, `skill: "code-review"`,
-   `args: "medium --fix <branch>"`, where `<branch>` is the PR branch, or the worktree path when the
-   session's cwd is not that worktree) on the branch's changes. Never omit the target: with none,
-   `code-review` reviews the session's own diff. It runs after Simplify and before Format, so
-   every later gate checks the fixed code: `/simplify` covers quality, `code-review` hunts
-   correctness bugs. Never use the `ultra` level — it is a billed, user-triggered cloud review an
-   agent must not launch. Review what `--fix` changed with `git diff` and keep only the edits that
-   fix a real defect within this PR's scope; revert the rest. Skip it for a diff that touches no
-   code, as for Simplify, and say in the PR body that it was skipped and why. If the `code-review`
-   skill is not available in the session, say so in the PR body — never skip it silently and never
-   report it as run. Record the outcome as one line in the PR body's reviewer-facing section, e.g.
+   `args: "medium --fix <branch>"`, where `<branch>` is the PR branch, run from `$WT` as above) on
+   the branch's changes. Never omit the target: with none, `code-review` reviews the session's own
+   diff. It runs after Simplify and before Format, so every later gate checks the fixed code:
+   `/simplify` covers quality, `code-review` hunts correctness bugs. Never use the `ultra` level —
+   it is a billed, user-triggered cloud review an agent must not launch. Review what `--fix`
+   changed with `git -C "$WT" diff` and keep only the edits that fix a real defect within this
+   PR's scope; revert the rest. Skip it for a diff that touches no code, as for Simplify, and say
+   in the PR body that it was skipped and why. If the `code-review` skill is not available in the
+   session, say so in the PR body — never skip it silently and never report it as run. Record the outcome as one line in the PR body's reviewer-facing section, e.g.
    `code-review (medium): 4 findings, 3 fixed, 1 not a defect — <one-line why>`, so downstream
    reviewers see what was already considered. It runs when the PR is created, not on every later
    push: a review-response loop does not repeat it.
@@ -101,8 +120,8 @@ Do NOT skip these steps. Do NOT push code that fails any of these checks. Do NOT
 to bypass git hooks. **Tests must pass before the PR opens** — never open a PR on a red suite and
 promise to fix it later.
 
-Also confirm the working tree is in a clean, intentional state: review `git status` and `git diff`,
-stage only the changes that belong in this PR, and make sure no stray or generated files are
+Also confirm the PR worktree is in a clean, intentional state: review `git -C "$WT" status` and
+`git -C "$WT" diff`, stage only the changes that belong in this PR, and make sure no stray or generated files are
 included.
 
 One more gate runs later, once the body exists rather than before the push:
