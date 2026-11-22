@@ -112,6 +112,9 @@ jobs:
       - name: The auto-dev tick's digest-skip filter drops planner digest issues
         run: ./scripts/test-auto-dev-digest-skip.sh
 
+      - name: The auto-dev closed-sweep candidate read falls back and fails closed
+        run: ./scripts/test-auto-dev-closed-sweep.sh
+
       - name: address-review's first-line step answers the final reviewer's threads
         run: ./scripts/test-address-review-first-line.sh
 
