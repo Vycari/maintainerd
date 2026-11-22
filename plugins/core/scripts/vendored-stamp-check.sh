@@ -8,14 +8,16 @@
 # by the release tooling, so a copy's stamp says which version it was taken from. This tool
 # compares each copy with the canonical script and prints one line per file:
 #
-#   current       stamp matches the canonical
+#   current       stamp and script both match the canonical
+#   MODIFIED      stamp matches but the script differs (a local edit, or a core change that
+#                 landed without a version bump): re-copy it, after reading the diff
 #   behind        stamp differs but the script is otherwise identical (re-copy is optional)
 #   STALE         stamp differs and so does the script: re-copy it
 #   UNSTAMPED     no stamp, and the script differs: a pre-stamp copy, re-copy it
 #   unstamped     no stamp, but identical apart from that: re-copy to get a stamp
 #   MISSING       no vendored copy of a script the canonical set has
 #
-# Exit 0 when nothing is STALE, UNSTAMPED or MISSING; 1 otherwise; 2 on bad usage or an
+# Exit 0 when nothing is MODIFIED, STALE, UNSTAMPED or MISSING; 1 otherwise; 2 on bad usage or an
 # unreadable canonical. Read-only: it never copies anything, it prints the command.
 #
 # Canonical source: maintainerd, plugins/core/scripts/vendored-stamp-check.sh
@@ -58,11 +60,18 @@ for name in $SCRIPTS; do
     continue
   fi
   have="$(stamp_of "$copy")"
+  same_body=0
+  [ "$(body_of "$copy")" = "$(body_of "$canon")" ] && same_body=1
   if [ "$have" = "$want" ]; then
-    echo "current    $copy  ($have)"
+    if [ "$same_body" = 1 ]; then
+      echo "current    $copy  ($have)"
+    else
+      echo "MODIFIED   $copy  (stamp $have matches, script differs)  fix: cp \"$canon\" \"$copy\""
+      bad=1
+    fi
     continue
   fi
-  if [ "$(body_of "$copy")" = "$(body_of "$canon")" ]; then
+  if [ "$same_body" = 1 ]; then
     if [ -n "$have" ]; then
       echo "behind     $copy  (stamp $have, canonical $want; script unchanged)"
     else

@@ -337,6 +337,13 @@ run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
 expect_status "an exact copy: reports current, exit 0" 0 "$status" "$output"
 expect_match "an exact copy: says current" "current" "$output"
 
+echo '# local edit' >> "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "a current stamp on a changed script: MODIFIED, exit 1" 1 "$status" "$output"
+expect_match "a current stamp on a changed script: says MODIFIED" "MODIFIED" "$output"
+expect_match "MODIFIED: prints the copy command" "fix: cp " "$output"
+cp "$CANON_DIR/coverage-adapt.sh" "$d/v/"
+
 sed -i.bak 's/^# maintainerd-core: .*/# maintainerd-core: 0.0.1/' "$d/v/coverage-check.sh"; rm -f "$d/v/coverage-check.sh.bak"
 run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
 expect_status "an old stamp on an unchanged script: behind, still exit 0" 0 "$status" "$output"

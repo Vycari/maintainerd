@@ -337,8 +337,9 @@ version it was taken from. Run, from the repo root:
 ```
 
 It compares `.claude/maintainerd/coverage-adapt.sh` and `coverage-check.sh` with the loaded plugin's
-scripts and prints one line each. `STALE` or `UNSTAMPED` (the stamp differs **and** the script
-differs, or a pre-stamp copy that differs) → **WARN**, quoting the line, which carries the `cp`
+scripts and prints one line each. `MODIFIED`, `STALE` or `UNSTAMPED` (the stamp matches but the
+script differs, the stamp differs **and** the script differs, or a pre-stamp copy that differs) →
+**WARN**, quoting the line, which carries the `cp`
 command that re-copies it. `MISSING` is the same severity as a missing vendored script above.
 `behind` or `unstamped` with identical content → **PASS** with a note that the stamp lags but the
 script is unchanged. Exit 2 (no `CLAUDE_PLUGIN_ROOT`, or an unreadable canonical) → say **couldn't
