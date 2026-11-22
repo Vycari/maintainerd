@@ -487,6 +487,86 @@ class Profile(Base):
         self.assertEqual(p["interests"]["file"], "planning/research-radar/interests.md")
         self.assertEqual(p["interests"]["terms"], ["speech endpointing"])
 
+    def fake_gh_repo(self, pages, pr_list_ok=False, api_fails=False):
+        """A one-commit repo plus a fake `gh` on PATH: `gh pr list` fails the way a
+        GraphQL-blocked sandbox does (unless pr_list_ok), and `gh api` serves `pages` by number."""
+        repo = os.path.join(self.d, "repo-gh")
+        os.makedirs(repo)
+        write_json(os.path.join(repo, "cfg.json"), {"repo": "acme/widget",
+                   "researchRadar": {"categories": ["cs.AI"]}})
+        for cmd in (["init", "-q", "-b", "main"], ["add", "."],
+                    ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m",
+                     "git log subject only"]):
+            subprocess.run(["git", *cmd], cwd=repo, check=True, capture_output=True)
+        bindir = os.path.join(self.d, "bin")
+        os.makedirs(bindir)
+        write_json(os.path.join(bindir, "pages.json"), pages)
+        calls = os.path.join(bindir, "calls.log")
+        write(os.path.join(bindir, "gh"), f"""#!{sys.executable}
+import json, sys
+a = sys.argv[1:]
+open({calls!r}, "a").write(" ".join(a) + "\\n")
+if a[:2] == ["pr", "list"]:
+    if {pr_list_ok!r}:
+        print("from pr list"); sys.exit(0)
+    sys.stderr.write("GraphQL: HTTP 403\\n"); sys.exit(1)
+if a[:1] == ["api"]:
+    if {api_fails!r}:
+        sys.stderr.write("HTTP 403\\n"); sys.exit(1)
+    page = next(x.split("=", 1)[1] for x in a if x.startswith("page="))
+    print(json.dumps(json.load(open({os.path.join(bindir, "pages.json")!r})).get(page, [])))
+    sys.exit(0)
+sys.exit(2)
+""")
+        os.chmod(os.path.join(bindir, "gh"), 0o755)
+        return repo, bindir, calls
+
+    def profile_with_gh(self, repo, bindir, env_extra=None):
+        env = {"PATH": bindir + os.pathsep + os.environ["PATH"], **(env_extra or {})}
+        r = run(["profile", "--repo-root", repo, "--config", os.path.join(repo, "cfg.json"),
+                 "--branch", "main"], env_extra=env, cwd=repo)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_profile_uses_rest_when_graphql_blocked(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        recent = (now - dt.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old = (now - dt.timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        def pr(title, merged, updated):
+            return {"title": title, "merged_at": merged, "updated_at": updated}
+        # Page 1 is full and still has in-window updates, so page 2 must be read; page 2's
+        # every updated_at is old, so the scan stops there and never asks for page 3.
+        page1 = [pr("Offline sync resolver", recent, recent),
+                 pr("Closed without merging", None, recent),
+                 pr("Merged long ago, commented today", old, recent)]
+        page1 += [pr(f"filler {i}", None, recent) for i in range(97)]
+        page2 = [pr("Offline sync retries", recent, old), pr("Ancient", old, old)]
+        repo, bindir, calls = self.fake_gh_repo({"1": page1, "2": page2, "3": [pr("never read", recent, recent)]})
+        p = self.profile_with_gh(repo, bindir)
+        self.assertEqual(p["prTitles"]["source"], "gh api pulls (REST)")
+        self.assertEqual(p["prTitles"]["count"], 2)
+        with open(calls) as f:
+            log = f.read()
+        self.assertIn("pr list", log)
+        self.assertIn("page=2", log)
+        self.assertNotIn("page=3", log)
+
+    def test_profile_env_flag_skips_pr_list(self):
+        recent = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        repo, bindir, calls = self.fake_gh_repo(
+            {"1": [{"title": "Only via REST", "merged_at": recent, "updated_at": recent}]}, pr_list_ok=True)
+        p = self.profile_with_gh(repo, bindir, {"GH_GRAPHQL_BLOCKED": "1"})
+        self.assertEqual(p["prTitles"]["source"], "gh api pulls (REST)")
+        self.assertEqual(p["prTitles"]["count"], 1)
+        with open(calls) as f:
+            self.assertNotIn("pr list", f.read())
+
+    def test_profile_failed_rest_falls_back_to_git_log(self):
+        repo, bindir, _ = self.fake_gh_repo({}, api_fails=True)
+        p = self.profile_with_gh(repo, bindir)
+        self.assertEqual(p["prTitles"]["source"], "git log --first-parent main")
+        self.assertEqual(p["prTitles"]["count"], 1)
+
     def test_profile_requires_categories(self):
         r = run(["profile", "--repo-root", self.d, "--config", os.path.join(self.d, "none.json"), "--no-gh"],
                 cwd=self.d)

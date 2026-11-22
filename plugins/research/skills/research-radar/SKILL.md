@@ -75,8 +75,9 @@ Running `profile` (step 1) merges four sources into one JSON profile:
   derive in step 1 and pass as `--phrase`. These are hand-given, so a single hit is enough to keep a
   paper.
 - **Merged PR titles.** The titles of PRs merged in the look-back window (default 4 weeks). They come
-  from `gh pr list` (in a GraphQL-blocked sandbox, the REST list in
-  [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md)), falling back to the default branch's first-parent commit subjects when `gh` is
+  from `gh pr list`; when that is refused (a GraphQL-blocked sandbox) or `GH_GRAPHQL_BLOCKED=1`, the
+  script reads the REST pulls list itself, as in
+  [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md), falling back to the default branch's first-parent commit subjects when `gh` is
   unavailable, which for a squash-merge repo are the PR titles. Conventional-commit prefixes, issue
   numbers, versions, stopwords and dev-process words (`fix`, `refactor`, `tests`, …) are stripped.
   Unigrams and bigrams are then counted once per title, and only terms that recur make it in.

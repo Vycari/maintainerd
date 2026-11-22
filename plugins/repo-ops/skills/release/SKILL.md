@@ -59,8 +59,12 @@ ran and how it decided, and use the REST forms in [`../../references/gh-rest-fal
 rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
 rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
 
-- `gh release list --limit 1`: **List PRs merged in a window, and the latest release**
-  (`repos/<config.repo>/releases/latest`).
+- `gh release list --limit 1`: **List PRs merged in a window, and the latest release**, using the
+  releases-list endpoint so a prerelease still counts as the previous release, as it does for
+  `gh release list`:
+  `gh api -X GET "repos/<config.repo>/releases" -f per_page=30 --jq '[.[] | select(.draft | not)][0].tag_name // empty'`
+  (drafts dropped, as `gh release list` drops them; the list is newest first). An empty result with exit 0 means no release yet; a non-zero exit is a failed read: stop and
+  report. Not `releases/latest`, which skips prereleases and would move `$LAST` back.
 - `gh pr list --state merged --search "merged:>…"`: the same section's merged-window listing, with the
   commit date of `$LAST` as the lower bound.
 - Run that scan with `set -o pipefail` and check its exit status: a non-zero exit is a failed scan,

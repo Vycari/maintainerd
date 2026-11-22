@@ -275,9 +275,12 @@ past where a naive stop would cut the scan. Stop paging only after a full page i
 that hit a cap is a truncated read (rule 1), not an empty window. `additions` and `deletions` are
 not on the list endpoint; read them per PR from `repos/$REPO/pulls/$N` only if needed.
 
-The latest release is plain REST: `gh api "repos/$REPO/releases/latest" --jq .tag_name` (404 means
-none). `gh release list` is GraphQL; use `gh api -X GET "repos/$REPO/releases" -f per_page=1` when
-drafts or prereleases matter. `gh release create` is REST and works unchanged.
+`gh release list` is GraphQL. Its first row is the newest non-draft release, prereleases
+included; the REST form that keeps that selection is
+`gh api -X GET "repos/$REPO/releases" -f per_page=30 --jq '[.[] | select(.draft | not)][0].tag_name // empty'`
+(empty with exit 0 means none). `gh api "repos/$REPO/releases/latest" --jq .tag_name` (404 means
+none) skips prereleases, so use it only where the newest *stable* release is what you want.
+`gh release create` is REST and works unchanged.
 
 ### Read one PR's fields
 
