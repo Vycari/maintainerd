@@ -267,7 +267,9 @@ split_simple_commands() {
           '$')
             nc="${s:$((i + 1)):1}"
             case "$nc" in
-              '(') stack="${stack}C"; i=$((i + 2)); continue ;;
+              # `$(` starts a fresh command, so no word has begun: `"$(# x` opens a comment, the
+              # same as the code-context `$(` arm below.
+              '(') stack="${stack}C"; pw=0; i=$((i + 2)); continue ;;
               '{') stack="${stack}P"; i=$((i + 2)); continue ;;
               "'") if [ "$top" = P ]; then stack="${stack}E"; i=$((i + 2)); continue; fi ;;
             esac ;;

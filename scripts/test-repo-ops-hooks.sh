@@ -1146,6 +1146,20 @@ expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "$(...)" does
   "$(repo "" "$CONFIG_PLAIN")" 'echo "$(echo "'"'"'")"; gh pr merge 5'
 expect "$MERGE_GUARD" warn 'a brace pair inside ${...} does not end the expansion early' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{a}}; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a comment opening a "$(...)" is a comment: its apostrophe opens no quote (Greptile 4656581888)' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\$(# don't
+echo ok
+)\"; gh pr merge 5"
+expect "$TEMPLATE_GUARD" deny 'a comment opening a "$(...)" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \"\$(# don't
+echo ok
+)\"; gh pr create --title x --body \"no headings\""
+expect "$MERGE_GUARD" warn 'a comment opening a $(...) inside "${...}" is a comment too' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\${x:-\$(# don't
+echo ok
+)}\"; gh pr merge 5"
+expect "$MERGE_GUARD" warn 'control: a # glued to text inside "$(...)" is still a word, not a comment' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \"\$(echo a#'b')\"; gh pr merge 5"
 expect "$MERGE_GUARD" warn 'a bare { inside "${...}" opens nothing: the first } ends it (Greptile 4656541501)' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-{}"; gh pr merge 1'
 expect "$MERGE_GUARD" warn 'a bare { inside an unquoted ${...} opens nothing either' \
