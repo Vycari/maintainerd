@@ -66,6 +66,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   "paths": {
     "source":       "src/pepper/",              // root of source the audits sweep
     "tests":        "tests/",                    // root of the test tree
+                                                 // null when the repo has no tests AND coverage is null (exempt)
     "designDocs":   ["planning/"],               // design/architecture docs (audit-design-docs)
     "productDocs":  ["docs/", "README.md", "AGENTS.md"], // user-facing docs (audit-product-docs)
     "changelogDir": "planning/changelog/",       // where daily-changelog writes YYYY-MM-DD.md
@@ -366,6 +367,10 @@ as benign rather than "a human is mid-work."
 required once `commands.migrationGraph` is set (the tool refuses to guess a framework's layout) and
 ignored otherwise. The tool assumes sequential numeric revision ids, files named `<id>_<slug>.<ext>`,
 and `revision` / `down_revision` assignments in the file — see `repo-ops`' README.
+
+`tests` may be `null` for a repo with no tests, provided the effective `coverage` is also `null` (a
+complete exemption, see `profile-schema.md`); `doctor` then reports the path `n/a (coverage exempt)`
+instead of failing on a directory that cannot exist. With a non-null `coverage`, `tests` must resolve.
 
 `prTemplate` may be `null`: the repo deliberately uses no PR template, and `create-pr` (and
 anything else that writes PR bodies) falls back to its built-in Summary / Changes / Checklist
