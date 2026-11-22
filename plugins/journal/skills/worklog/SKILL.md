@@ -104,6 +104,22 @@ by the live session. Flags narrow that:
 - `--author @me` → only the user's own PRs (default: every PR merged that day, so parallel/automated
   work is captured too).
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one; the `gh` porcelain below is
+GraphQL underneath and returns 403 there while `gh auth status` stays green. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed), say in the report which mode
+ran and how it decided, and use the REST forms in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for step 2A. Its three
+rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
+rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
+
+- Repo resolution's `gh repo view --json nameWithOwner`: `gh api repos/<owner/name> --jq .full_name`,
+  or the git-remote parse that step already falls back to.
+- The day's merged PRs: **List PRs merged in a window** (local day converted to UTC).
+- Run that scan with `set -o pipefail` and check its exit status: a non-zero exit is a failed scan,
+  never an empty window. If the PR scan cannot be completed, take the session-only fallback and say
+  the PR scan failed. Do not report "no PRs merged".
+
 ## Workflow
 
 ### 1. Resolve targets (read before writing)

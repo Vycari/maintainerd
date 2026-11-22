@@ -67,6 +67,11 @@ git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@
 ls pyproject.toml package.json go.mod Cargo.toml 2>/dev/null
 ```
 
+`gh repo view --json` is GraphQL, so where GraphQL is blocked it returns 403 and the `||` falls through to the
+remote-URL parse, which is the intended behaviour there; the label calls below (`gh label create`) are
+REST and unaffected. Neither step needs a fallback, but say in the report if the slug came from the
+URL parse because `gh` failed. See [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
+
 **Confirm the repo slug and default branch — don't trust detection blindly.** Two traps: (1) if
 `origin` points at a local path or a non-GitHub host, `gh repo view` yields nothing — fall back to the
 URL parse, and if that's also empty, **ask the user**. (2) `origin/HEAD` can be stale or, in a clone

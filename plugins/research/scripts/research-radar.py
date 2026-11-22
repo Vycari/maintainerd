@@ -271,20 +271,69 @@ def git(args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
 
 
-def merged_pr_titles(repo, cwd, since, branch):
-    """Titles of PRs merged since `since`. Prefer gh; without gh auth, fall back to the
-    first-parent commit subjects of the default branch (a squash merge's subject is the PR title)."""
-    if repo:
+REST_PR_PAGES = 10     # 1,000 recently updated closed PRs: past this, the window is truncated
+
+
+def rest_merged_pr_titles(repo, cwd, since):
+    """Titles of PRs merged since `since` via the REST pulls list, for a sandbox that refuses
+    GraphQL (`gh pr list` is GraphQL underneath). `merged:>=` is a search with no REST form, so
+    list closed PRs newest-updated first and filter on `merged_at` client-side. A PR's
+    `updated_at` can move after it merges, so stop only after a page whose every `updated_at`
+    is older than the window, or a short page. Returns None if any page could not be read: a
+    partial list is not a quiet window (plugins/core/references/gh-rest-fallbacks.md)."""
+    lo = since.isoformat()
+    titles = []
+    for page in range(1, REST_PR_PAGES + 1):
         try:
             out = subprocess.run(
-                ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", "300",
-                 "--search", f"merged:>={since.isoformat()}", "--json", "title", "--jq", ".[].title"],
+                ["gh", "api", "-X", "GET", f"repos/{repo}/pulls", "-f", "state=closed",
+                 "-f", "sort=updated", "-f", "direction=desc", "-f", "per_page=100",
+                 "-f", f"page={page}"],
                 cwd=cwd, capture_output=True, text=True, timeout=120)
-            if out.returncode == 0:
-                return [t for t in out.stdout.splitlines() if t.strip()], "gh pr list"
-            print(f"profile: gh unavailable ({out.stderr.strip()[:120]}); using git log", file=sys.stderr)
         except (OSError, subprocess.TimeoutExpired) as e:
-            print(f"profile: gh unavailable ({e}); using git log", file=sys.stderr)
+            print(f"profile: REST pulls list failed ({e})", file=sys.stderr)
+            return None
+        if out.returncode != 0:
+            print(f"profile: REST pulls list failed ({out.stderr.strip()[:120]})", file=sys.stderr)
+            return None
+        try:
+            prs = json.loads(out.stdout)
+        except ValueError:
+            print("profile: REST pulls list returned unparseable JSON", file=sys.stderr)
+            return None
+        if not isinstance(prs, list):
+            print("profile: REST pulls list returned a non-list", file=sys.stderr)
+            return None
+        titles += [pr.get("title") or "" for pr in prs
+                   if pr.get("merged_at") and pr["merged_at"] >= lo]
+        if len(prs) < 100 or all((pr.get("updated_at") or "") < lo for pr in prs):
+            return [t for t in titles if t.strip()]
+    print(f"profile: REST pulls list hit its {REST_PR_PAGES}-page cap; window may be truncated",
+          file=sys.stderr)
+    return [t for t in titles if t.strip()]
+
+
+def merged_pr_titles(repo, cwd, since, branch):
+    """Titles of PRs merged since `since`. Prefer `gh pr list`; when GraphQL is refused (or
+    `GH_GRAPHQL_BLOCKED=1`), the REST pulls list; without either, fall back to the first-parent
+    commit subjects of the default branch (a squash merge's subject is the PR title)."""
+    if repo:
+        if os.environ.get("GH_GRAPHQL_BLOCKED") != "1":
+            try:
+                out = subprocess.run(
+                    ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", "300",
+                     "--search", f"merged:>={since.isoformat()}", "--json", "title", "--jq", ".[].title"],
+                    cwd=cwd, capture_output=True, text=True, timeout=120)
+                if out.returncode == 0:
+                    return [t for t in out.stdout.splitlines() if t.strip()], "gh pr list"
+                print(f"profile: gh pr list unavailable ({out.stderr.strip()[:120]}); trying REST",
+                      file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"profile: gh pr list unavailable ({e}); trying REST", file=sys.stderr)
+        titles = rest_merged_pr_titles(repo, cwd, since)
+        if titles is not None:
+            return titles, "gh api pulls (REST)"
+        print("profile: no PR list from gh; using git log", file=sys.stderr)
     subjects = git(["log", "--first-parent", f"--since={since.isoformat()}", "--pretty=%s", branch], cwd)
     return [s for s in subjects.splitlines() if s.strip()], f"git log --first-parent {branch}"
 
