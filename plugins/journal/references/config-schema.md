@@ -442,9 +442,11 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   a public repo everyone else's comments are still read, as information rather than as decisions.
   `closedSweepDays` *(default `14`)* and `closedSweepMax` *(default `20`)* bound step 1's sweep of
   recently closed issues that still carry the In-progress label: only issues closed or updated in
-  the window are read, one page of at most `closedSweepMax` per tick. Each is matched to its
-  automated PRs by branch: merged or none → the label is removed; closed unmerged → step 1's Skip
-  label and comment. `0` disables it and sends no request at all (GitHub reads `per_page=0` as 30).
+  the window are read, one page of at most `closedSweepMax` per tick, and issues carrying Skip or an
+  `excludedLabels` label are dropped. Each is matched to its automated PRs (by branch) through its
+  own timeline, never a page of recent PRs: merged or none → the label is removed; all closed
+  unmerged → step 1's Skip label and comment; open, or any read failed → left alone. `0` disables
+  it and sends no request at all (GitHub reads `per_page=0` as 30).
   A backlog older than the window is a one-off cleanup, not tick work.
   All optional; absent → the documented defaults.
 - `autoMerge.*` *(optional; **the second block whose absence means "off"**)* — the opt-in and

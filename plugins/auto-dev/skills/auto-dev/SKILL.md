@@ -250,46 +250,60 @@ still carry it, using REST (so it works in both modes) and the `since` filter so
 inside a window rather than walking the whole history.
 
 **If `config.autoDev.closedSweepMax` is `0`, skip the sweep entirely and issue no request** — not
-the issue read, not the PR read below. Do not pass `per_page=0`: GitHub treats it as the default
-page size of 30, so a `0` sent to the API turns the sweep up, not off. Otherwise:
+the issue read, not the per-issue reads below. Do not pass `per_page=0`: GitHub treats it as the
+default page size of 30, so a `0` sent to the API turns the sweep up, not off. Otherwise read the
+candidates, dropping any issue that carries the Skip label or a label in
+`config.autoDev.excludedLabels` **before** keeping its number — the sweep never touches opted-out
+work, even when a maintainer left In-progress beside Skip on purpose:
 
 ```bash
 SINCE=$(date -u -d "-<config.autoDev.closedSweepDays> days" +%Y-%m-%dT%H:%M:%SZ)   # BSD: date -u -v-<N>d +%Y-%m-%dT%H:%M:%SZ
 gh api -X GET "repos/<config.repo>/issues" -f state=closed -f labels='<config.autoDev.stateLabels.inProgress>' \
   -f since="$SINCE" -f sort=updated -f direction=desc -f per_page=<config.autoDev.closedSweepMax> \
-  --jq '[.[] | select(has("pull_request") | not) | .number]'
+  | jq --arg skip '<config.autoDev.stateLabels.skip>' --argjson ex '<config.autoDev.excludedLabels as a JSON array>' \
+      '[.[] | select(has("pull_request") | not)
+            | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
+            | .number]'
 ```
 
-If that returns no numbers, the sweep is done. Otherwise read **one page** of recently closed PRs
-(never `--paginate`), once per tick, and match each issue to its automated PRs by branch: an
-automated PR for issue `N` is one whose head ref starts with `<config.autoDev.branchPrefix><N>-`
-(the step 3 branch shape), the same identity signal the gather uses:
+If that returns no numbers, the sweep is done. Otherwise establish each issue's
+automated PRs **from that issue itself**, never from a page of recent PRs: a recent-PR page that
+covers the window can still omit an old rejected PR whose issue was closed yesterday. Every
+automated PR's body carries `Fixes #<N>` (step 3, item 7, and the draft path), so it appears on the
+issue's timeline as a `cross-referenced` event. Read the whole timeline (one issue, so `--paginate`
+here is bounded) and list the same-repo PRs it names:
 
 ```bash
-gh api -X GET "repos/<config.repo>/pulls" -f state=closed -f sort=updated -f direction=desc -f per_page=100 \
-  --jq '[.[] | {number, headRefName: .head.ref, merged: (.merged_at != null), updatedAt: .updated_at}]'
+gh api "repos/<config.repo>/issues/<N>/timeline" --paginate \
+  | jq -s --arg r '<config.repo>' \
+      '[.[][] | select(.event=="cross-referenced" and .source.issue.pull_request != null
+                       and .source.issue.repository.full_name == $r) | .source.issue.number] | unique'
 ```
 
-For each issue number returned (one page only, never `--paginate`), decide from its matches:
+Then read each listed PR (`gh api "repos/<config.repo>/pulls/<P>" --jq '{head: .head.ref, state, merged: (.merged_at != null)}'`).
+An automated PR for issue `N` is one whose head ref starts with `<config.autoDev.branchPrefix><N>-`
+(the step 3 branch shape), the same identity signal the gather uses. Decide from those:
 
-- **A matching PR merged, or no matching PR at all** (closed by hand, or by a human's PR): remove
-  the In-progress label and nothing else — no comment, no other label change, no timeline read.
-- **Matching PRs exist and every one closed unmerged**: the same rejection as step 1's "PR closed
+- **The timeline read or any of those PR reads failed or came back incomplete**: the PR state is
+  unknown, so leave that issue untouched this tick and note it in the exit report. Never read "no
+  automated PR" off a read that did not complete.
+- **An automated PR is still open**: leave the issue untouched; step 2 owns that PR.
+- **An automated PR merged**: remove the In-progress label and nothing else — no comment, no other
+  label change.
+- **Automated PRs exist and every one closed unmerged**: the same rejection as step 1's "PR closed
   without merging" — remove the In-progress label, add the Skip label, and comment (with marker)
   that the PR was closed unmerged and the issue needs human direction before auto-dev will touch it
   again, so reopening the issue later does not hand the rejected approach back to the pipeline.
-- **No match, and the PR page may not reach back to the window** (it returned a full 100 and its
-  last entry's `updatedAt` is newer than `$SINCE`): the PR state is unknown, so leave that issue
-  untouched this tick and note it in the exit report. Never guess "no PR" from a page that did not
-  cover the window.
+- **The complete timeline names no automated PR** (closed by hand, or by a human's PR): remove the
+  In-progress label and nothing else.
 
 The label removal is `gh api -X DELETE "repos/<config.repo>/issues/<N>/labels/<URL-encoded label>"`
-(the one `DELETE` invariant 5 allows); the Skip label is `POST /issues/<N>/labels`. If the PR read
-fails, remove nothing and apply nothing this tick: without the PR state the sweep cannot tell a
-merge from a rejection. A failed read, comment or label change is noted in the exit report and
-never ends the tick (this is housekeeping, not one of the reads invariant 7 governs). Defaults:
-`config.autoDev.closedSweepDays` 14, `config.autoDev.closedSweepMax` 20 (cap per tick; `0` turns the
-sweep off, as above). The bound is two reads plus at most `closedSweepMax` issues' writes per tick.
+(the one `DELETE` invariant 5 allows); the Skip label is `POST /issues/<N>/labels`. A failed read,
+comment or label change is noted in the exit report and never ends the tick (this is housekeeping,
+not one of the reads invariant 7 governs), but a failed read always means "change nothing on that
+issue", never "no PR". Defaults: `config.autoDev.closedSweepDays` 14, `config.autoDev.closedSweepMax`
+20 (cap per tick; `0` turns the sweep off, as above). The bound is one issue read, plus, for at most
+`closedSweepMax` issues, one timeline read, one read per PR it references, and that issue's writes.
 The window is a ceiling on recency, so a backlog older than it is not touched by this sweep:
 clearing one is a one-off label write the maintainer runs and approves, not something a tick does.
 
