@@ -243,6 +243,29 @@ For issues labeled In-progress:
         '[.[] | select(.event=="labeled" and .label.name==$l)] | last | .created_at'
   ```
 
+**Sweep recently closed issues (bounded).** The gather above reads only *open* issues, so an issue
+that its PR closed with `Fixes #N` before the next tick can keep the In-progress label for good.
+After the open-issue pass, every tick also reads one bounded page of recently closed issues that
+still carry it, using REST (so it works in both modes) and the `since` filter so the read stays
+inside a window rather than walking the whole history:
+
+```bash
+SINCE=$(date -u -d "-<config.autoDev.closedSweepDays> days" +%Y-%m-%dT%H:%M:%SZ)   # BSD: date -u -v-<N>d +%Y-%m-%dT%H:%M:%SZ
+gh api -X GET "repos/<config.repo>/issues" -f state=closed -f labels='<config.autoDev.stateLabels.inProgress>' \
+  -f since="$SINCE" -f sort=updated -f direction=desc -f per_page=<config.autoDev.closedSweepMax> \
+  --jq '[.[] | select(has("pull_request") | not) | .number]'
+```
+
+For each number returned (one page only, never `--paginate`), remove the In-progress label and
+nothing else: `gh api -X DELETE "repos/<config.repo>/issues/<N>/labels/<URL-encoded label>"`. No
+comment, no Skip label, no other label change, and no timeline read: a closed issue is not
+reconciled by the rules above, its stale state label is only cleaned up. A failed read or a failed
+removal is noted in the exit report and never ends the tick (this is housekeeping, not one of the
+reads invariant 7 governs). Defaults: `config.autoDev.closedSweepDays` 14, `config.autoDev.closedSweepMax`
+20 (cap per tick; set `closedSweepMax` to `0` to turn the sweep off). The window is a ceiling on
+recency, so a backlog older than it is not touched by this sweep: clearing one is a one-off label
+write the maintainer runs and approves, not something a tick does.
+
 ### Step 2 — Advance an open automated PR
 
 If one or more automated PRs are open, pick the **single most-urgent** one to advance this tick (one PR per tick keeps the tick bounded). Urgency order, oldest-first within a tier: (1) a **draft** to resume, (2) **CI red**, (3) **unaddressed feedback** (the newest comment on a thread lacks the marker — third-party bots' auto-generated notices don't count; see item 3 of the review loop), (4) **unreviewed past the review window** — ready, CI green, no review activity from any human or third-party bot, older than `config.autoDev.fallbackReviewMinutes`, and no prior fallback self-review (see **Fallback self-review** below). A PR with none of these is **quiescent** — waiting on the maintainer's review or merge. If every open PR is quiescent, step 2 has no work: fall through to step 3 (build). Otherwise advance that one PR with the loop below and stop.
