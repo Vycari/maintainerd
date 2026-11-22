@@ -34,6 +34,24 @@ Before creating a branch or pushing any code, run all of the applicable checks b
 order** and fix any failures. Run each command from `config.commands.*`; **skip any whose value is
 `null`** (that step does not apply to this repo).
 
+**Run the review gates against the PR's tree, not the session's.** `/simplify` and `code-review`
+act on the session's working directory unless told otherwise. When the branch lives in a separate
+worktree (the recommended pattern) and the session was started in another checkout, a gate with no
+target reviews that other checkout's diff and the PR body would report a review that never looked at
+the change. So first resolve the PR worktree (`WT=$(git rev-parse --show-toplevel)` run from inside
+it) and the base (`origin/<config.defaultBranch>`), and compute the change set:
+
+```bash
+git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
+```
+
+Check that the session's working directory is `$WT`. If it is not, run both gates with the PR
+worktree as the target (below), keep every edit they make inside `$WT` (never in the session's
+checkout; check `git status` in both afterwards and move or revert any edit that landed in the
+wrong one), and compare the files each gate reports reviewing with the change set above. If the
+gate's file list does not match, **stop and say so**: do not record a review line for a gate that
+did not cover this diff.
+
 1. **Simplify** — invoke the built-in `/simplify` skill (Skill tool, `skill: "simplify"`) on the
    branch's changes. It runs **first** because it may edit code, and every later gate has to check
    the simplified result, not the code as it stood before. Review what it changed with `git diff`
@@ -43,7 +61,9 @@ order** and fix any failures. Run each command from `config.commands.*`; **skip 
    `simplify` skill is not available in the session, say so in the PR body — never skip it silently
    and never report it as run.
 2. **Self-review** — invoke the built-in `code-review` skill (Skill tool, `skill: "code-review"`,
-   `args: "medium --fix"`) on the branch's changes. It runs after Simplify and before Format, so
+   `args: "medium --fix <branch>"`, where `<branch>` is the PR branch, or the worktree path when the
+   session's cwd is not that worktree) on the branch's changes. Never omit the target: with none,
+   `code-review` reviews the session's own diff. It runs after Simplify and before Format, so
    every later gate checks the fixed code: `/simplify` covers quality, `code-review` hunts
    correctness bugs. Never use the `ultra` level — it is a billed, user-triggered cloud review an
    agent must not launch. Review what `--fix` changed with `git diff` and keep only the edits that
