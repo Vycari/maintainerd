@@ -428,6 +428,22 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "skipLabel plus a score on an OLDER commit -> no-review-scheduled, not a wait" no-review-scheduled 0
 expect_contains "the older-commit score is named in the detail" "scored 3/5 on bbbbbbb, not the head"
 
+new_case review-skip-label-unreadable-commit-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 3/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score whose commit is unreadable -> findings:0, never waived" "findings:0" 1
+expect_contains "the unreadable-commit score is named" "scored 3/5 on an unreadable commit, below"
+
+new_case review-skip-label-unreadable-commit-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 5/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 5/5 score whose commit is unreadable -> no-review-scheduled (nothing failing to waive)" no-review-scheduled 0
+expect_contains "the passing unreadable-commit score is named" "scored 5/5 on an unreadable commit, at or above"
+
 new_case review-skip-label-vr-stage
 write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
 write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"

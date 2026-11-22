@@ -179,7 +179,9 @@ memory of having applied the label. The exception is narrow on purpose:
 deadline. In the default (final) stage with a numeric threshold it reads the scores first: a score
 a bot already published on the **head** is judged as on any PR (`approved` or `findings:<n>`), and
 only when none is on the head does it report `no-review-scheduled`, with a detail line naming any
-score on an older commit (no bot will refresh that one; name it in the round summary). `--stage vr`
+score on an older commit (no bot will refresh that one; name it in the round summary). A score whose
+commit cannot be read is not treated as an older one: below the threshold it reports `findings:<n>`
+like a failing score on the head, so the label never waives it. `--stage vr`
 reports `no-review-scheduled` straight away, since the first-line reviewer reads no score, so after
 a stage 1 `no-review-scheduled` on a skip-labelled PR run the default stage once before deciding.
 With the skip label present (and the PR not a draft), a `no-review-scheduled` from the default

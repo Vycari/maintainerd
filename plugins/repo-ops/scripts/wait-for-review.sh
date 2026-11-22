@@ -948,17 +948,36 @@ poll_once() {
   fi
   if [ "$skip_labelled" = "1" ]; then
     # Skip-labelled: judge a score on the head as on any PR; with none, nothing will review it. A
-    # score on an older commit is named in the detail (it is not a review of this head, and no bot
-    # will refresh it), never waited on.
+    # score on a known older commit is named in the detail (it is not a review of this head, and no
+    # bot will refresh it), never waited on. A score whose commit cannot be read is not "an older
+    # commit": it may well be the head, so it is never waived. Below the threshold it halts as a
+    # found failing score does (findings:<n>); at or above it, it waives nothing.
     head_scored=0
+    unreadable_below=""
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
       ! is_head_sha "$reviewed" "$head" || head_scored=1
+      if [ -z "$reviewed" ]; then
+        score="$(printf '%s' "$line" | cut -d' ' -f2)"
+        num="${score%%/*}"
+        den="${score##*/}"
+        if [ "$den" != "$THR_DEN" ] || ! [ "$num" -ge "$THR_NUM" ] 2>/dev/null; then
+          unreadable_below="${unreadable_below}  ${line%% *} scored $score on an unreadable commit, below review.approvalThreshold $THRESHOLD; the skip label does not waive a found score"$'\n'
+        fi
+      fi
     done <<<"$scores"
+    if [ -n "$unreadable_below" ]; then
+      VERDICT="findings:$n"
+      DETAIL="${unreadable_below%$'\n'}"
+      [ "$n" -eq 0 ] || DETAIL="$(printf '%s' "$unresolved" | jq -r '.[] |
+        "  \(.path // "?"):\((.line // .originalLine // 0))  " +
+        ((.comments.nodes[0].body // "") | gsub("<[^>]*>"; "") | gsub("\\s+"; " ") | sub("^ "; "") | .[0:160])')"$'\n'"$DETAIL"
+      return 0
+    fi
     if [ "$head_scored" = "0" ]; then
       VERDICT="no-review-scheduled"
-      [ -z "$scores" ] || DETAIL="$(printf '%s\n' "$scores" | awk 'NF { printf "  %s scored %s on %s, not the head; the PR carries the skip label\n", $1, $2, ($3 == "" ? "an unreadable commit" : $3) }')"
+      [ -z "$scores" ] || DETAIL="$(printf '%s\n' "$scores" | awk 'NF { if ($3 == "") printf "  %s scored %s on an unreadable commit, at or above the threshold; the PR carries the skip label\n", $1, $2; else printf "  %s scored %s on %s, not the head; the PR carries the skip label\n", $1, $2, $3 }')"
       return 0
     fi
   fi
