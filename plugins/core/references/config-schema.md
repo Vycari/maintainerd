@@ -163,7 +163,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "fallbackReviewMinutes": 60,  // how long a ready, CI-green automated PR may sit with zero review activity before auto-dev posts a fallback self-review (CodeRabbit normally reviews within minutes; past this, assume it's rate-limited). Default 60 if absent.
     "maxPrsInFlight": 1,          // how many automated PRs may be open at once. 1 = classic single-PR pipeline (an open PR blocks new builds until it merges). >1 lets the queue drain into several built-but-unmerged PRs awaiting review. Never merges/closes anything. Default 1 if absent.
     "closedSweepDays": 14,         // window for the per-tick sweep that removes a stale In-progress label from recently CLOSED issues (reconcile otherwise reads open issues only). Default 14 if absent.
-    "closedSweepMax": 20,          // cap on issues cleaned per tick by that sweep (one REST page). 0 turns the sweep off. Default 20 if absent.
+    "closedSweepMax": 20,          // cap on issues cleaned per tick by that sweep (one REST page). 0 turns the sweep off (no request is sent). Default 20 if absent.
     "orphanReclaimMinutes": 90,    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
     "maintainers":         []      // OPTIONAL extra logins whose comments count as decisions/approvals. Default: a commenter is a maintainer iff their repo permission is admin/maintain/write (`gh api repos/<repo>/collaborators/<login>/permission`). List logins here only where the token can't read that (the call 403s/404s). Never a way to widen who decides beyond people you'd give write access.
   },
@@ -437,8 +437,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   a public repo everyone else's comments are still read, as information rather than as decisions.
   `closedSweepDays` *(default `14`)* and `closedSweepMax` *(default `20`)* bound step 1's sweep of
   recently closed issues that still carry the In-progress label: only issues closed or updated in
-  the window are read, one page of at most `closedSweepMax` per tick, label removal only (`0`
-  disables it). A backlog older than the window is a one-off cleanup, not tick work.
+  the window are read, one page of at most `closedSweepMax` per tick. Each is matched to its
+  automated PRs by branch: merged or none → the label is removed; closed unmerged → step 1's Skip
+  label and comment. `0` disables it and sends no request at all (GitHub reads `per_page=0` as 30).
+  A backlog older than the window is a one-off cleanup, not tick work.
   All optional; absent → the documented defaults.
 - `autoMerge.*` *(optional; **the second block whose absence means "off"**)* — the opt-in and
   caps for an external gate that enqueues maintainer-authored PRs for merge once review is stable
