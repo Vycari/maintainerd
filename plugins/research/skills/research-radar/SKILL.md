@@ -265,8 +265,9 @@ never returned to you, so `advance` (step 4) knows not to mark them seen (see "T
 
 `--record` also writes the **prefilter record**, a compact account of the run kept alongside the
 digest. It carries the window, `max`, `stats` and `backgroundTerms`; the `returned` and `overflow`
-survivors, each with its id, title, matched terms and score (no abstracts); and the ids dropped as
-term misses, as already reported, or as already seen. It is what lets a later check say why a
+survivors, each with its id, matched terms and score; and the ids dropped as term misses, as
+already reported, or as already seen. It holds no titles or abstracts, so no arXiv text (and no
+instruction a title might carry) is ever committed through it; look a paper up by its id. It is what lets a later check say why a
 paper never reached the digest: past `--max` (in `overflow`), never matched (in `termMissIds`), or
 out of category or window (in none of the lists). Step 6 commits it. If the record cannot be
 written, the prefilter exits non-zero: stop, as for any failed prefilter.
@@ -371,9 +372,10 @@ draft-vs-not on its own, so say so explicitly rather than assuming it infers the
 
 ```bash
 DAY=$(date -u +%Y-%m-%d)                           # UTC, matching the digest's filename
+NAME=<the digest's filename stem from step 5>      # $DAY, or $DAY-2, $DAY-3 for a same-day re-run
 git checkout -b "research-radar-$DAY"              # add -2, -3 if the branch already exists (cron double-fire)
-mkdir -p "$DIR/prefilter" && cp "$RADAR/prefilter-record.json" "$DIR/prefilter/$DAY.json"
-git add "$DIR/$DAY.md" "$DIR/prefilter/$DAY.json" "$DIR/radar-state.json"   # or $DAY-2.* for a same-day re-run
+mkdir -p "$DIR/prefilter" && cp "$RADAR/prefilter-record.json" "$DIR/prefilter/$NAME.json"
+git add "$DIR/$NAME.md" "$DIR/prefilter/$NAME.json" "$DIR/radar-state.json"
 git commit -m "Research radar — $DAY (<N> papers)"
 git push -u origin HEAD
 if [ -n "<config.review.skipLabel>" ]; then

@@ -309,7 +309,9 @@ class PrefilterAdvance(Base):
         self.assertEqual(rec["max"], 2)
         self.assertEqual([c["id"] for c in rec["returned"]], [aid(1), aid(8)])
         self.assertEqual([c["id"] for c in rec["overflow"]], [aid(2)])
-        self.assertEqual(rec["overflow"][0]["title"], "A scheduler")
+        # no arXiv free text: an injected title can never be committed through the record
+        for c in rec["returned"] + rec["overflow"]:
+            self.assertEqual(set(c), {"id", "matched", "score"})
         self.assertIn("scheduler", rec["overflow"][0]["matched"])
         # aid3 (one derived term), aid10 (no word hit), aid12 (one + background) and the filler
         # are term misses; the out-of-category aid4 is in none of the lists.
@@ -319,7 +321,6 @@ class PrefilterAdvance(Base):
         self.assertEqual(rec["alreadyReportedIds"], [aid(5)])
         self.assertEqual(rec["alreadySeenIds"], [aid(6)])
         self.assertEqual(rec["stats"], json.loads(p.stdout)["stats"])
-        self.assertNotIn("abstract", rec["returned"][0])
         # the stdout contract is unchanged by --record
         self.assertEqual(json.loads(p.stdout)["overflowIds"], [aid(2)])
 

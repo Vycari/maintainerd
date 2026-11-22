@@ -543,10 +543,12 @@ def cmd_prefilter(a):
         # The run record (issue #92): a compact, committed account of what this prefilter
         # did with every in-category id, so a later check can tell a paper lost to --max
         # (`overflow`) from one the terms never matched (`termMissIds`) or one dropped as already
-        # reported or seen. Titles, not abstracts, keep it small. Written before stdout so a
-        # record that cannot be written fails the step rather than leaving a run with no record.
-        brief = lambda c: {"id": c["id"], "title": c["title"], "matched": c["matched"],
-                           "score": c["score"]}
+        # reported or seen. It holds no arXiv free text (no title, no abstract): every string in it
+        # is an id, a profile term or a date, so a title written to address an agent can never be
+        # committed through it, `overflow` titles no one reviews included. An id is enough to look
+        # a paper up. Written before stdout so a record that cannot be written fails the step
+        # rather than leaving a run with no record.
+        brief = lambda c: {"id": c["id"], "matched": c["matched"], "score": c["score"]}
         rec = {"recordVersion": 1, "responseDate": m["responseDate"], "from": m["from"],
                "until": m["until"], "windowSource": m["windowSource"], "max": a.max,
                "stats": stats, "backgroundTerms": background,
