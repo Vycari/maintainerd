@@ -103,6 +103,8 @@ grep -q 'A score that is present still counts' "$SKILL" && ok "a found score is 
 grep -q 'or it is still a draft' "$SKILL" && ok "a draft does not take the skip-label exit" || bad "a draft does not take the skip-label exit"
 grep -q '^| `no-review-scheduled` |' "$SKILL" && ok "the stage 1 table routes no-review-scheduled" || bad "the stage 1 table routes no-review-scheduled"
 grep -q 'commits/<headRefOid>/check-runs' "$SKILL" && grep -q 'commits/<headRefOid>/status"' "$SKILL" && ok "the checks gate reads check runs and commit statuses" || bad "the checks gate reads check runs and commit statuses"
+grep -q 'An empty set is not a pass' "$SKILL" && ok "the checks gate refuses a vacuous pass on zero checks" || bad "the checks gate refuses a vacuous pass on zero checks"
+grep -q 'Run the default stage once' "$SKILL" && ok "stage 1 no-review-scheduled reads an existing score before the checks gate" || bad "stage 1 no-review-scheduled reads an existing score before the checks gate"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

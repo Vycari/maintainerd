@@ -176,8 +176,14 @@ memory of having applied the label. The exception is narrow on purpose:
   waiver is always written down.
 
 `wait-for-review.sh` reports such a PR as `no-review-scheduled` rather than waiting out its
-deadline, in either stage; with the skip label present (and the PR not a draft), read that verdict
-as this exception. Every later step that would halt on a missing score, or wait for an `approved`
+deadline. In the default (final) stage with a numeric threshold it reads the scores first: a score
+a bot already published on the **head** is judged as on any PR (`approved` or `findings:<n>`), and
+only when none is on the head does it report `no-review-scheduled`, with a detail line naming any
+score on an older commit (no bot will refresh that one; name it in the round summary). `--stage vr`
+reports `no-review-scheduled` straight away, since the first-line reviewer reads no score, so after
+a stage 1 `no-review-scheduled` on a skip-labelled PR run the default stage once before deciding.
+With the skip label present (and the PR not a draft), a `no-review-scheduled` from the default
+stage is this exception. Every later step that would halt on a missing score, or wait for an `approved`
 verdict, routes this PR to the checks gate instead: Phase 1's score read, the first-line stage 1
 table, and the first-line exit all say so where they apply.
 
@@ -384,7 +390,7 @@ Wait with the stage flag (it exits on the first verdict):
 | `vr-findings:<n>` | a round for the head is in, `<n>` open | Triage as in Phase 2, fix the P0/P1s and the P2s you choose to (see [Keep the PR to its brief](#keep-the-pr-to-its-brief)), defer the rest, then push and wait again. |
 | `vr-handoff` | round cap (`firstLine.maxRounds`, default 3) reached; the head was handed to the final reviewer with the open findings listed | Stop chasing them in stage 1. Go to stage 2; the findings are part of what the final reviewer will see. |
 | `vr-unavailable` | the reviewer could not review and asked the final reviewer itself | Go to stage 2. |
-| `no-review-scheduled` | nothing will review this head: the PR is a draft or carries `review.skipLabel` | Non-draft with the skip label: neither reviewer runs, so there is no stage 2. Skip it and take the [skip-labelled exit](#loop-exit-conditions) (checks gate). A draft is not done: report that it is a draft and stop. |
+| `no-review-scheduled` | nothing will review this head: the PR is a draft or carries `review.skipLabel` | Non-draft with the skip label: neither reviewer runs, but a score may already exist (a bot that raced the label). Run the default stage once (`wait-for-review.sh <PR>`, no `--stage`): `approved` or `findings:<n>` means a score on the head is judged as usual; `no-review-scheduled` means there is none, so take the [skip-labelled exit](#loop-exit-conditions) (checks gate). A draft is not done: report that it is a draft and stop. |
 | `vr-escalated` | a P0 dispute the reviewer still holds (check title `Needs maintainer: P0 dispute`) | **Halt and escalate** (below). |
 | `timeout` | no verdict in `firstLine.unavailableMinutes` + slack | Keep waiting until 60 minutes have passed since the push with no final-review request on the PR, then halt and escalate: the first-line path is down and a person decides whether to request the final review. |
 
@@ -524,8 +530,9 @@ the response loop is the one in Phases 1-6, with these differences:
 
 Done when stage 2 is `approved` by the usual exit conditions below, with the stage 1 verdict
 recorded in the round summary. The one other ending is a non-draft PR carrying `review.skipLabel`
-(stage 1 `no-review-scheduled`): it has no stage 2, and it is done by the
-[skip-labelled exit](#loop-exit-conditions) (checks green, no open thread, no human block). The first-line mode never relaxes a condition; it adds the stage 1
+(stage 1 `no-review-scheduled`): when the default stage also reports `no-review-scheduled` (no score
+on the head), it is done by the [skip-labelled exit](#loop-exit-conditions) (checks green, no open
+thread, no human block); a score it finds on the head is judged by the usual exit instead. The first-line mode never relaxes a condition; it adds the stage 1
 checks in front of them and removes your power to request a review.
 
 ## The principle: never leave silence
@@ -1001,10 +1008,21 @@ draft, and no rung found a score) — the checks gate. Done when **all** of:
     --jq '{state, total_count, statuses: [.statuses[] | {context, state}]}'
   ```
 
+  **An empty set is not a pass.** Right after a push the head can have zero check runs and zero
+  statuses, and every "all of them passed" test is then vacuously true. Require at least one check
+  run on the head, or a combined status with `total_count` above `0`, before reading either as
+  green; with neither, keep waiting (poll on the same interval `wait-for-checks.sh` uses, to the
+  same `review.waitTimeoutMinutes` deadline, then halt and report that no check ever registered on
+  the head). Once something is green, read both again after a minute and require the same set: the
+  checks that register first can all be green while a slower one has yet to appear.
+  `wait-for-checks.sh <PR>` does exactly this (an empty rollup keeps waiting, `green` only after a
+  settle re-read) and is the tool to use where its GraphQL read works; the REST reads above are the
+  fallback where it does not.
+
   A check run that is not `completed` is not a pass. A combined status of `pending`, `failure` or
   `error` is not a pass, with one reading to know: when `total_count` is `0` the repo has no commit
   statuses at all, and GitHub reports that combined state as `pending`; with no statuses there is
-  nothing pending.
+  nothing pending (but then at least one check run must exist, per the rule above).
 - No unresolved review threads and no new comments since the last push — a human may still have
   reviewed it by hand.
 - No human has `CHANGES_REQUESTED` outstanding.
