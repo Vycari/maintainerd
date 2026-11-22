@@ -443,7 +443,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `closedSweepDays` *(default `14`)* and `closedSweepMax` *(default `20`)* bound step 1's sweep of
   recently closed issues that still carry the In-progress label: only issues closed or updated in
   the window are read, one search page of at most `closedSweepMax` per tick, with issues carrying
-  Skip or an `excludedLabels` label excluded in the query itself (so they never fill the page). Each is matched to its automated PRs (by branch) through its
+  Skip or an `excludedLabels` label excluded in the query itself (so they never fill the page).
+  Where `search/issues` is refused (a GraphQL-blocking proxy), the sweep falls back to the
+  repo-scoped `issues?state=closed&labels=<inProgress>&since=…` listing, at most 5 pages of 100,
+  filtering opted-out issues client-side and paging past them until `closedSweepMax` are collected. Each is matched to its automated PRs (by branch) through its
   own timeline, never a page of recent PRs: merged or none → the label is removed; all closed
   unmerged → step 1's Skip label and comment; open, or any read failed → left alone. `0` disables
   it and sends no request at all (GitHub reads `per_page=0` as 30).

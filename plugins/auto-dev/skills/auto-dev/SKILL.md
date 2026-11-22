@@ -246,8 +246,11 @@ For issues labeled In-progress:
 **Sweep recently closed issues (bounded).** The gather above reads only *open* issues, so an issue
 that its PR closed with `Fixes #N` before the next tick can keep the In-progress label for good.
 After the open-issue pass, every tick also reads one bounded page of recently closed issues that
-still carry it, using the REST search endpoint (so it works in both modes) with an `updated:` window
-so the read stays inside a window rather than walking the whole history.
+still carry it, inside an `updated` window so the read never walks the whole history. The read is
+the REST search endpoint first, with a repo-scoped listing as its fallback: sandbox proxies that
+block GraphQL refuse the global `search/issues` endpoint too
+([`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md), rule 3), so the
+sweep must not depend on it.
 
 **If `config.autoDev.closedSweepMax` is `0`, skip the sweep entirely and issue no request** — not
 the search, not the per-issue reads below. Do not pass `per_page=0`: GitHub treats it as the
@@ -275,9 +278,43 @@ gh api -X GET search/issues -f q="$Q" -f sort=updated -f order=desc -f per_page=
 ```
 
 The `jq` label check repeats the query's exclusion as a second guard (a mistyped qualifier must
-not turn into a relabel of opted-out work); with a correct query it drops nothing. A search that
-errors is a failed read: change nothing this tick. `incomplete_results: true` only means some
-matches are missing from this page; act on the ones returned, and the rest come up on a later tick.
+not turn into a relabel of opted-out work); with a correct query it drops nothing.
+`incomplete_results: true` only means some matches are missing from this page; act on the ones
+returned, and the rest come up on a later tick.
+
+**If the search errors** (a proxy 403 on `search/issues`, a 422, a timeout, any non-zero exit), do
+not stop there: run the repo-scoped fallback below, which every sandbox that allows repo REST can
+answer. The listing filters by label and `since` (an `updated` time) server-side, but it cannot
+exclude a label, so the exclusion happens client-side and the read **pages past** opted-out issues
+instead of letting them fill a fixed-size page: keep reading pages of 100 until `closedSweepMax`
+eligible issues are collected, a page comes back short (the listing ended), or 5 pages have been
+read. Opted-out issues therefore cost page reads, never candidate slots, so one opted-out issue (or
+twenty) cannot hide an older eligible one. Stop at the first failed page:
+
+```bash
+SINCE_TS="${SINCE}T00:00:00Z"
+FOUND='[]'; PAGE=1; MAX=<config.autoDev.closedSweepMax>
+while [ "$PAGE" -le 5 ]; do
+  RAW=$(gh api -X GET "repos/<config.repo>/issues" -f state=closed \
+          -f labels='<config.autoDev.stateLabels.inProgress>' -f since="$SINCE_TS" \
+          -f sort=updated -f direction=desc -f per_page=100 -f page="$PAGE") || { FOUND=FAILED; break; }
+  FOUND=$(jq -n --argjson acc "$FOUND" --argjson raw "$RAW" --argjson max "$MAX" \
+    --arg skip '<config.autoDev.stateLabels.skip>' --argjson ex '<config.autoDev.excludedLabels as a JSON array>' \
+    '($acc + [$raw[] | select(has("pull_request") | not)
+                     | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
+                     | .number]) | reduce .[] as $n ([]; if any(.[]; . == $n) then . else . + [$n] end) | .[:$max]')
+  [ "$(jq length <<<"$FOUND")" -ge "$MAX" ] && break    # enough candidates
+  [ "$(jq length <<<"$RAW")" -lt 100 ] && break         # the listing ended
+  PAGE=$((PAGE + 1))
+done
+```
+
+A failed page is a failed read: change nothing this tick (`FOUND=FAILED`), even if earlier pages
+returned candidates. Reaching the 5-page bound with fewer than `closedSweepMax` eligible issues is
+not a failure, because every collected issue is still checked on its own below: act on those, and
+say in the exit report that the fallback stopped at its page bound. Every issue acted on loses its
+In-progress label, so the next tick's listing starts further along. Note in the exit report which
+read produced the candidates (search, or the repo-scoped fallback and why).
 
 If that returns no numbers, the sweep is done. Otherwise establish each issue's
 automated PRs **from that issue itself**, never from a page of recent PRs: a recent-PR page that
@@ -315,7 +352,7 @@ The label removal is `gh api -X DELETE "repos/<config.repo>/issues/<N>/labels/<U
 comment or label change is noted in the exit report and never ends the tick (this is housekeeping,
 not one of the reads invariant 7 governs), but a failed read always means "change nothing on that
 issue", never "no PR". Defaults: `config.autoDev.closedSweepDays` 14, `config.autoDev.closedSweepMax`
-20 (cap per tick; `0` turns the sweep off, as above). The bound is one search, plus, for at most
+20 (cap per tick; `0` turns the sweep off, as above). The bound is one search (or, when it fails, at most 5 listing pages), plus, for at most
 `closedSweepMax` issues, one timeline read, one read per PR it references, and that issue's writes.
 The window is a ceiling on recency, so a backlog older than it is not touched by this sweep:
 clearing one is a one-off label write the maintainer runs and approves, not something a tick does.
