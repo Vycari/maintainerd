@@ -64,7 +64,14 @@ esac
 # command cannot have left that repo: a `cd`/`pushd`, `-R/--repo` or `GH_REPO` means the merge may
 # target a repo whose config was never read, so those still warn.
 DELEGATED=0
+# The config is the one at the repo root, so a session whose cwd is a subdirectory finds it too.
+# Fail closed: when the root cannot be resolved (not a git checkout, git missing) only the cwd's
+# own config can delegate, so a subdirectory without one warns rather than going silent.
 CONFIG="$CWD/.claude/maintainerd.json"
+REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/.claude/maintainerd.json" ]; then
+  CONFIG="$REPO_ROOT/.claude/maintainerd.json"
+fi
 if [ -f "$CONFIG" ]; then
   MAY_MERGE=$(jq -r '.createPr.agentsMayMerge // false' "$CONFIG" 2>/dev/null || true)
   [ "$MAY_MERGE" = "true" ] && DELEGATED=1

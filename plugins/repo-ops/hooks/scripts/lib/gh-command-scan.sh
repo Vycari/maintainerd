@@ -14,8 +14,9 @@
 # Sourced, not executed. Defines:
 #   mask_all_heredocs <command>            -> the command with heredoc BODIES redacted in place
 #   split_simple_commands <masked>         -> lines of "<offset> <length>" into that string
-#   gh_pr_subcommand <segment>             -> "create" | "edit" | "" (empty = not a gh pr cmd)
+#   gh_exec_words <segment>                -> "<offset> <length>" per argv word, starting AT `gh` (empty = not gh)
 #   gh_command_words <segment>             -> the unquoted words after `gh`, one per line (empty = not gh)
+#   gh_pr_subcommand <segment>             -> "create" | "edit" | "" (empty = not a gh pr cmd)
 #
 # Offsets are byte-for-byte valid in the ORIGINAL command too: masking only ever replaces a
 # body character with `x`, never inserts or drops one, so a segment can be sliced out of the
@@ -30,15 +31,116 @@
 # leaving the opening line (including `<<-`, the quotes around the tag) and the terminator line
 # untouched so offsets past the heredoc are unchanged.
 #
-# Documented limit: heredoc openers are found by scanning each command line for `<<[-] TAG`
-# without tracking quoting, so a literal "<<TAG" inside a quoted string is misread as an opener.
-# The failure direction is over-masking (text becomes inert), which can only ever cost a missed
-# check, never a false denial.
+# Heredoc openers are found by a quote-aware scan (_hd_scan_line), not a pattern over the raw
+# line: a `<<TAG` inside single quotes, double quotes, backticks, a `#` comment or `$(( … ))`
+# arithmetic is text, not an opener. A quoted `<<EOF` read as an opener would redact every line
+# after it up to a terminator that never comes, hiding a real command from the guards. Quote
+# state carries across lines (a string can span them) and resets inside `$( … )`, where a real
+# heredoc may legitimately live (`--body "$(cat <<'EOF' … EOF)"`). Anything the scan cannot
+# classify is treated as NOT an opener, so the failure direction is a body left unmasked (its
+# text is then scanned as commands), never a command masked away.
+#
+# Documented limit: a heredoc whose opener sits inside backticks is not recognized.
+# _hd_scan_line <line>
+# Reads/updates the globals _HD_STACK (quote/nesting contexts, innermost LAST; "B" is the base)
+# and appends the line's real heredoc openers to _HD_TAGS / _HD_STRIPS (newline-terminated).
+# Contexts: B base shell, C `$( … )`, p plain `( … )`, A `$(( … ))`/`(( … ))` arithmetic,
+# S single quote, D double quote, K backtick (inert).
+_hd_scan_line() {
+  local line="$1"
+  local len=${#line} i=0 c nc top prev=" " j tag strip q
+  while [ "$i" -lt "$len" ]; do
+    c="${line:$i:1}"
+    top="${_HD_STACK: -1}"
+    case "$top" in
+      S)
+        [ "$c" = "'" ] && _HD_STACK="${_HD_STACK%?}"
+        i=$((i + 1)); prev="$c"; continue ;;
+      K)
+        if [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+        [ "$c" = '`' ] && _HD_STACK="${_HD_STACK%?}"
+        i=$((i + 1)); prev="$c"; continue ;;
+      D)
+        case "$c" in
+          '\') i=$((i + 2)); continue ;;
+          '"') _HD_STACK="${_HD_STACK%?}" ;;
+          '`') _HD_STACK="${_HD_STACK}K" ;;
+          '$')
+            if [ "${line:$((i + 1)):2}" = "((" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 3)); prev="("; continue
+            elif [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}C"; i=$((i + 2)); prev="("; continue
+            fi ;;
+        esac
+        i=$((i + 1)); prev="$c"; continue ;;
+      A)
+        case "$c" in
+          '(') _HD_STACK="${_HD_STACK}A" ;;
+          ')') _HD_STACK="${_HD_STACK%?}" ;;
+        esac
+        i=$((i + 1)); prev="$c"; continue ;;
+    esac
+    # Code context: B, C or p.
+    case "$c" in
+      "'") _HD_STACK="${_HD_STACK}S" ;;
+      '"') _HD_STACK="${_HD_STACK}D" ;;
+      '`') _HD_STACK="${_HD_STACK}K" ;;
+      '\') i=$((i + 2)); prev="x"; continue ;;
+      '#')
+        case "$prev" in
+          ' '|$'\t'|';'|'&'|'|'|'('|'{') return 0 ;;     # a comment runs to the end of the line
+        esac ;;
+      '$')
+        if [ "${line:$((i + 1)):2}" = "((" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 3)); prev="("; continue
+        elif [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}C"; i=$((i + 2)); prev="("; continue
+        fi ;;
+      '(')
+        if [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 2)); prev="("; continue; fi
+        _HD_STACK="${_HD_STACK}p" ;;
+      ')') [ "$top" != "B" ] && _HD_STACK="${_HD_STACK%?}" ;;
+      '<')
+        if [ "${line:$i:3}" = "<<<" ]; then i=$((i + 3)); prev="<"; continue; fi
+        if [ "${line:$i:2}" = "<<" ]; then
+          j=$((i + 2)); strip=0
+          if [ "${line:$j:1}" = "-" ]; then strip=1; j=$((j + 1)); fi
+          while :; do
+            case "${line:$j:1}" in ' '|$'\t') j=$((j + 1)) ;; *) break ;; esac
+          done
+          tag=""
+          nc="${line:$j:1}"
+          case "$nc" in
+            "'"|'"')
+              q="${line:$((j + 1))}"
+              case "$q" in
+                *"$nc"*) q="${q%%"$nc"*}"; tag="$q"; j=$((j + ${#q} + 2)) ;;
+              esac ;;
+            *)
+              [ "$nc" = '\' ] && j=$((j + 1))
+              while :; do
+                nc="${line:$j:1}"
+                case "$nc" in
+                  [A-Za-z0-9_]) if [ -z "$tag" ]; then case "$nc" in [0-9]) break ;; esac; fi
+                    tag="$tag$nc"; j=$((j + 1)) ;;
+                  *) break ;;
+                esac
+              done ;;
+          esac
+          if [ -n "$tag" ]; then
+            _HD_TAGS="$_HD_TAGS$tag"$'\n'
+            _HD_STRIPS="$_HD_STRIPS$strip"$'\n'
+            i=$j; prev="x"; continue
+          fi
+          i=$((i + 2)); prev="<"; continue
+        fi ;;
+    esac
+    i=$((i + 1)); prev="$c"
+  done
+}
+
 mask_all_heredocs() {
   local s="$1"
   local out="" rest="$s" line nextrest last=0
   local pending_tags="" pending_strips=""   # newline-separated queues, first = innermost-open
-  local scratch opener tag strip trimmed filler cur_tag cur_strip
+  local trimmed filler cur_tag cur_strip
+  _HD_STACK="B"
   while :; do
     case "$rest" in
       *$'\n'*) line="${rest%%$'\n'*}"; nextrest="${rest#*$'\n'}"; last=0 ;;
@@ -70,31 +172,11 @@ mask_all_heredocs() {
       fi
     else
       out="$out$line"
-      # Find this line's heredoc openers, in order. `<<<` is a here-string, not a heredoc, so
-      # neutralize those first rather than letting the opener pattern match inside one.
-      scratch=$(printf '%s' "$line" | sed 's/<<</@@@/g')
-      while :; do
-        opener=$(printf '%s' "$scratch" | grep -Eo -- '<<-?[[:space:]]*("[^"]*"|'"'"'[^'"'"']*'"'"'|[A-Za-z_][A-Za-z0-9_]*)' | head -1 || true)
-        [ -n "$opener" ] || break
-        scratch="${scratch#*"$opener"}"
-        strip=0
-        tag="${opener#<<}"
-        case "$tag" in '-'*) strip=1; tag="${tag#-}" ;; esac
-        while :; do
-          case "$tag" in
-            ' '*) tag="${tag# }" ;;
-            $'\t'*) tag="${tag#$'\t'}" ;;
-            *) break ;;
-          esac
-        done
-        case "$tag" in
-          "'"*) tag="${tag#\'}"; tag="${tag%\'}" ;;
-          '"'*) tag="${tag#\"}"; tag="${tag%\"}" ;;
-        esac
-        [ -n "$tag" ] || continue
-        pending_tags="$pending_tags$tag"$'\n'
-        pending_strips="$pending_strips$strip"$'\n'
-      done
+      # Find this line's real heredoc openers, in order, tracking quote state (see _hd_scan_line).
+      _HD_TAGS=""; _HD_STRIPS=""
+      _hd_scan_line "$line"
+      pending_tags="$pending_tags$_HD_TAGS"
+      pending_strips="$pending_strips$_HD_STRIPS"
     fi
 
     if [ "$last" -eq 1 ]; then
@@ -130,6 +212,15 @@ split_simple_commands() {
     case "$c" in
       "'"|'"'|'`') q="$c"; i=$((i + 1)) ;;
       '\') i=$((i + 2)) ;;
+      '#')
+        # A comment (`#` at the start of a word) runs to the end of the line; its apostrophes and
+        # quotes are prose and must not open a quote that swallows the commands after it.
+        if [ "$i" -eq 0 ]; then nc=" "; else nc="${s:$((i - 1)):1}"; fi
+        case "$nc" in
+          ' '|$'\t'|';'|'&'|'|'|'('|'{'|$'\n')
+            while [ "$i" -lt "$len" ] && [ "${s:$i:1}" != $'\n' ]; do i=$((i + 1)); done ;;
+          *) i=$((i + 1)) ;;
+        esac ;;
       '$')
         nc="${s:$((i + 1)):1}"
         if [ "$nc" = '(' ]; then depth=$((depth + 1)); i=$((i + 2)); else i=$((i + 1)); fi
@@ -162,106 +253,84 @@ split_simple_commands() {
   printf '%s' "$out"
 }
 
-# --------------------------------------------------------------- is this simple command `gh pr`?
-# Prints "create" or "edit" when the segment's executable resolves to gh and its first two
-# arguments are `pr create`/`pr edit`; prints nothing otherwise. The executable is resolved by
-# BASENAME after dropping the prefix words that do not change which program ends up running:
-# leading `VAR=value` assignments, `command [-p]`, `env [-i] [VAR=value…]`, and `exec`. So
-# `command gh`, `env GH_TOKEN=x gh`, `/usr/bin/gh`, `exec gh` and a bare `gh` all resolve alike.
+# ------------------------------------------------------- the ONE wrapper resolver: gh_exec_words
+# gh_exec_words <segment> -> "<offset> <length>" lines, one per argv word starting AT the `gh`
+# executable; nothing when the segment's executable is not gh. Offsets are relative to the string
+# passed in, exactly like argv_spans, and the segment is not truncated (a caller may read a long
+# argument value). The executable is resolved by BASENAME after dropping the prefix words that do
+# not change which program ends up running: shell keywords that precede a command (`if`, `then`,
+# `!`, `{`, `time [-p]`, …), leading `VAR=value` assignments, `command [-p]`, `env [-i]
+# [VAR=value…]`, and `exec`. So `command gh`, `env GH_TOKEN=x gh`, `/usr/bin/gh`, `exec gh` and a
+# bare `gh` all resolve alike. Quote-aware word splitting means `FOO="a b" gh …` is ONE assignment
+# word, so the `gh` after it is still found.
+#
+# gh_pr_subcommand and gh_command_words below are both derived from this, so every guard agrees
+# on what a `gh` invocation is. (lib/gh-exec-words.sh remains as a thin source-compatible shim.)
 #
 # Documented limit: wrappers that run gh as *data* rather than as their own argv[1] —
 # `sh -c "gh pr create …"`, `xargs gh`, `find -exec gh` — still resolve to sh/xargs/find and are
 # not recognized.
-gh_pr_subcommand() {
+gh_exec_words() {
   local head="$1"
-  local words=() off len
+  local offs=() lens=() off len
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue
-    words[${#words[@]}]="${head:$off:$len}"
+    offs[${#offs[@]}]=$off
+    lens[${#lens[@]}]=$len
   done <<ARGV
 $(argv_spans "$head")
 ARGV
-  local n=${#words[@]} i=0 w exe prev=""
+  local n=${#offs[@]} i=0 w exe prev=""
   while [ "$i" -lt "$n" ]; do
-    w="${words[$i]}"
+    w="${head:${offs[$i]}:${lens[$i]}}"
     case "$w" in
-      # Shell keywords and grouping that PRECEDE a command without being it: `if gh pr create;
-      # then …`, `! gh pr create`, `while gh pr create …`, `{ gh pr create …; }`, `time gh …`.
       if|then|else|elif|while|until|do|'!'|'{'|'(') prev="keyword"; i=$((i + 1)); continue ;;
-      # `time` is a keyword that takes its own `-p` (POSIX output format) before the command.
       time) prev="time"; i=$((i + 1)); continue ;;
-      # A leading VAR=value assignment. Quote-aware word splitting means `FOO="a b" gh …` is ONE
-      # assignment word, so the `gh` after it is still found.
       [a-zA-Z_]*=*) prev="assign"; i=$((i + 1)); continue ;;
       command|exec|env) prev="$w"; i=$((i + 1)); continue ;;
-      -p)
-        case "$prev" in
-          command|time) i=$((i + 1)); continue ;;
-        esac
-        break ;;
+      -p) case "$prev" in command|time) i=$((i + 1)); continue ;; esac; break ;;
       -i) if [ "$prev" = "env" ]; then i=$((i + 1)); continue; fi; break ;;
       *) break ;;
     esac
   done
   [ "$i" -lt "$n" ] || return 0
-  exe=$(unquote_word "${words[$i]}")
+  exe=$(unquote_word "${head:${offs[$i]}:${lens[$i]}}")
   exe="${exe##*/}"
   [ "$exe" = "gh" ] || return 0
-  [ $((i + 2)) -lt "$n" ] || return 0
-  local sub1 sub2
-  sub1=$(unquote_word "${words[$((i + 1))]}")
-  sub2=$(unquote_word "${words[$((i + 2))]}")
-  [ "$sub1" = "pr" ] || return 0
-  case "$sub2" in
-    create|edit) printf '%s' "$sub2" ;;
-  esac
-  return 0
+  while [ "$i" -lt "$n" ]; do
+    printf '%s %s\n' "${offs[$i]}" "${lens[$i]}"
+    i=$((i + 1))
+  done
 }
 
 # ------------------------------------------------- the words of a `gh` simple command, any subcommand
 # Prints the segment's argv words AFTER the resolved `gh` executable, one unquoted word per line,
-# or nothing when the segment's executable does not resolve to gh. The executable is resolved
-# exactly as gh_pr_subcommand resolves it (assignments, `command [-p]`, `env [-i] …`, `exec`,
-# shell keywords, basename), so every spelling of "this segment runs gh" is shared between the
-# two. Added for guards (merge-guard) that need subcommands other than `pr create|edit`;
-# gh_pr_subcommand is deliberately left as it was. Same documented limits: `sh -c "gh …"`,
-# `xargs gh` and `find -exec gh` resolve to sh/xargs/find and print nothing.
+# or nothing when the segment's executable does not resolve to gh.
 gh_command_words() {
   local head="$1"
-  local words=() off len
+  local off len first=1
   while IFS=' ' read -r off len; do
     [ -n "$off" ] || continue
-    words[${#words[@]}]="${head:$off:$len}"
-  done <<ARGV
-$(argv_spans "$head")
-ARGV
-  local n=${#words[@]} i=0 w exe prev=""
-  while [ "$i" -lt "$n" ]; do
-    w="${words[$i]}"
-    case "$w" in
-      if|then|else|elif|while|until|do|'!'|'{'|'(') prev="keyword"; i=$((i + 1)); continue ;;
-      time) prev="time"; i=$((i + 1)); continue ;;
-      [a-zA-Z_]*=*) prev="assign"; i=$((i + 1)); continue ;;
-      command|exec|env) prev="$w"; i=$((i + 1)); continue ;;
-      -p)
-        case "$prev" in
-          command|time) i=$((i + 1)); continue ;;
-        esac
-        break ;;
-      -i) if [ "$prev" = "env" ]; then i=$((i + 1)); continue; fi; break ;;
-      *) break ;;
-    esac
-  done
-  [ "$i" -lt "$n" ] || return 0
-  exe=$(unquote_word "${words[$i]}")
-  exe="${exe##*/}"
-  [ "$exe" = "gh" ] || return 0
-  i=$((i + 1))
-  while [ "$i" -lt "$n" ]; do
-    unquote_word "${words[$i]}"
+    if [ "$first" -eq 1 ]; then first=0; continue; fi     # the first span is `gh` itself
+    unquote_word "${head:$off:$len}"
     printf '\n'
-    i=$((i + 1))
-  done
+  done <<SPANS
+$(gh_exec_words "$head")
+SPANS
+  return 0
+}
+
+# --------------------------------------------------------------- is this simple command `gh pr`?
+# Prints "create" or "edit" when the segment's executable resolves to gh and its first two
+# arguments are `pr create`/`pr edit`; prints nothing otherwise.
+gh_pr_subcommand() {
+  local sub1 sub2
+  sub1=$(gh_command_words "$1" | sed -n 1p)
+  sub2=$(gh_command_words "$1" | sed -n 2p)
+  [ "$sub1" = "pr" ] || return 0
+  case "$sub2" in
+    create|edit) printf '%s' "$sub2" ;;
+  esac
   return 0
 }
 

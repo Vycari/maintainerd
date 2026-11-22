@@ -164,7 +164,7 @@ checks the claim after the reply is posted.
 
 - **What it watches:** `gh pr comment`, `gh api repos/…/pulls/N/comments/ID/replies` (inline
   thread reply), and `gh api graphql` carrying `addPullRequestReviewThreadReply`. Scoping is the
-  same structural scan as the other hooks (plus `lib/gh-exec-words.sh`, which resolves `command`/
+  same structural scan as the other hooks (whose `gh_exec_words`, shared with the other hooks, resolves `command`/
   `env`/`exec`/path/`VAR=` prefixes to the gh argv), so an `echo "gh pr comment … fixed"` or a
   heredoc that writes a script is never a reply, and in a compound command each reply is judged
   on its own body.
