@@ -1012,7 +1012,13 @@ Today this holds the `journal` category's vault, and the `deploy` category's pro
 {
   "journal": {
     "vault":        "/Users/you/Obsidian/my-vault", // Obsidian vault root — required by `worklog`
-    "projectsGlob": "Projects/**"                    // where project folders live (optional; default "Projects/**")
+    "projectsGlob": "Projects/**",                   // where project folders live (optional; default "Projects/**")
+    "sweep": {                                       // optional; read only by `worklog --daily`
+      "repos": [                                     // the repos one daily sweep covers
+        { "repo": "my-org/app",    "project": "App" },   // project: folder under projectsGlob; optional,
+        { "repo": "my-org/worker", "project": "App" }    // defaults to a folder named like the repo
+      ]
+    }
   },
   "deploy": {
     "prodHost": "prod-01.your-tailnet.ts.net" // fills the `{prodHost}` placeholder in every
@@ -1025,7 +1031,10 @@ Today this holds the `journal` category's vault, and the `deploy` category's pro
 
 The split rule: **repo-scoped settings → repo config; user-scoped settings → user config.** `worklog`
 bridges them — it reads the vault from here, and the *optional* per-repo `journal.project`/`hubNote`
-pointer (above) from the repo config to know which vault project *this* repo maps to. If the user-level
+pointer (above) from the repo config to know which vault project *this* repo maps to. `journal.sweep.repos`
+is the one place a repo list lives for `worklog --daily`: a headless sweep has no meaningful working
+directory, so it cannot learn its repos from one. Several repos may name the same `project`; the daily
+note keeps one bullet per project, so their PRs share it. Absent, a sweep covers the current repo only. If the user-level
 file or `journal.vault` is absent, `worklog` asks for the vault path and offers to write it here.
 
 The same split is why `deploy.prodHost` lives here rather than in any repo's `deploy.versionz`: the
