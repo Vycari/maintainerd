@@ -101,6 +101,8 @@ ungated="$(awk '/^## First-line mode/ {g=1} /^## The principle/ {g=0} !g && /req
 grep -q 'skip-labelled PR with no score' "$SKILL" && ok "a skip-labelled PR with no score has its own exit" || bad "a skip-labelled PR with no score has its own exit"
 grep -q 'A score that is present still counts' "$SKILL" && ok "a found score is not waived by the skip label" || bad "a found score is not waived by the skip label"
 grep -q 'or it is still a draft' "$SKILL" && ok "a draft does not take the skip-label exit" || bad "a draft does not take the skip-label exit"
+grep -q '^| `no-review-scheduled` |' "$SKILL" && ok "the stage 1 table routes no-review-scheduled" || bad "the stage 1 table routes no-review-scheduled"
+grep -q 'commits/<headRefOid>/check-runs' "$SKILL" && grep -q 'commits/<headRefOid>/status"' "$SKILL" && ok "the checks gate reads check runs and commit statuses" || bad "the checks gate reads check runs and commit statuses"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -142,8 +142,9 @@ of matching a stray token in another rung. It is a hint, not a restriction: if t
 empty, still walk the other two, and say in the round report that the hint didn't match. A hint
 that has gone stale should be visible, not quietly authoritative.
 
-**No score anywhere, with a threshold configured → stop.** Don't push another round, don't report
-approved, don't report the threshold as met-by-default:
+**No score anywhere, with a threshold configured → stop** (unless the PR takes the skip-label
+exception below). Don't push another round, don't report approved, don't report the threshold as
+met-by-default:
 
 ```text
 Halting: review.approvalThreshold is <threshold> and no score was found on this PR.
@@ -175,7 +176,10 @@ memory of having applied the label. The exception is narrow on purpose:
   waiver is always written down.
 
 `wait-for-review.sh` reports such a PR as `no-review-scheduled` rather than waiting out its
-deadline; with the skip label present (and the PR not a draft), read that verdict as this exception.
+deadline, in either stage; with the skip label present (and the PR not a draft), read that verdict
+as this exception. Every later step that would halt on a missing score, or wait for an `approved`
+verdict, routes this PR to the checks gate instead: Phase 1's score read, the first-line stage 1
+table, and the first-line exit all say so where they apply.
 
 **The PR body is editable by anyone with write access**, including the PR author and including this
 skill — which makes rung (a) the one rung whose provenance is worth a line. Check who last edited
@@ -380,6 +384,7 @@ Wait with the stage flag (it exits on the first verdict):
 | `vr-findings:<n>` | a round for the head is in, `<n>` open | Triage as in Phase 2, fix the P0/P1s and the P2s you choose to (see [Keep the PR to its brief](#keep-the-pr-to-its-brief)), defer the rest, then push and wait again. |
 | `vr-handoff` | round cap (`firstLine.maxRounds`, default 3) reached; the head was handed to the final reviewer with the open findings listed | Stop chasing them in stage 1. Go to stage 2; the findings are part of what the final reviewer will see. |
 | `vr-unavailable` | the reviewer could not review and asked the final reviewer itself | Go to stage 2. |
+| `no-review-scheduled` | nothing will review this head: the PR is a draft or carries `review.skipLabel` | Non-draft with the skip label: neither reviewer runs, so there is no stage 2. Skip it and take the [skip-labelled exit](#loop-exit-conditions) (checks gate). A draft is not done: report that it is a draft and stop. |
 | `vr-escalated` | a P0 dispute the reviewer still holds (check title `Needs maintainer: P0 dispute`) | **Halt and escalate** (below). |
 | `timeout` | no verdict in `firstLine.unavailableMinutes` + slack | Keep waiting until 60 minutes have passed since the push with no final-review request on the PR, then halt and escalate: the first-line path is down and a person decides whether to request the final review. |
 
@@ -518,7 +523,9 @@ the response loop is the one in Phases 1-6, with these differences:
 ### Exit
 
 Done when stage 2 is `approved` by the usual exit conditions below, with the stage 1 verdict
-recorded in the round summary. The first-line mode never relaxes a condition; it adds the stage 1
+recorded in the round summary. The one other ending is a non-draft PR carrying `review.skipLabel`
+(stage 1 `no-review-scheduled`): it has no stage 2, and it is done by the
+[skip-labelled exit](#loop-exit-conditions) (checks green, no open thread, no human block). The first-line mode never relaxes a condition; it adds the stage 1
 checks in front of them and removes your power to request a review.
 
 ## The principle: never leave silence
@@ -786,7 +793,10 @@ one:
 Record the score, the rung that answered, the reviewed sha, and (rung (a) only) whether the body's
 last editor was the bot. If `approvalThreshold` is set and no rung answers, **stop here** with the
 three-places message — do not continue into Phase 2 on the assumption that a missing score is a
-met gate.
+met gate. The one exception is a non-draft PR carrying `config.review.skipLabel` (read from the PR,
+as in [the exception](#where-the-score-lives)): there no rung answering is expected, so carry on
+through the remaining phases for any human threads and judge it by the
+[skip-labelled exit](#loop-exit-conditions).
 
 ### Phase 2 — Triage
 
@@ -977,8 +987,24 @@ and running the wrong one is the bug this section exists to prevent.
 
 **A skip-labelled PR with no score** (`config.review.skipLabel` set, the PR carries it, not a
 draft, and no rung found a score) — the checks gate. Done when **all** of:
-- Required status checks pass (`statusCheckRollup`, or the check runs on the head, roll up to
-  `SUCCESS`; a check that is not `completed` is not a pass).
+- Required status checks pass on the head, read from **both** places a check can report. Check
+  runs and legacy commit statuses are separate APIs, and either one alone can look green while the
+  other is pending or failed. Use REST (`statusCheckRollup` combines both, but it is GraphQL, which
+  some agent sandboxes block):
+
+  ```bash
+  # Check runs (GitHub Actions and Checks-API apps): every one completed, conclusion success/neutral/skipped
+  gh api "repos/<config.repo>/commits/<headRefOid>/check-runs" --paginate \
+    --jq '.check_runs[] | {name, status, conclusion}'
+  # Commit statuses (older integrations): the combined state must be success
+  gh api "repos/<config.repo>/commits/<headRefOid>/status" \
+    --jq '{state, total_count, statuses: [.statuses[] | {context, state}]}'
+  ```
+
+  A check run that is not `completed` is not a pass. A combined status of `pending`, `failure` or
+  `error` is not a pass, with one reading to know: when `total_count` is `0` the repo has no commit
+  statuses at all, and GitHub reports that combined state as `pending`; with no statuses there is
+  nothing pending.
 - No unresolved review threads and no new comments since the last push — a human may still have
   reviewed it by hand.
 - No human has `CHANGES_REQUESTED` outstanding.
@@ -1021,7 +1047,7 @@ maintainer's.
   that didn't run, an integration that lost the repo, and a PR that genuinely passed all look
   identical from inside this loop, and only one of them is safe to assume. The exception is a
   non-draft PR carrying `config.review.skipLabel`: the repo said no bot runs there, so it takes the
-  skip-labelled exit (checks green) instead.
+  skip-labelled exit (check runs and commit statuses green) instead.
 - **A reviewer requests scope creep**: reply acknowledging, file a follow-up issue, link it from the
   reply. Don't expand the PR. (If `create-issue` is installed, use it to file the follow-up.) Under
   `createPr.requireIssueForDeferredWork` this stops being a convention and becomes a gate on the
