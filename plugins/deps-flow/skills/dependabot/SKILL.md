@@ -177,7 +177,7 @@ of them is a judgment call.
 7. **Reviews** — no `CHANGES_REQUESTED` review that hasn't been dismissed or superseded by a later
    review from the same reviewer. If `config.depsFlow.requireApproval` is `true`, also
    `reviewDecision == "APPROVED"`.
-8. **Policy** — the bump level (below) is in `config.depsFlow.autoMergeSemver`, and no package in the
+8. **Policy** — the bump level (computed by `classify-bump.py`, below) is in `config.depsFlow.autoMergeSemver`, and no package in the
    PR matches `config.depsFlow.holdPackages`.
 9. **Not already blocked** — the PR does not carry `config.depsFlow.blockedLabel` (a previous run
    diagnosed it; it's the maintainer's now).
@@ -221,30 +221,60 @@ permission is a code change wearing a dependency PR's clothes — hold it.
 
 ### Determining the bump level
 
-Derive it from the **diff**, then check the title agrees:
+**The level is computed by a script, not judged from the title.** A prose rule here already failed
+once: a `update resend[async] requirement from >=2.43.0 to >=2.46.0` PR (a minor) merged under a
+patch-only policy (maintainerd#69), because "requirement" titles, extras and `>=` prefixes were read
+inconsistently. Run the classifier on the PR's actual diff and use only its verdict:
 
-- **Single-package PRs** — the title claims `Bump <pkg> from <a> to <b>` (or `Update <pkg> requirement
-  from <x> to <y>`). Read the actual old→new versions out of the manifest diff
-  (`gh pr diff <N> --repo "$REPO"`) and compare those: differing major → **major**; else differing
-  minor → **minor**; else **patch**. **If the diff's version delta disagrees with the title's, hold
-  the PR** and say so in the report — a mismatch means one of the two is lying, and neither is worth
-  merging on.
-- **`0.x` packages are special.** Under semver, pre-1.0 minor bumps carry breaking changes
-  (`0.4.2 → 0.5.0`). Classify a `0.x` minor bump as **major**, and a `0.x` patch bump as **minor**.
-  This is deliberately conservative — pre-1.0 libraries are exactly where a green test suite proves
-  the least.
-- **Grouped PRs** (`Bump the <group> group with N updates`) — the body carries a table of every
-  package's from→to; the manifest diff carries the truth. Level **every** package from the diff: the
-  PR's effective level is the **highest** in the group, a single held package holds the whole group,
-  and a package that changed in the diff but isn't in the body's table holds the group too.
-- **Anything you can't parse confidently → treat as `major`** (i.e. hold for the human). That
-  includes a diff you can't map to version deltas at all. Never default an unparseable change into
-  the auto-merge bucket — "I couldn't tell" and "it's safe" must never collapse into the same
-  outcome.
+```bash
+tmp="$(mktemp -d)"                                        # fresh per PR; removed below
+gh pr diff <N> --repo "$REPO" > "$tmp/pr.diff"            # when GraphQL is blocked, see gh-rest-fallbacks.md
+gh pr view <N> --repo "$REPO" --json body --jq .body > "$tmp/pr.body"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/classify-bump.py" --diff "$tmp/pr.diff" \
+  --title "<PR title>" --body-file "$tmp/pr.body" --allow "<config.depsFlow.autoMergeSemver, comma-joined>"
+rm -rf "$tmp"
+```
 
-Version deltas that aren't semver at all (a Docker digest, a GitHub Action pinned to a SHA, a git
-ref) can't be levelled: treat a **GitHub Action tag bump** by its tag semver when it has one, and
-everything else as `major` — held.
+It prints one JSON object. Gate on **`eligible`** (true only when it is confident *and* the level is
+in `autoMergeSemver`), and report its `level` and `reasons`. A non-zero exit, empty or unparseable
+output, or `confident: false` is **held as `major`**, and the report says "level unknown" with the
+script's reasons. Never fall back to reading the title yourself: "I couldn't tell" and "it's safe"
+must never collapse into the same outcome.
+
+What it does, so you can read its output:
+
+- Levels **every** version change in the manifest and lockfile diff (`pyproject.toml`,
+  `requirements*.txt`, `uv.lock`/`poetry.lock`/`Cargo.lock`, `package.json`, `package-lock.json`,
+  `go.mod`, workflow `uses:` lines); the PR's level is the **highest** found, so a grouped PR takes
+  its highest member and a transitive lockfile jump counts.
+- A **range ("requirement") change** is judged on both bounds, with `^`, `~` and `~=` carrying their
+  implicit upper bound: `>=2.43.0` to `>=2.46.0` is minor, `<2` to `<3` is major, a bound that
+  appears or vanishes is major. Extras (`pkg[extra]`) and environment markers are stripped.
+- **`0.x` is conservative**: a pre-1.0 minor bump is **major**, a pre-1.0 patch bump is **minor**.
+- **Cross-checks only raise or hold, never lower**: a title claiming a different level than the diff
+  shows for the named package, or Dependabot's `update-type` metadata exceeding the diff, makes it
+  not confident.
+- **Fails closed** (`level: major`, `confident: false`) on anything it cannot classify: an added or
+  removed package, a downgrade, a prerelease/suffix/SHA/digest/URL version, a wildcard or `||` range,
+  an unparsed lock format (`yarn.lock`, `pnpm-lock.yaml`, `Gemfile.lock`), a Dockerfile, a file that
+  is not a dependency declaration, or a diff it cannot map to version changes at all. Ranges it will
+  not guess at are held too: a bound given twice (`>=1,<2,<3`), a bound that switches between
+  inclusive and exclusive (`<2.0.0` to `<=2.0.0`), and a partial exact or inclusive-upper version
+  (`"1"`, `<=1.2`) whose meaning differs between npm and pip.
+- **Lockfile identity and provenance are checked, not skipped.** A lockfile's artifact lines
+  (`resolved`, `integrity`, uv's `sdist`/`wheels` url and hash, poetry's `file`, Cargo's `checksum`)
+  change on every real bump, so they are accepted only when the package entry they belong to is in
+  view, **that entry's version changed**, each artifact's file name carries its side's version
+  (`left-pad-1.2.1.tgz`, `resend-2.43.1.tar.gz`), and every new download host is one the old entry
+  already used. Held: an artifact or checksum change at an unchanged version, a new host, any change
+  to a package's `source`/registry/git/path, a changed package name or package key (a rename or
+  replacement), an npm `name` alias, and `hasInstallScript` turning on.
+
+A GitHub Action tag bump is levelled by its tag semver. A SHA pin is levelled by its `# vX.Y.Z`
+comment, and is held when it has none **or when the SHA moves while the comment does not** (new code
+under an old version). Each changed `uses:` line must be replaced in place: the same action, the same
+position in the hunk and the same surrounding text, so a reordered, added or re-indented step is held.
+The script's tests live in `scripts/test-classify-bump.py` in this repo.
 
 ### Determining overlap
 
