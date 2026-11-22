@@ -458,6 +458,7 @@ def cmd_prefilter(a):
     stats = dict(records=0, deleted=0, oldRevisions=0, category=0, terms=0,
                  alreadyReported=0, alreadySeen=0, survivors=0, returned=0, overflow=0)
     seen, in_cat, out = set(), [], []
+    term_miss, reported_hit, seen_hit = [], [], []
     for path in m["pages"]:
         try:
             root = ET.parse(path).getroot()
@@ -505,13 +506,16 @@ def cmd_prefilter(a):
         signal = [t for t in hits if t not in background]
         # One hand-given phrase is enough; derived terms are noisier, so ask for two.
         if not (any(weights[t] >= 3 for t in signal) or len(signal) >= 2):
+            term_miss.append(r["id"])
             continue
         stats["terms"] += 1
         if r["id"] in reported:
             stats["alreadyReported"] += 1
+            reported_hit.append(r["id"])
             continue
         if r["id"] in recent:
             stats["alreadySeen"] += 1
+            seen_hit.append(r["id"])
             continue
         out.append({**r, "matched": signal, "score": sum(weights[t] for t in signal),
                     "coreHits": sum(weights[t] >= 3 for t in signal)})
@@ -535,6 +539,30 @@ def cmd_prefilter(a):
               # just closed is still lost. See maintainerd#75 for the open question of how (or
               # whether) to carry that case forward.
               "overflowIds": [c["id"] for c in overflow]}
+    if a.record:
+        # The run record (issue #92): a compact, committed account of what this prefilter
+        # did with every in-category id, so a later check can tell a paper lost to --max
+        # (`overflow`) from one the terms never matched (`termMissIds`) or one dropped as already
+        # reported or seen. Titles, not abstracts, keep it small. Written before stdout so a
+        # record that cannot be written fails the step rather than leaving a run with no record.
+        brief = lambda c: {"id": c["id"], "title": c["title"], "matched": c["matched"],
+                           "score": c["score"]}
+        rec = {"recordVersion": 1, "responseDate": m["responseDate"], "from": m["from"],
+               "until": m["until"], "windowSource": m["windowSource"], "max": a.max,
+               "stats": stats, "backgroundTerms": background,
+               "returned": [brief(c) for c in capped],
+               "overflow": [brief(c) for c in overflow],
+               "termMissIds": sorted(term_miss),
+               "alreadyReportedIds": sorted(reported_hit),
+               "alreadySeenIds": sorted(seen_hit)}
+        tmp = a.record + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(rec, f, indent=1)
+                f.write("\n")
+            os.replace(tmp, a.record)
+        except OSError as e:
+            die(f"cannot write the prefilter record {a.record} ({e}); stop, do not open a PR")
     json.dump(result, sys.stdout, indent=2)
     print()
     print(f"prefilter: {json.dumps(stats)}; returning {len(capped)}", file=sys.stderr)
@@ -611,6 +639,8 @@ def main():
     pf.add_argument("--state", help="state file, for ids seen by earlier runs")
     pf.add_argument("--reported-dir", help="digest directory; ids in its *.md are skipped")
     pf.add_argument("--max", type=int, default=150, help="candidates returned for ranking")
+    pf.add_argument("--record", help="also write the compact run record (returned, overflow and "
+                                     "term-miss ids, with titles) to this path, for committing")
     pf.set_defaults(fn=cmd_prefilter)
 
     ad = sub.add_parser("advance", help="move the high-water mark after a complete prefilter")

@@ -288,12 +288,47 @@ class PrefilterAdvance(Base):
             record(aid(12), TODAY, "cs.AI", "An agent scheduler"),                 # 1 + background
         ]
 
-    def prefilter(self, out, max_=None):
+    def prefilter(self, out, max_=None, record=None):
         args = ["prefilter", "--manifest", os.path.join(out, "manifest.json"), "--profile",
                 self.profile, "--state", self.state, "--reported-dir", self.reports]
         if max_ is not None:
             args += ["--max", str(max_)]
+        if record is not None:
+            args += ["--record", record]
         return run(args)
+
+    def test_record_tells_overflow_from_term_miss(self):
+        self.write_state(f"{TODAY - dt.timedelta(days=3)}T05:00:00Z", recent=[aid(6)])
+        r, out, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T06:00:00Z"))]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rec_path = os.path.join(self.d, "prefilter-record.json")
+        p = self.prefilter(out, max_=2, record=rec_path)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rec = read_json(rec_path)
+        self.assertEqual(rec["recordVersion"], 1)
+        self.assertEqual(rec["max"], 2)
+        self.assertEqual([c["id"] for c in rec["returned"]], [aid(1), aid(8)])
+        self.assertEqual([c["id"] for c in rec["overflow"]], [aid(2)])
+        self.assertEqual(rec["overflow"][0]["title"], "A scheduler")
+        self.assertIn("scheduler", rec["overflow"][0]["matched"])
+        # aid3 (one derived term), aid10 (no word hit), aid12 (one + background) and the filler
+        # are term misses; the out-of-category aid4 is in none of the lists.
+        for miss in (aid(3), aid(10), aid(12), aid(90000)):
+            self.assertIn(miss, rec["termMissIds"])
+        self.assertNotIn(aid(4), rec["termMissIds"])
+        self.assertEqual(rec["alreadyReportedIds"], [aid(5)])
+        self.assertEqual(rec["alreadySeenIds"], [aid(6)])
+        self.assertEqual(rec["stats"], json.loads(p.stdout)["stats"])
+        self.assertNotIn("abstract", rec["returned"][0])
+        # the stdout contract is unchanged by --record
+        self.assertEqual(json.loads(p.stdout)["overflowIds"], [aid(2)])
+
+    def test_unwritable_record_fails(self):
+        r, out, _ = self.harvest({"first": [(200, page(self.records, rd=f"{TODAY}T06:00:00Z"))]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        p = self.prefilter(out, record=os.path.join(self.d, "no-such-dir", "rec.json"))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("cannot write the prefilter record", p.stderr)
 
     def test_filter_and_advance(self):
         self.write_state(f"{TODAY - dt.timedelta(days=3)}T05:00:00Z", recent=[aid(6)])
