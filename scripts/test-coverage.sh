@@ -318,5 +318,63 @@ expect_match "adapter, a JSON array: names the shape" "not a valid JSON object" 
 rm -rf "$d"
 
 echo
+echo "version stamps and vendored-stamp-check.sh"
+
+STAMPCHK="$ROOT/plugins/core/scripts/vendored-stamp-check.sh"
+BUMP="$ROOT/scripts/bump-version.py"
+CANON_DIR="$ROOT/plugins/core/scripts"
+
+core_version="$(jq -r '.version' "$ROOT/plugins/core/.claude-plugin/plugin.json")"
+for f in coverage-adapt.sh coverage-check.sh; do
+  stamp="$(sed -n 's/^# maintainerd-core: \([0-9][0-9.]*\)$/\1/p' "$CANON_DIR/$f")"
+  if [ "$stamp" = "$core_version" ]; then ok "$f stamp matches the core plugin version"
+  else bad "$f stamp matches the core plugin version" "stamp '$stamp' vs plugin.json '$core_version': run scripts/bump-version.py or fix the stamp"; fi
+done
+
+d="$(scratch)"; mkdir -p "$d/v"
+cp "$CANON_DIR/coverage-adapt.sh" "$CANON_DIR/coverage-check.sh" "$d/v/"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an exact copy: reports current, exit 0" 0 "$status" "$output"
+expect_match "an exact copy: says current" "current" "$output"
+
+sed -i.bak 's/^# maintainerd-core: .*/# maintainerd-core: 0.0.1/' "$d/v/coverage-check.sh"; rm -f "$d/v/coverage-check.sh.bak"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an old stamp on an unchanged script: behind, still exit 0" 0 "$status" "$output"
+expect_match "an old stamp on an unchanged script: says behind" "behind" "$output"
+
+echo '# local edit' >> "$d/v/coverage-check.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an old stamp and a changed script: STALE, exit 1" 1 "$status" "$output"
+expect_match "STALE: prints the copy command" "fix: cp " "$output"
+
+grep -v '^# maintainerd-core: ' "$CANON_DIR/coverage-adapt.sh" > "$d/v/coverage-adapt.sh"
+echo '# local edit' >> "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_match "a pre-stamp copy that differs: UNSTAMPED" "UNSTAMPED" "$output"
+
+rm -f "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_match "a missing copy: MISSING" "MISSING" "$output"
+expect_status "a missing copy: exit 1" 1 "$status" "$output"
+
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$d/nowhere"
+expect_status "an unreadable canonical: fails with exit 2, never passes" 2 "$status" "$output"
+rm -rf "$d"
+
+# bump-version.py rewrites the stamp: build a one-plugin tree around a copy of the script.
+d="$(scratch)"; mkdir -p "$d/scripts" "$d/.claude-plugin" "$d/plugins/core/.claude-plugin" "$d/plugins/core/scripts"
+cp "$BUMP" "$d/scripts/bump-version.py"
+printf '{\n  "plugins": [\n    {\n      "name": "maintainerd-core",\n      "source": "./plugins/core",\n      "version": "1.2.3"\n    }\n  ]\n}\n' > "$d/.claude-plugin/marketplace.json"
+printf '{\n  "name": "maintainerd-core",\n  "version": "1.2.3"\n}\n' > "$d/plugins/core/.claude-plugin/plugin.json"
+printf '#!/usr/bin/env bash\n# maintainerd-core: 1.2.3\n# not a stamp: maintainerd-core: 9.9.9\n' > "$d/plugins/core/scripts/x.sh"
+printf 'no stamp here\n' > "$d/plugins/core/scripts/y.sh"
+run "$d" python3 scripts/bump-version.py core
+expect_status "bump-version on a stamped plugin: succeeds" 0 "$status" "$output"
+expect_match "bump-version rewrites the stamp to the new version" "# maintainerd-core: 1.2.4" "$(cat "$d/plugins/core/scripts/x.sh")"
+expect_match "bump-version leaves a stamp-shaped comment mid-line alone" "not a stamp: maintainerd-core: 9.9.9" "$(cat "$d/plugins/core/scripts/x.sh")"
+expect_match "bump-version leaves an unstamped script alone" "no stamp here" "$(cat "$d/plugins/core/scripts/y.sh")"
+rm -rf "$d"
+
+echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

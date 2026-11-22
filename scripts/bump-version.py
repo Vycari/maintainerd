@@ -160,6 +160,39 @@ def replace_marketplace_version(text, name, old, new):
     return updated
 
 
+def stamp_edits(record, version):
+    """Rewrite `# <plugin-name>: <version>` stamp lines in the plugin's scripts/.
+
+    Scripts a consuming repo vendors carry the version they were copied at as a comment
+    stamp, so a copy that has fallen behind can be told apart from a current one. A bump
+    that left the canonical stamp alone would make every fresh copy look stale. Returns
+    {path: new text} for each file whose stamp changes; a file with no stamp is skipped.
+    """
+    stamp = re.compile(rf"(?m)^(# {re.escape(record['name'])}: )(\d+\.\d+\.\d+)$")
+    scripts = os.path.join(ROOT, record["source"], "scripts")
+    edits = {}
+    if not os.path.isdir(scripts):
+        return edits
+    for entry in sorted(os.listdir(scripts)):
+        path = os.path.join(scripts, entry)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as handle:
+                text = handle.read()
+        except UnicodeDecodeError:
+            continue
+        found = stamp.findall(text)
+        if not found:
+            continue
+        if len(found) != 1:
+            fail(f"{path}: expected exactly one '# {record['name']}: <version>' stamp, found {len(found)}")
+        updated = stamp.sub(lambda m: f"{m.group(1)}{version}", text, count=1)
+        if updated != text:
+            edits[path] = updated
+    return edits
+
+
 def verify(text, label, extract, expected):
     """Reparse an edited manifest and confirm the edit landed where it was aimed.
 
@@ -323,6 +356,7 @@ def main():
                         "a published version must increase"
                     )
                 log(f"skip {record['name']}: already bumped {previous} -> {current}")
+                edits.update(stamp_edits(record, current))
                 tags.append(f"{record['name']}--v{current}")
                 continue
 
@@ -333,6 +367,7 @@ def main():
         marketplace_text = replace_marketplace_version(
             marketplace_text, record["name"], current, new
         )
+        edits.update(stamp_edits(record, new))
         tags.append(f"{record['name']}--v{new}")
         log(f"bump {record['name']}: {current} -> {new}")
 

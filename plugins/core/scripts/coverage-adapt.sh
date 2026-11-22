@@ -6,8 +6,11 @@
 #     {"metric": "lines", "percent": <float>}
 #
 # Canonical source: maintainerd, plugins/core/scripts/coverage-adapt.sh
+# maintainerd-core: 0.6.29
 # A consuming repo carries a copy at .claude/maintainerd/coverage-adapt.sh so CI can run
-# it without the plugin installed. Re-copy it when maintainerd-core updates.
+# it without the plugin installed. The `maintainerd-core:` line above is the version this
+# copy was taken from; the release tooling rewrites it, and `doctor` compares it with the
+# loaded plugin (scripts/vendored-stamp-check.sh). Re-copy when it reports a difference.
 #
 #   coverage-adapt.sh                                  # auto-detect the one input and its format
 #   coverage-adapt.sh --tool pytest-cov                # force the pytest-cov (coverage.py) shape

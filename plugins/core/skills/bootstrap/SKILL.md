@@ -358,7 +358,8 @@ report. On a plain `/bootstrap` re-run where `coverage.floor` already exists, sk
 
 **First, vendor the two scripts.** CI runs without the plugin installed, so copy this plugin's
 `scripts/coverage-adapt.sh` and `scripts/coverage-check.sh` into the repo at `.claude/maintainerd/`,
-executable and checked in — the version CI ran should be the version in the diff. The measurement
+executable and checked in — the version CI ran should be the version in the diff. Copy them whole:
+the `# maintainerd-core: <version>` line in each is the stamp `doctor` compares later, so don't strip it. The measurement
 below uses the adapter, so this comes first.
 
 **Then measure, on a fresh worktree of the default branch — never the working copy.** The working

@@ -861,6 +861,11 @@ Both scripts are vendored into the consuming repo — `bootstrap` writes them to
 script from a branch is a supply chain nobody reviewed. They are checked in, so the version CI ran
 is the version in the diff.
 
+Each script carries a `# maintainerd-core: <version>` stamp, rewritten by the release tooling
+(`scripts/bump-version.py`) on every core bump, so a copy records which version it came from. `doctor`
+runs `scripts/vendored-stamp-check.sh`, which compares each vendored copy with the loaded plugin's
+script and prints the `cp` command for one that has fallen behind. It never overwrites a copy.
+
 ```yaml
       - name: Coverage
         run: uv run pytest --cov --cov-report=json:coverage-summary.json   # commands.coverage

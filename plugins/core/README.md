@@ -45,6 +45,7 @@ This plugin ships the two shell steps that make it work, both bash 3.2 + `jq`, n
 | Script | What it does |
 | --- | --- |
 | [`scripts/coverage-adapt.sh`](scripts/coverage-adapt.sh) | Normalizes pytest-cov (`.totals.percent_covered`) or vitest/istanbul `json-summary` (`.total.lines.pct`) into the one shape every consumer reads: `{"metric": "lines", "percent": <float>}`. |
+| [`scripts/vendored-stamp-check.sh`](scripts/vendored-stamp-check.sh) | Compares the vendored coverage scripts' `# maintainerd-core: <version>` stamp with the loaded plugin's, and prints the re-copy command for a stale one. Report-only; `doctor` runs it. |
 | [`scripts/coverage-check.sh`](scripts/coverage-check.sh) | The gate. Fails the job when the measured percentage is below `coverage.floor`; equal passes. Fails closed on a missing, malformed or un-normalized summary. |
 
 `bootstrap` vendors both into the consuming repo at `.claude/maintainerd/`, since CI runs without the
