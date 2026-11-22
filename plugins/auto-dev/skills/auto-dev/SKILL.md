@@ -246,25 +246,38 @@ For issues labeled In-progress:
 **Sweep recently closed issues (bounded).** The gather above reads only *open* issues, so an issue
 that its PR closed with `Fixes #N` before the next tick can keep the In-progress label for good.
 After the open-issue pass, every tick also reads one bounded page of recently closed issues that
-still carry it, using REST (so it works in both modes) and the `since` filter so the read stays
-inside a window rather than walking the whole history.
+still carry it, using the REST search endpoint (so it works in both modes) with an `updated:` window
+so the read stays inside a window rather than walking the whole history.
 
 **If `config.autoDev.closedSweepMax` is `0`, skip the sweep entirely and issue no request** — not
-the issue read, not the per-issue reads below. Do not pass `per_page=0`: GitHub treats it as the
-default page size of 30, so a `0` sent to the API turns the sweep up, not off. Otherwise read the
-candidates, dropping any issue that carries the Skip label or a label in
-`config.autoDev.excludedLabels` **before** keeping its number — the sweep never touches opted-out
-work, even when a maintainer left In-progress beside Skip on purpose:
+the search, not the per-issue reads below. Do not pass `per_page=0`: GitHub treats it as the
+default page size of 30, so a `0` sent to the API turns the sweep up, not off.
+
+Otherwise the opted-out issues are excluded **in the query itself**, with a `-label:` qualifier for
+the Skip label and for every label in `config.autoDev.excludedLabels`. The sweep never touches
+opted-out work, even when a maintainer left In-progress beside Skip on purpose, and filtering
+server-side is what keeps the page moving: opted-out issues keep their In-progress label forever, so
+a filter applied *after* GitHub has cut the page would fetch and discard the same ones every tick
+and hide every older eligible issue behind them. Every issue the query returns is one this tick
+acts on, and acting removes its In-progress label, so the next tick's page reaches the next
+candidates. The only issues that stay are ones left untouched below (a failed read, or an automated
+PR still open), and both clear on their own.
 
 ```bash
-SINCE=$(date -u -d "-<config.autoDev.closedSweepDays> days" +%Y-%m-%dT%H:%M:%SZ)   # BSD: date -u -v-<N>d +%Y-%m-%dT%H:%M:%SZ
-gh api -X GET "repos/<config.repo>/issues" -f state=closed -f labels='<config.autoDev.stateLabels.inProgress>' \
-  -f since="$SINCE" -f sort=updated -f direction=desc -f per_page=<config.autoDev.closedSweepMax> \
+SINCE=$(date -u -d "-<config.autoDev.closedSweepDays> days" +%Y-%m-%d)   # BSD: date -u -v-<N>d +%Y-%m-%d
+# One -label:"<name>" per label: the Skip label, then each of config.autoDev.excludedLabels.
+Q='repo:<config.repo> is:issue is:closed label:"<config.autoDev.stateLabels.inProgress>" -label:"<config.autoDev.stateLabels.skip>" -label:"<excluded 1>" ... updated:>='"$SINCE"
+gh api -X GET search/issues -f q="$Q" -f sort=updated -f order=desc -f per_page=<config.autoDev.closedSweepMax> \
   | jq --arg skip '<config.autoDev.stateLabels.skip>' --argjson ex '<config.autoDev.excludedLabels as a JSON array>' \
-      '[.[] | select(has("pull_request") | not)
-            | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
-            | .number]'
+      '[.items[] | select(has("pull_request") | not)
+                 | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
+                 | .number]'
 ```
+
+The `jq` label check repeats the query's exclusion as a second guard (a mistyped qualifier must
+not turn into a relabel of opted-out work); with a correct query it drops nothing. A search that
+errors is a failed read: change nothing this tick. `incomplete_results: true` only means some
+matches are missing from this page; act on the ones returned, and the rest come up on a later tick.
 
 If that returns no numbers, the sweep is done. Otherwise establish each issue's
 automated PRs **from that issue itself**, never from a page of recent PRs: a recent-PR page that
@@ -302,7 +315,7 @@ The label removal is `gh api -X DELETE "repos/<config.repo>/issues/<N>/labels/<U
 comment or label change is noted in the exit report and never ends the tick (this is housekeeping,
 not one of the reads invariant 7 governs), but a failed read always means "change nothing on that
 issue", never "no PR". Defaults: `config.autoDev.closedSweepDays` 14, `config.autoDev.closedSweepMax`
-20 (cap per tick; `0` turns the sweep off, as above). The bound is one issue read, plus, for at most
+20 (cap per tick; `0` turns the sweep off, as above). The bound is one search, plus, for at most
 `closedSweepMax` issues, one timeline read, one read per PR it references, and that issue's writes.
 The window is a ceiling on recency, so a backlog older than it is not touched by this sweep:
 clearing one is a one-off label write the maintainer runs and approves, not something a tick does.
