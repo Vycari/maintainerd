@@ -95,6 +95,9 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
   // ── Per-run caps for the audits (keep review load sustainable) ───────────
   "audits": {
+    "enabled":    false, // opt-in: true = this repo's audits are scheduled to run unattended. A
+                       // roster signal for whatever schedules them, like autoDev.enabled; the
+                       // block's presence alone says nothing. Default false if absent.
     "prCap":      3,   // audit-architecture: max PRs opened per run
     "issueCap":   5,   // audit-architecture: max issues filed per run
     "testPrCap":  2,   // audit-tests: max PRs per run
@@ -394,6 +397,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   below.
 - `labels.*` — GitHub label names the skills apply. They must already exist in the repo (bootstrap
   offers to create them).
+- `audits.enabled` *(optional; default `false`)* — the per-repo opt-in for **scheduled** audits,
+  the counterpart of `autoDev.enabled`. `true` means the maintainer wants this repo's audits run
+  unattended, and a scheduler that sweeps several repos builds its roster from it, not from the
+  presence of the `audits` block: bootstrap writes the caps block into nearly every repo, so the
+  block alone over-selects. Absent or `false` = not scheduled. It does not stop an audit a person
+  invokes by hand: the audit skills read the caps below either way, and only a scheduler reads this
+  key.
 - `audits.*` — per-run caps, plus the two pattern-promotion knobs. Cap defaults `3/5`
   (architecture), `2/2` (test), `3/5` (security), and `3/5` (deps) if absent. `audit-security` still
   *reports* Critical/High findings that exceed its cap;
