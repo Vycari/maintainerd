@@ -80,6 +80,55 @@ expect_match "istanbul: takes lines.pct, not statements or branches" \
   '{"metric":"lines","percent":65.5}' "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
 rm -rf "$d"
 
+# ── llvm-cov export (Swift: `swift test --enable-code-coverage --show-codecov-path`) ──
+d="$(scratch)"
+cat > "$d/coverage.json" <<'JSON'
+{"type": "llvm.coverage.json.export", "version": "2.0.1",
+ "data": [{"files": [{"filename": "Sources/A.swift",
+                      "summary": {"lines": {"count": 10, "covered": 9, "percent": 90}}}],
+           "totals": {"lines":     {"count": 200, "covered": 157, "percent": 78.5},
+                      "functions": {"count": 40,  "covered": 20,  "percent": 50},
+                      "regions":   {"count": 300, "covered": 120, "percent": 40, "notcovered": 180},
+                      "instantiations": {"count": 40, "covered": 20, "percent": 50}}}]}
+JSON
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov: exits 0" 0 "$status" "$output"
+expect_match "llvm-cov: takes data[0].totals.lines.percent, not functions, regions or a file's" \
+  '{"metric":"lines","percent":78.5}' "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '{"data": [{"totals": {"lines": {"count": 8, "covered": 3, "percent": 37.5}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT"
+expect_status "auto: detects llvm-cov" 0 "$status" "$output"
+expect_match "auto: names the llvm-cov shape" "(llvm-cov)" "$output"
+expect_match "auto: llvm-cov keeps the fractional percentage" '{"metric":"lines","percent":37.5}' \
+  "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+run "$d" "$ADAPT"
+expect_status "llvm-cov beside its output: the retry succeeds too" 0 "$status" "$output"
+rm -rf "$d"
+
+# llvm-cov reports 0 percent for a build that measured no lines at all; that is not "0%
+# covered", so it fails closed the way istanbul's "Unknown" does.
+d="$(scratch)"
+echo '{"data": [{"totals": {"lines": {"count": 0, "covered": 0, "percent": 0}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov with no measured lines: fails rather than reporting 0" 1 "$status" "$output"
+expect_match "llvm-cov no lines: names the expected key" "data[0].totals.lines.percent" "$output"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '{"data": []}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov with an empty data array: fails" 1 "$status" "$output"
+echo '{"totals": {"percent_covered": 50}}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov forced on another tool's shape: fails" 1 "$status" "$output"
+echo '{"data": [{"totals": {"lines": {"count": 4, "covered": 4, "percent": 140}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov percentage above 100: fails" 1 "$status" "$output"
+rm -rf "$d"
+
 # ── auto-detection, both shapes and its own output ───────────────────────────
 d="$(scratch)"
 echo '{"totals": {"percent_covered": 77.25}}' > "$d/coverage-summary.json"

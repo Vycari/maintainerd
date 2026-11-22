@@ -820,10 +820,12 @@ the ones it knows into it: `plugins/core/scripts/coverage-adapt.sh`.
 | --- | --- | --- | --- |
 | Python | pytest-cov / coverage.py `--cov-report=json` | `coverage.json` | `.totals.percent_covered` |
 | TypeScript | vitest / jest / nyc `json-summary` | `coverage/coverage-summary.json` | `.total.lines.pct` |
+| Swift | `llvm-cov export` JSON (SwiftPM: `swift test --enable-code-coverage`, then the file `--show-codecov-path` prints) | `coverage.json` | `.data[0].totals.lines.percent` |
 
 ```bash
 coverage-adapt.sh                                   # detect the shape, rewrite coverage-summary.json in place
 coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
+coverage-adapt.sh --tool llvm-cov --input coverage.json
 ```
 
 With no `--input` it takes whichever **one** of `coverage-summary.json`, `coverage.json` or
@@ -833,15 +835,15 @@ commit's number is the single failure the ratchet exists to prevent. Pass `--inp
 stale file before the coverage step. Its **own** normalized output doesn't count as a rival — the
 native file stays on disk after the first pass, and a retried CI step has to keep working.
 
-One script rather than one file per language: the two translations are a single `jq` path each, and
+One script rather than one file per language: the translations are a single `jq` path each, and
 a second copy of the argument handling and the fail-closed rules is a second place for them to
 drift. `--tool` selects the format explicitly; the default detects it from the JSON's shape and
 also recognizes its **own** output, so re-running the step is a no-op rather than an error.
 
 It fails, and writes nothing, on anything it cannot read with certainty — a missing file, malformed
 JSON, an unrecognized shape, a percentage outside 0–100, or istanbul's literal `"Unknown"` (what it
-writes when it measured no lines at all). A coverage gate that guesses a number is worse than one
-that stops.
+writes when it measured no lines at all) and llvm-cov's `lines.count` of 0 (which it reports as 0
+percent). A coverage gate that guesses a number is worse than one that stops.
 
 ### The gate
 
