@@ -45,7 +45,9 @@
 # Reads/updates the globals _HD_STACK (quote/nesting contexts, innermost LAST; "B" is the base)
 # and appends the line's real heredoc openers to _HD_TAGS / _HD_STRIPS (newline-terminated).
 # Contexts: B base shell, C `$( … )`, p plain `( … )`, A `$(( … ))`/`(( … ))` arithmetic,
-# S single quote, D double quote, K backtick (inert).
+# S single quote, E ANSI-C `$' … '` (a backslash escapes, so `\'` does not close it),
+# D double quote, K backtick (inert), P parameter expansion `${ … }` (a `#` in it is an operator,
+# as in `${#x}` or `${x#pat}`, never a comment, and a `<<` in it is never an opener).
 _hd_scan_line() {
   local line="$1"
   local len=${#line} i=0 c nc top prev=" " j tag strip q
@@ -55,6 +57,25 @@ _hd_scan_line() {
     case "$top" in
       S)
         [ "$c" = "'" ] && _HD_STACK="${_HD_STACK%?}"
+        i=$((i + 1)); prev="$c"; continue ;;
+      E)
+        if [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+        [ "$c" = "'" ] && _HD_STACK="${_HD_STACK%?}"
+        i=$((i + 1)); prev="$c"; continue ;;
+      P)
+        case "$c" in
+          '}') _HD_STACK="${_HD_STACK%?}" ;;
+          "'") _HD_STACK="${_HD_STACK}S" ;;
+          '"') _HD_STACK="${_HD_STACK}D" ;;
+          '`') _HD_STACK="${_HD_STACK}K" ;;
+          '\') i=$((i + 2)); continue ;;
+          '$')
+            if [ "${line:$((i + 1)):2}" = "((" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 3)); continue
+            elif [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}C"; i=$((i + 2)); prev="("; continue
+            elif [ "${line:$((i + 1)):1}" = "{" ]; then _HD_STACK="${_HD_STACK}P"; i=$((i + 2)); continue
+            elif [ "${line:$((i + 1)):1}" = "'" ]; then _HD_STACK="${_HD_STACK}E"; i=$((i + 2)); continue
+            fi ;;
+        esac
         i=$((i + 1)); prev="$c"; continue ;;
       K)
         if [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
@@ -91,7 +112,10 @@ _hd_scan_line() {
       '$')
         if [ "${line:$((i + 1)):2}" = "((" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 3)); prev="("; continue
         elif [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}C"; i=$((i + 2)); prev="("; continue
-        fi ;;
+        elif [ "${line:$((i + 1)):1}" = "{" ]; then _HD_STACK="${_HD_STACK}P"; i=$((i + 2)); prev="x"; continue
+        elif [ "${line:$((i + 1)):1}" = "'" ]; then _HD_STACK="${_HD_STACK}E"; i=$((i + 2)); prev="x"; continue
+        fi
+        i=$((i + 1)); prev="x"; continue ;;       # `$#`, `$$`: the `#` after `$` is a name, not a comment
       '(')
         if [ "${line:$((i + 1)):1}" = "(" ]; then _HD_STACK="${_HD_STACK}AA"; i=$((i + 2)); prev="("; continue; fi
         _HD_STACK="${_HD_STACK}p" ;;
@@ -201,11 +225,13 @@ mask_all_heredocs() {
 split_simple_commands() {
   local s="$1"
   local len=${#s}
-  local i=0 start=0 depth=0 c nc q="" out=""
+  local i=0 start=0 depth=0 pdepth=0 ansi=0 c nc q="" out=""
   while [ "$i" -lt "$len" ]; do
     c="${s:$i:1}"
     if [ -n "$q" ]; then
-      if [ "$q" = '"' ] && [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+      # `"…"` and ANSI-C `$'…'` take backslash escapes; plain `'…'` and backticks here do not.
+      if { [ "$q" = '"' ] || [ "$ansi" -eq 1 ]; } && [ "$c" = '\' ]; then i=$((i + 2)); continue; fi
+      if [ "$c" = "$q" ]; then q=""; ansi=0; fi
       if [ "$c" = "$q" ]; then q=""; fi
       i=$((i + 1)); continue
     fi
@@ -214,7 +240,10 @@ split_simple_commands() {
       '\') i=$((i + 2)) ;;
       '#')
         # A comment (`#` at the start of a word) runs to the end of the line; its apostrophes and
-        # quotes are prose and must not open a quote that swallows the commands after it.
+        # quotes are prose and must not open a quote that swallows the commands after it. Inside a
+        # `${ … }` parameter expansion (`${#x}`, `${x#pat}`, `${x/ #y/z}`) a `#` is an operator,
+        # never a comment, whatever precedes it; `$#` is consumed by the `$` arm below.
+        if [ "$pdepth" -gt 0 ]; then i=$((i + 1)); continue; fi
         if [ "$i" -eq 0 ]; then nc=" "; else nc="${s:$((i - 1)):1}"; fi
         case "$nc" in
           ' '|$'\t'|';'|'&'|'|'|'('|'{'|$'\n')
@@ -223,8 +252,18 @@ split_simple_commands() {
         esac ;;
       '$')
         nc="${s:$((i + 1)):1}"
-        if [ "$nc" = '(' ]; then depth=$((depth + 1)); i=$((i + 2)); else i=$((i + 1)); fi
+        case "$nc" in
+          '(') depth=$((depth + 1)); i=$((i + 2)) ;;
+          '{') pdepth=$((pdepth + 1)); i=$((i + 2)) ;;
+          "'") q="'"; ansi=1; i=$((i + 2)) ;;
+          '#') i=$((i + 2)) ;;             # `$#` is the argument count, not a comment
+          *) i=$((i + 1)) ;;
+        esac
         ;;
+      '{')
+        [ "$pdepth" -gt 0 ] && pdepth=$((pdepth + 1)); i=$((i + 1)) ;;
+      '}')
+        [ "$pdepth" -gt 0 ] && pdepth=$((pdepth - 1)); i=$((i + 1)) ;;
       '(')
         if [ "$depth" -gt 0 ]; then
           depth=$((depth + 1)); i=$((i + 1))

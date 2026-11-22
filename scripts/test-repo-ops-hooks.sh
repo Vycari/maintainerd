@@ -1046,6 +1046,57 @@ gh pr create --title x --body "no headings"
 EOF'
 
 echo
+echo "== a # inside a parameter expansion is not a comment (VR-6f4c8e0d, VR-1f3b018b) =="
+expect "$TEMPLATE_GUARD" deny "parameter-length expansion does not hide a later pr create" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo ${#x}; gh pr create --title x --body "no headings"'
+expect "$MERGE_GUARD" warn '${#x} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${#x}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x#y} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x#y}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x##*/} does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x##*/}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '${x/ #y/z} (a space before # inside the braces) does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x/ #y/z}; gh pr merge 5'
+expect "$MERGE_GUARD" warn '$# does not hide a later merge on the same line' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo $#; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a bare $ before ; does not swallow the separator' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo $;gh pr merge 5'
+expect "$MERGE_GUARD" warn '${#x} inside $( ) does not hide a later merge' \
+  "$(repo "" "$CONFIG_PLAIN")" 'n=$(echo ${#x}); gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a brace group comment is still a comment, and the next line is still found' \
+  "$(repo "" "$CONFIG_PLAIN")" '{ # a comment; gh pr merge 4
+gh pr merge 5; }'
+expect "$MERGE_GUARD" none 'a ${#x} before a real heredoc opener does not drop the opener' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${#x}; cat <<'"'"'EOF'"'"'
+gh pr merge 5
+EOF'
+expect "$TEMPLATE_GUARD" none 'a ${#x} before a real heredoc: a pr create in its body is data' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo ${#x}; cat <<'"'"'EOF'"'"' > /tmp/pr.md
+gh pr create --title t --body "x"
+EOF'
+
+echo
+echo "== an ANSI-C \$'...' string is one word with backslash escapes (VR-0eaa724c) =="
+expect "$TEMPLATE_GUARD" deny "an escaped quote in \$'...' does not fake a heredoc opener" \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \$'\\'<<EOF'
+gh pr create --title x --body \"no headings\"
+EOF"
+expect "$MERGE_GUARD" warn "an escaped quote in \$'...' does not fake a heredoc opener (merge)" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'\\'<<EOF'
+gh pr merge 5
+EOF"
+expect "$MERGE_GUARD" warn "an escaped quote in \$'...' does not swallow a later ; gh pr merge" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'it\\'s'; gh pr merge 5"
+expect "$MERGE_GUARD" warn "control: a plain '<<EOF' is not an opener either" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo '<<EOF'
+gh pr merge 5
+EOF"
+expect "$MERGE_GUARD" none "a real heredoc after a \$'...' string is still masked" \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \$'a\\'b' && cat <<'EOF'
+gh pr merge 5
+EOF"
+
+echo
 echo "== one wrapper resolver: gh_pr_subcommand, gh_command_words and gh_exec_words agree (#85/#90) =="
 (
   # shellcheck source=../plugins/repo-ops/hooks/scripts/lib/gh-exec-words.sh
