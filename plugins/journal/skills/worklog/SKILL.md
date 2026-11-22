@@ -116,8 +116,9 @@ rather than being skipped, and nothing unattended depends on `gh search` or `sea
 - Repo resolution's `gh repo view --json nameWithOwner`: `gh api repos/<owner/name> --jq .full_name`,
   or the git-remote parse that step already falls back to.
 - The day's merged PRs: **List PRs merged in a window** (local day converted to UTC).
-- If the PR scan cannot be completed, take the session-only fallback and say the PR scan failed. Do
-  not report "no PRs merged".
+- Run that scan with `set -o pipefail` and check its exit status: a non-zero exit is a failed scan,
+  never an empty window. If the PR scan cannot be completed, take the session-only fallback and say
+  the PR scan failed. Do not report "no PRs merged".
 
 ## Workflow
 

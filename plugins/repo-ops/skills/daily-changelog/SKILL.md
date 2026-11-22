@@ -51,8 +51,10 @@ rather than being skipped, and nothing unattended depends on `gh search` or `sea
   window** (convert the local day to UTC instants first) and report how many pages were scanned.
 - Step 3's `gh pr view --json …`: **Read one PR's fields**; reviews and commits are plain REST
   (`pulls/<N>/reviews`, `pulls/<N>/commits`), changed files are `pulls/<N>/files`.
-- A window whose scan could not be completed is a failed read, not "no PRs merged". Do not write the
-  empty-day entry for it; stop and report.
+- Run that scan with `set -o pipefail` and check its exit status: a non-zero exit is a failed scan,
+  never an empty window. A window whose scan could not be completed is a failed read, not "no PRs
+  merged". Write the empty-day entry only when the scan exited 0 and returned `[]`; otherwise stop
+  and report.
 
 ## Workflow
 

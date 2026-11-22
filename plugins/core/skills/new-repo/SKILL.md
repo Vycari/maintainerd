@@ -65,13 +65,15 @@ Everything below reads the `effective` object this prints. Nothing below reads t
 **Create vs adopt:**
 
 ```bash
-gh api "repos/<owner/name>" --jq '{full_name, private, default_branch}' >/dev/null 2>&1
+status=$(gh api -i "repos/<owner/name>" 2>/dev/null | head -n 1 | awk '{print $2}')
+# 200 → exists; 404 → absent; anything else (or empty) → could not tell
 ```
 
 This is `gh api` rather than `gh repo view --json`, because the latter is GraphQL and returns 403 where
-GraphQL is blocked, which this existence check would misread as "does not exist". A 404 is "absent";
-any other non-zero exit (403, proxy error, timeout) is **could not tell**: stop and report, never
-create on it. See [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
+GraphQL is blocked, which this existence check would misread as "does not exist". It reads the HTTP
+status rather than the exit code, because `gh api` exits 1 for a 404 and a 403 alike. A 200 is
+"exists", a 404 is "absent"; any other status, or none (403, proxy error, timeout), is **could not
+tell**: stop and report, never create on it. The branches below apply only to a 200 or a 404. See [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
 
 - Exists, and `--adopt` was passed → adopt.
 - Exists, and it wasn't → **stop** and say so. Silently adopting a repo somebody asked you to create

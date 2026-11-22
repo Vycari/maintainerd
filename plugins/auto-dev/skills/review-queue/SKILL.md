@@ -182,7 +182,11 @@ ready/in-progress state, or resting in a state that's waiting on the _bot_, not 
   to `$PREFIX` on `head.ref`. The paginated issue read below is already REST and unchanged.
 - The approval scan has no batch REST form. Walk it per repo instead: for each planned issue, read
   `repos/$REPO/issues/<N>/comments` (paginated, `per_page=100`) and apply the same marker, regex and
-  maintainer-permission test client-side. Comment reactions are on each comment's `reactions` object.
+  maintainer-permission test client-side. A comment's `reactions` object has counts only, not who
+  reacted, so for a reaction-only approval read the reactors from
+  `repos/$REPO/issues/comments/<id>/reactions` (it returns each login) and apply the same
+  maintainer-permission test to them. A count with no readable reactor list is unscanned, never an
+  approval.
 - **Fail closed:** if any issue's comments cannot be read, that issue goes in a separate "unscanned"
   bucket in the console and is never counted as "no approval found". Say how many issues were
   scanned.

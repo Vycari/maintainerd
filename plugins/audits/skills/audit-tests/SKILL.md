@@ -104,7 +104,10 @@ return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRA
 [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
 and **Edit labels**. Say in the report which mode the run used and how it decided.
 Two de-dup queries below use `--search`; in blocked mode, list `head.ref` from the open-PR list and filter
-for the `arch-` prefix, and read closed-as-not-planned from `state=closed` filtered on
+for the `arch-` prefix, then read each `arch-*` PR's changed files from `repos/<repo>/pulls/<N>/files`
+(the reference's **Read one PR's fields**) and apply the same file-overlap skip. If any of those file
+reads fails, the overlap check did not run: skip the candidate findings rather than file blind, and
+say so in the report. Read closed-as-not-planned from `state=closed` filtered on
 `.state_reason == "not_planned"`. `gh label create` and the label-edit calls are plain REST and work
 unchanged.
 

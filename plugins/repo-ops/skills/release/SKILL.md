@@ -63,7 +63,8 @@ rather than being skipped, and nothing unattended depends on `gh search` or `sea
   (`repos/<config.repo>/releases/latest`).
 - `gh pr list --state merged --search "merged:>…"`: the same section's merged-window listing, with the
   commit date of `$LAST` as the lower bound.
-- A merged-PR read that could not be completed means the release notes could be missing changes:
+- Run that scan with `set -o pipefail` and check its exit status: a non-zero exit is a failed scan,
+  never an empty window. A merged-PR read that could not be completed means the release notes could be missing changes:
   stop and report, do not ship notes built from a partial list. `gh release create` is REST and is
   unchanged.
 
