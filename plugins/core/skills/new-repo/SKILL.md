@@ -188,7 +188,7 @@ coverage step at all:
       - name: Coverage
         run: <commands.coverage>
       - name: Normalize the coverage summary
-        run: .claude/maintainerd/coverage-adapt.sh --tool <pytest-cov|istanbul>
+        run: .claude/maintainerd/coverage-adapt.sh --tool <pytest-cov|istanbul|llvm-cov>
       # Before the gate, so a regression still publishes the number that proves it.
       - name: Upload the coverage summary
         uses: actions/upload-artifact@v4
