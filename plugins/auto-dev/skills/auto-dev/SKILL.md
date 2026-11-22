@@ -266,47 +266,66 @@ acts on, and acting removes its In-progress label, so the next tick's page reach
 candidates. The only issues that stay are ones left untouched below (a failed read, or an automated
 PR still open), and both clear on their own.
 
-```bash
-SINCE=$(date -u -d "-<config.autoDev.closedSweepDays> days" +%Y-%m-%d)   # BSD: date -u -v-<N>d +%Y-%m-%d
-# One -label:"<name>" per label: the Skip label, then each of config.autoDev.excludedLabels.
-Q='repo:<config.repo> is:issue is:closed label:"<config.autoDev.stateLabels.inProgress>" -label:"<config.autoDev.stateLabels.skip>" -label:"<excluded 1>" ... updated:>='"$SINCE"
-gh api -X GET search/issues -f q="$Q" -f sort=updated -f order=desc -f per_page=<config.autoDev.closedSweepMax> \
-  | jq --arg skip '<config.autoDev.stateLabels.skip>' --argjson ex '<config.autoDev.excludedLabels as a JSON array>' \
-      '[.items[] | select(has("pull_request") | not)
-                 | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
-                 | .number]'
-```
-
-The `jq` label check repeats the query's exclusion as a second guard (a mistyped qualifier must
+The jq label check repeats the query's exclusion as a second guard (a mistyped qualifier must
 not turn into a relabel of opted-out work); with a correct query it drops nothing.
 `incomplete_results: true` only means some matches are missing from this page; act on the ones
 returned, and the rest come up on a later tick.
 
-**If the search errors** (a proxy 403 on `search/issues`, a 422, a timeout, any non-zero exit), do
-not stop there: run the repo-scoped fallback below, which every sandbox that allows repo REST can
-answer. The listing filters by label and `since` (an `updated` time) server-side, but it cannot
-exclude a label, so the exclusion happens client-side and the read **pages past** opted-out issues
-instead of letting them fill a fixed-size page: keep reading pages of 100 until `closedSweepMax`
-eligible issues are collected, a page comes back short (the listing ended), or 5 pages have been
-read. Opted-out issues therefore cost page reads, never candidate slots, so one opted-out issue (or
-twenty) cannot hide an older eligible one. Stop at the first failed page:
+**If the search errors** (a proxy 403 on `search/issues`, a 422, a timeout, any non-zero exit, or
+a response jq cannot read), do not stop there: fall back to the repo-scoped listing, which every
+sandbox that allows repo REST can answer. The listing filters by label and `since` (an `updated`
+time) server-side, but it cannot exclude a label, so the exclusion happens client-side and the read
+**pages past** opted-out issues instead of letting them fill a fixed-size page: keep reading pages
+of 100 until `closedSweepMax` eligible issues are collected, a page comes back short (the listing
+ended), or 5 pages have been read. Opted-out issues therefore cost page reads, never candidate
+slots, so one opted-out issue (or twenty) cannot hide an older eligible one. It stops at the first
+failed page.
+
+The candidate read is one block, search first and the repo-scoped fallback second, so that the
+decision between them is made on **gh's own exit status** and never on what a pipe printed:
+`gh … | jq …` reports jq's status, and jq given the empty output of a refused search exits 0 with
+nothing, which reads as "no candidates" and skips the fallback. Each response goes to a file and jq
+reads it on stdin, never as an argument (a 100-issue page with bodies can pass the kernel's
+128 KiB per-argument limit, and a jq that cannot start must not read as an empty page). Every jq
+call's status is checked too. `scripts/test-auto-dev-closed-sweep.sh` runs this exact block against
+a stub `gh`:
 
 ```bash
-SINCE_TS="${SINCE}T00:00:00Z"
-FOUND='[]'; PAGE=1; MAX=<config.autoDev.closedSweepMax>
-while [ "$PAGE" -le 5 ]; do
-  RAW=$(gh api -X GET "repos/<config.repo>/issues" -f state=closed \
-          -f labels='<config.autoDev.stateLabels.inProgress>' -f since="$SINCE_TS" \
-          -f sort=updated -f direction=desc -f per_page=100 -f page="$PAGE") || { FOUND=FAILED; break; }
-  FOUND=$(jq -n --argjson acc "$FOUND" --argjson raw "$RAW" --argjson max "$MAX" \
-    --arg skip '<config.autoDev.stateLabels.skip>' --argjson ex '<config.autoDev.excludedLabels as a JSON array>' \
-    '($acc + [$raw[] | select(has("pull_request") | not)
-                     | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
-                     | .number]) | reduce .[] as $n ([]; if any(.[]; . == $n) then . else . + [$n] end) | .[:$max]')
-  [ "$(jq length <<<"$FOUND")" -ge "$MAX" ] && break    # enough candidates
-  [ "$(jq length <<<"$RAW")" -lt 100 ] && break         # the listing ended
-  PAGE=$((PAGE + 1))
-done
+# auto-dev closed-sweep candidate read
+REPO='<config.repo>'; INPROG='<config.autoDev.stateLabels.inProgress>'
+SKIP='<config.autoDev.stateLabels.skip>'; EX='<config.autoDev.excludedLabels as a JSON array>'
+MAX=<config.autoDev.closedSweepMax>; DAYS=<config.autoDev.closedSweepDays>
+SINCE=$(date -u -d "-$DAYS days" +%Y-%m-%d 2>/dev/null || date -u -v-"$DAYS"d +%Y-%m-%d)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/closed-sweep.XXXXXX")
+KEEP='select(has("pull_request") | not)
+      | select([.labels[].name] | (index($skip) == null) and all(.[]; . as $n | ($ex | index($n)) == null))
+      | .number'
+# One -label:"<name>" per excluded label, after the Skip label's.
+EXQ=$(jq -rn --argjson ex "$EX" '$ex | map("-label:\"\(.)\"") | join(" ")')
+Q="repo:$REPO is:issue is:closed label:\"$INPROG\" -label:\"$SKIP\" $EXQ updated:>=$SINCE"
+SOURCE=search
+if gh api -X GET search/issues -f q="$Q" -f sort=updated -f order=desc -f per_page="$MAX" \
+       > "$TMP/search.json" \
+   && FOUND=$(jq -c --arg skip "$SKIP" --argjson ex "$EX" "[.items[] | $KEEP]" < "$TMP/search.json"); then
+  :
+else
+  SOURCE="repo-scoped fallback (search failed)"
+  FOUND='[]'; PAGE=1
+  while [ "$PAGE" -le 5 ]; do
+    gh api -X GET "repos/$REPO/issues" -f state=closed -f labels="$INPROG" \
+        -f since="${SINCE}T00:00:00Z" -f sort=updated -f direction=desc -f per_page=100 \
+        -f page="$PAGE" > "$TMP/page.json"                        || { FOUND=FAILED; break; }
+    FOUND=$(jq -c --argjson acc "$FOUND" --argjson max "$MAX" --arg skip "$SKIP" --argjson ex "$EX" \
+      "(\$acc + [.[] | $KEEP]) | reduce .[] as \$n ([]; if any(.[]; . == \$n) then . else . + [\$n] end) | .[:\$max]" \
+      < "$TMP/page.json")                                        || { FOUND=FAILED; break; }
+    GOT=$(jq length < "$TMP/page.json")                          || { FOUND=FAILED; break; }
+    [ "$(jq length <<<"$FOUND")" -ge "$MAX" ] && break   # enough candidates
+    [ "$GOT" -lt 100 ] && break                          # the listing ended
+    PAGE=$((PAGE + 1))
+  done
+fi
+rm -rf "$TMP"
+printf 'closed sweep: candidates %s from %s\n' "$FOUND" "$SOURCE"
 ```
 
 A failed page is a failed read: change nothing this tick (`FOUND=FAILED`), even if earlier pages
