@@ -227,8 +227,15 @@ mask_all_heredocs() {
 # nest: in `"${x:-"'"}"` and `"$(echo "'")"` the inner `"…"` is its own string and the `'` in it
 # is a literal. A single "current quote" variable closes the outer string at the inner `"` and
 # then reads the `'` as an opener that swallows every command after it.
-# Contexts: B base, C `$( … )`, p `( … )` nested inside a non-base context, P `${ … }` (and a
-# `{ … }` nested in one), S `'…'`, E `$'…'`, D `"…"`, K backtick.
+# Contexts: B base, C `$( … )`, p `( … )` nested inside a non-base context, P `${ … }` (only `${`
+# opens one: bash does not count a bare `{` inside, so `${x:-{}` ends at its first `}`), S `'…'`,
+# E `$'…'`, D `"…"`, K backtick.
+#
+# A `#` starts a comment only at the start of a word. `pw` says whether the last thing consumed in
+# code context was part of a word (1) or a separator/start (0). A line continuation (`\<newline>`)
+# is removed before bash splits words, so it leaves `pw` as it was: in `echo \<newline># x` the `#`
+# follows a space and is a comment; in `echo a\<newline>#b` it is part of the word `a#b`. Any other
+# escape (`\ #`, `\<tab>#`) is a word character.
 #
 # Documented limit: a `gh pr create` written INSIDE a command substitution is part of the
 # enclosing simple command rather than one of its own, so it is checked only if the enclosing
@@ -236,10 +243,13 @@ mask_all_heredocs() {
 split_simple_commands() {
   local s="$1"
   local len=${#s}
-  local i=0 start=0 c nc top stack="B" esc_end=-1 out=""
+  local i=0 start=0 c nc top stack="B" pw=0 out=""
   while [ "$i" -lt "$len" ]; do
     c="${s:$i:1}"
     top="${stack: -1}"
+    case "$top" in
+      S|E|K|D|P) pw=1 ;;    # a quoted or expanded run is part of a word
+    esac
     case "$top" in
       S)
         [ "$c" = "'" ] && stack="${stack%?}"
@@ -263,7 +273,6 @@ split_simple_commands() {
             esac ;;
           '"') if [ "$top" = D ]; then stack="${stack%?}"; else stack="${stack}D"; fi ;;
           "'") [ "$top" = P ] && stack="${stack}S" ;;
-          '{') [ "$top" = P ] && stack="${stack}P" ;;
           '}') [ "$top" = P ] && stack="${stack%?}" ;;
         esac
         i=$((i + 1)); continue ;;
@@ -273,24 +282,24 @@ split_simple_commands() {
       "'") stack="${stack}S"; i=$((i + 1)) ;;
       '"') stack="${stack}D"; i=$((i + 1)) ;;
       '`') stack="${stack}K"; i=$((i + 1)) ;;
-      '\') i=$((i + 2)); esc_end=$i ;;
+      '\')
+        # A line continuation leaves pw alone; any other escaped character is a word character.
+        [ "${s:$((i + 1)):1}" = $'\n' ] || pw=1
+        i=$((i + 2)) ;;
       '#')
-        # A comment (`#` at the start of a word) runs to the end of the line; its apostrophes and
-        # quotes are prose and must not open a quote that swallows the commands after it. A `#`
-        # right after an escape (`\ #`, `\<newline>#`) is not at a word start, whatever the
-        # escaped character was: `echo \ #; gh pr merge 1` runs the merge. Inside `${ … }` a `#`
-        # is an operator (handled by the P arm above); `$#` is consumed by the `$` arm below.
-        if [ "$i" -eq "$esc_end" ]; then i=$((i + 1)); continue; fi
-        if [ "$i" -eq 0 ]; then nc=" "; else nc="${s:$((i - 1)):1}"; fi
-        case "$nc" in
-          ' '|$'\t'|';'|'&'|'|'|'('|'{'|$'\n')
-            while [ "$i" -lt "$len" ] && [ "${s:$i:1}" != $'\n' ]; do i=$((i + 1)); done ;;
-          *) i=$((i + 1)) ;;
-        esac ;;
+        # A comment runs to the end of the line; its apostrophes and quotes are prose and must not
+        # open a quote that swallows the commands after it. Inside `${ … }` a `#` is an operator
+        # (handled by the P arm above); `$#` is consumed by the `$` arm below.
+        if [ "$pw" -eq 0 ]; then
+          while [ "$i" -lt "$len" ] && [ "${s:$i:1}" != $'\n' ]; do i=$((i + 1)); done
+        else
+          i=$((i + 1))
+        fi ;;
       '$')
         nc="${s:$((i + 1)):1}"
+        pw=1
         case "$nc" in
-          '(') stack="${stack}C"; i=$((i + 2)) ;;
+          '(') stack="${stack}C"; pw=0; i=$((i + 2)) ;;
           '{') stack="${stack}P"; i=$((i + 2)) ;;
           "'") stack="${stack}E"; i=$((i + 2)) ;;
           '#') i=$((i + 2)) ;;             # `$#` is the argument count, not a comment
@@ -298,6 +307,7 @@ split_simple_commands() {
         esac
         ;;
       '(')
+        pw=0
         if [ "$stack" = "B" ]; then
           out="$out$start $((i - start))"$'\n'; i=$((i + 1)); start=$i
         else
@@ -305,20 +315,26 @@ split_simple_commands() {
         fi
         ;;
       ')')
+        pw=0
         if [ "$stack" = "B" ]; then
           out="$out$start $((i - start))"$'\n'; i=$((i + 1)); start=$i
         else
+          # The end of a `$( … )` is the end of a word part; the end of a plain `( … )` is not.
+          [ "$top" = "C" ] && pw=1
           stack="${stack%?}"; i=$((i + 1))
         fi
         ;;
       ';'|'&'|'|'|$'\n')
+        pw=0
         if [ "$stack" = "B" ]; then
           out="$out$start $((i - start))"$'\n'; i=$((i + 1)); start=$i
         else
           i=$((i + 1))
         fi
         ;;
-      *) i=$((i + 1)) ;;
+      ' '|$'\t') pw=0; i=$((i + 1)) ;;
+      # `{` is not a metacharacter: `{#` is one word, and `{ # x` is a comment only for the space.
+      *) pw=1; i=$((i + 1)) ;;
     esac
   done
   out="$out$start $((len - start))"$'\n'

@@ -1107,6 +1107,19 @@ expect "$MERGE_GUARD" warn 'an escaped tab before # does not hide a later merge'
 expect "$MERGE_GUARD" warn 'a line continuation before # does not hide a later merge' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo a\
 #b; gh pr merge 123'
+expect "$MERGE_GUARD" warn 'a comment after a continuation that follows a space is a comment: its apostrophe opens no quote (Greptile 4656541507)' \
+  "$(repo "" "$CONFIG_PLAIN")" "echo \\
+# don't
+gh pr merge 123"
+expect "$TEMPLATE_GUARD" deny 'a comment after a continuation does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" "echo \\
+# don't
+gh pr create --title x --body \"no headings\""
+expect "$MERGE_GUARD" warn 'a { glued to # is one word, not a comment start' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo {#; gh pr merge 9'
+expect "$MERGE_GUARD" warn 'an escaped space, then a continuation, then # is still one word' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo \ \
+#b; gh pr merge 5'
 expect "$MERGE_GUARD" warn 'control: an unescaped space before # is still a comment, the next line is found' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo a #; gh pr merge 4
 gh pr merge 5'
@@ -1133,6 +1146,12 @@ expect "$MERGE_GUARD" warn 'an apostrophe inside a nested "..." in "$(...)" does
   "$(repo "" "$CONFIG_PLAIN")" 'echo "$(echo "'"'"'")"; gh pr merge 5'
 expect "$MERGE_GUARD" warn 'a brace pair inside ${...} does not end the expansion early' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{a}}; gh pr merge 5'
+expect "$MERGE_GUARD" warn 'a bare { inside "${...}" opens nothing: the first } ends it (Greptile 4656541501)' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-{}"; gh pr merge 1'
+expect "$MERGE_GUARD" warn 'a bare { inside an unquoted ${...} opens nothing either' \
+  "$(repo "" "$CONFIG_PLAIN")" 'echo ${x:-{}; gh pr merge 2'
+expect "$TEMPLATE_GUARD" deny 'a bare { inside "${...}" does not hide a later bad pr create' \
+  "$(repo "$TEMPLATE" "$CONFIG_PLAIN")" 'echo "${x:-{}"; gh pr create --title x --body "no headings"'
 expect "$MERGE_GUARD" none 'control: a real heredoc after "${x:-"y"}" is still masked' \
   "$(repo "" "$CONFIG_PLAIN")" 'echo "${x:-"y"}"; cat <<'"'"'EOF'"'"'
 gh pr merge 5
