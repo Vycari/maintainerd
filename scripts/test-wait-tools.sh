@@ -77,9 +77,22 @@ case "$1 $2" in
   "api graphql")
     # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
     # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
+    # rung0late: a jq filter applied to the second and later rung-0 (Greptile Review) reads, so a
+    # thread or a review decision lands after the poll's own read (only the re-read can see it).
     case "$*" in *"checkName=Vycari Review"*)
       [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")"
       [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
+      ;;
+    *"checkName=Greptile Review"*)
+      if [ -f "$STUB_DIR/rung0late" ]; then
+        n=$(($(cat "$STUB_DIR/.count.rung0" 2>/dev/null || echo 0) + 1))
+        printf '%s' "$n" >"$STUB_DIR/.count.rung0"
+        if [ "$n" -ge 2 ]; then
+          out="$(serve threads)" || exit 1
+          printf '%s\n' "$out" | jq -c "$(cat "$STUB_DIR/rung0late")"
+          exit 0
+        fi
+      fi
       ;;
     esac
     serve threads
@@ -1129,6 +1142,27 @@ run_tool "$WFR" 7 "${FAST[@]}"
 expect "covered, rung 0 configured but silent: the ladder's score is re-read the same way -> approved" approved 0
 [ "$(calls_of 'checkName=Greptile Review')" -ge 2 ] && ok "covered, rung 0: ...through rung 0's check name" ||
   bad "covered, rung 0: re-read" "$(cat "$STUB_DIR/.calls")"
+
+# The rung-0 re-read is the last read before a covered approval, so its threads and review
+# decision must still be the ones the poll judged on, not only its scores: a thread or a "changes
+# requested" that only that read shows is never approved over. (Greptile 4656446068 on #140)
+CFG_FL_RUNG0='{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+cov_case cov-rung0-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' "$LATE_THREAD" >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a thread that only the rung-0 re-read shows is never approved over"
+cov_case cov-rung0-late-decision "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested that only the rung-0 re-read shows is never approved over"
+# ...on a later page of that read too.
+cov_case cov-rung0-late-decision-page2 "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '., (.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED")' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested on a later page of the rung-0 re-read is never approved over"
 
 new_case fl-final-on-head
 write_config "$CFG_FL"

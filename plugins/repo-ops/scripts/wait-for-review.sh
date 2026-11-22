@@ -742,7 +742,8 @@ covered_by_mechanical() {
 # MECH_DECISION): a thread that opened since, or a "changes requested", fails it, as does a read that
 # fails. When the reviewer is happy, the PR (head, review decision) and the bots' scores are read
 # once more after it, and must still be the ones the poll judged on (MECH_SCORES): a below-bar score
-# that landed mid-poll, a moved head or a failed read fails it. It is the last read before a covered
+# that landed mid-poll, a moved head or a failed read fails it. When rung 0 needs its own read for
+# those scores, that read's threads and decision are held to MECH_THREADS and MECH_DECISION too. It is the last read before a covered
 # approval, so the verdict rests on it. Both covered-staleness paths read through it.
 fl_read() {
   local vr_gql now_pr now_gql now_head
@@ -761,6 +762,11 @@ fl_read() {
   # rung 0, the first-line read already carries the description's last editor.
   if [ -n "$CHECK_NAME" ]; then
     now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
+    # This read is the newest, so it must not show a thread or a decision the poll did not judge
+    # on either: scores_of reads neither, and a match on the scores alone would approve over them.
+    [ "$(unresolved_threads "$now_gql")" = "$MECH_THREADS" ] || return 1
+    printf '%s' "$now_gql" | jq -s -e --arg d "$MECH_DECISION" \
+      '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
   else
     now_gql="$vr_gql"
   fi
