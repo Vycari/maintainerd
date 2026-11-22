@@ -99,43 +99,55 @@ body would report a review that never looked at the change. So before the gates:
   not be confirmed. Never report an unconfirmed gate as run over the PR.
 - **Check both trees after each gate, by content.** `git status --porcelain` cannot tell a gate's
   edit to a file that was already dirty from no edit at all, so compare content hashes instead.
-  Unless `$SESSION` is `$WT`, snapshot the session checkout before the gate (define `manifest` in
-  every shell that uses it; a harness that resets the shell between calls drops it):
+  Hash with `git hash-object`, which every checkout has (stock macOS has no `sha256sum`). Unless
+  `$SESSION` is `$WT`, snapshot the session checkout before the gate (define `manifest` in every
+  shell that uses it; a harness that resets the shell between calls drops it):
 
   ```bash
-  manifest() {   # HEAD, staged and unstaged content, every untracked file's hash
-    git -C "$1" rev-parse HEAD
-    git -C "$1" diff --cached --binary | sha256sum
-    git -C "$1" diff --binary | sha256sum
-    git -C "$1" ls-files -z --others --exclude-standard | (cd "$1" && xargs -0 -r sha256sum --)
-  }
-  SNAP=$(mktemp -d)
-  git -C "$SESSION" rev-parse HEAD > "$SNAP/head"
-  git -C "$SESSION" diff --cached --binary > "$SNAP/staged.patch"
-  git -C "$SESSION" diff --binary > "$SNAP/unstaged.patch"
-  git -C "$SESSION" ls-files -z --others --exclude-standard > "$SNAP/untracked.list"
-  tar -C "$SESSION" --null -T "$SNAP/untracked.list" -cf "$SNAP/untracked.tar"
-  manifest "$SESSION" > "$SNAP/before"
+  manifest() (   # HEAD, staged and unstaged content, every untracked file's hash; non-zero on any failure
+    # Explicit checks, not `set -e`: errexit is ignored when the caller runs this under `||`, `&&` or `if`.
+    set -o pipefail
+    git -C "$1" rev-parse HEAD || exit 1
+    git -C "$1" diff --cached --binary | git hash-object --stdin || exit 1
+    git -C "$1" diff --binary | git hash-object --stdin || exit 1
+    t=$(mktemp) && git -C "$1" ls-files -z --others --exclude-standard > "$t" || exit 1
+    while IFS= read -r -d '' f; do
+      h=$(git -C "$1" hash-object -- "$f") || exit 1; printf '%s %s\n' "$h" "$f"
+    done < "$t"; rm -f "$t"
+  )
+  SNAP=$(mktemp -d) &&
+  git -C "$SESSION" rev-parse HEAD > "$SNAP/head" &&
+  git -C "$SESSION" diff --cached --binary > "$SNAP/staged.patch" &&
+  git -C "$SESSION" diff --binary > "$SNAP/unstaged.patch" &&
+  git -C "$SESSION" ls-files -z --others --exclude-standard > "$SNAP/untracked.list" &&
+  tar -C "$SESSION" --null -T "$SNAP/untracked.list" -cf "$SNAP/untracked.tar" &&
+  manifest "$SESSION" > "$SNAP/before" && echo SNAPSHOT-OK
   ```
+
+  Go on to the gate only when that prints `SNAPSHOT-OK`. Any failed snapshot or manifest command
+  means nothing can be compared afterwards: stop and say so rather than running the gate.
 
   After the gate, run `manifest "$SESSION" > "$SNAP/after"` and `git -C "$WT" status --porcelain`.
-  If `cmp -s "$SNAP/before" "$SNAP/after"` fails, the gate worked on the wrong tree: **stop and
-  say so**, and do not record a review line for that gate. Do not reset, clean or stash the session
-  checkout yourself: it may be the user's interactive checkout, and their earlier work is in it.
-  Keep `$SNAP`, show the user `diff "$SNAP/before" "$SNAP/after"`, and hand them these commands,
-  which put the checkout back to the snapshot: they undo only the gate's edits and restore the
-  user's earlier staged, unstaged and untracked work exactly:
+  If that `manifest` exits non-zero, or `cmp -s "$SNAP/before" "$SNAP/after"` fails, the gate may
+  have worked on the wrong tree: **stop and say so**, and do not record a review line for that
+  gate. Do not reset, clean or stash the session checkout yourself: it may be the user's
+  interactive checkout, and their earlier work is in it. Keep `$SNAP`, show the user
+  `diff "$SNAP/before" "$SNAP/after"`, and hand them these commands, which put the checkout back to
+  the snapshot: they undo only the gate's edits and restore the user's earlier staged, unstaged and
+  untracked work exactly. The patches go back before the untracked files (a staged `git rm --cached`
+  whose file is kept untracked only applies to a clean tree), and the first failing step stops the
+  rest:
 
   ```bash
-  git -C "$SESSION" reset -q --hard "$(cat "$SNAP/head")"
-  git -C "$SESSION" clean -fdq          # ignored files are untouched; the user's untracked ones come back next
-  tar -C "$SESSION" -xf "$SNAP/untracked.tar"
-  if [ -s "$SNAP/staged.patch" ]; then git -C "$SESSION" apply --index --binary "$SNAP/staged.patch"; fi
-  if [ -s "$SNAP/unstaged.patch" ]; then git -C "$SESSION" apply --binary "$SNAP/unstaged.patch"; fi
-  manifest "$SESSION" | cmp -s - "$SNAP/before"
+  git -C "$SESSION" reset -q --hard "$(cat "$SNAP/head")" &&
+  git -C "$SESSION" clean -fdq &&     # ignored files are untouched; the user's untracked ones come back last
+  { [ ! -s "$SNAP/staged.patch" ] || git -C "$SESSION" apply --index --binary "$SNAP/staged.patch"; } &&
+  { [ ! -s "$SNAP/unstaged.patch" ] || git -C "$SESSION" apply --binary "$SNAP/unstaged.patch"; } &&
+  tar -C "$SESSION" -xf "$SNAP/untracked.tar" &&
+  manifest "$SESSION" | cmp -s - "$SNAP/before" && echo RESTORED
   ```
 
-  The last line must exit 0; if it does not, the snapshot did not restore cleanly and `$SNAP` is the
+  Anything but `RESTORED` means the snapshot did not restore cleanly: stop there, and `$SNAP` is the
   only copy of the pre-gate work. Never delete `$SNAP` unless the after-manifest matched the
   before-manifest. Every edit a gate keeps must be inside `$WT`.
 
