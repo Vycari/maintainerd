@@ -31,7 +31,7 @@ Before anything else, load the repo config (see
 3. Keys this skill uses:
    - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
    - `config.defaultBranch` — branch to check out and target PRs at.
-   - `config.language` — `python` | `typescript`; selects the language-specific detection below.
+   - `config.language` — `python` | `typescript` select the language-specific detection below; any other value uses the generic checks.
    - `config.paths.source` — root of the source to sweep.
    - `config.commands.{format,lint,build,test}` — pre-flight gate before any PR (skip `null` ones).
    - `config.labels.security` — label applied to every PR/issue this skill opens (default `security`).

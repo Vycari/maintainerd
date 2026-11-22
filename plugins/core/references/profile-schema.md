@@ -273,6 +273,12 @@ every repo of that language has that workflow; until one does, this section is w
 from reaching branch protection. If a fleet finds itself wanting a second scaffolded job for every
 repo, that is a request for a profile key that doesn't exist yet, not a reason to loosen this.
 
+**Shell repos: `commands.lint` runs from the repo root.** The `shell` language's
+`shellcheck -x $(git ls-files '*.sh')` (and the `ci` job that runs it as-is) executes at the root, so
+every `# shellcheck source=<path>` directive in the repo must be **root-relative**, not relative to
+the file carrying it. A file-relative directive passes a solo `shellcheck -x path/to/file.sh` run but
+stops being followed (SC1091) under the profile's invocation.
+
 ---
 
 ## Fields

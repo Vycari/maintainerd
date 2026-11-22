@@ -24,7 +24,7 @@ stop and tell the user to run `/bootstrap`.
 Keys this skill uses:
 - `config.repo` — GitHub `owner/name` for every `gh ... --repo`.
 - `config.defaultBranch` — branch to check out and target PRs at.
-- `config.language` — `python` | `typescript`; selects the ecosystem tooling below.
+- `config.language` — `python` | `typescript` select the ecosystem tooling below; any other value uses the generic checks.
 - `config.commands.{test,build,lint,format}` — **the gate every dependency change must pass** before
   a PR (a bump that breaks the build is worse than being behind). Skip any that are `null`.
 - `config.labels.dependencies` — label applied to every PR/issue this skill opens (default

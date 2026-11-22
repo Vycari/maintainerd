@@ -25,7 +25,7 @@ Before anything else, load the repo config (see
 3. Read the keys this skill needs:
    - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
    - `config.defaultBranch` — the branch audits check out and PRs target.
-   - `config.language` — `python` | `typescript`; selects the language-specific mechanics below.
+   - `config.language` — `python` | `typescript` select the language-specific mechanics below; any other value uses the generic checks.
    - `config.paths.tests` — root of the test tree (everything in scope lives under here).
    - `config.paths.source` — root of the source the suite covers.
    - `config.commands.test` — the suite that must be green before and after a fix.
