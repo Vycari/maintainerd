@@ -227,6 +227,31 @@ Fields the porcelain had and REST does not: `reviewDecision`, `mergeStateStatus`
 `statusCheckRollup`, `mergeQueueEntry`, `autoMergeRequest`. See **No REST path** and
 **Check runs** for what replaces each.
 
+### List PRs merged in a window, and the latest release
+
+`gh pr list --state merged --search "merged:A..B"` is a search, so it has no REST form. List
+recently closed PRs instead, newest-updated first, and filter on `merged_at` client-side:
+
+```bash
+gh api --paginate --slurp -X GET "repos/$REPO/pulls" \
+  -f state=closed -f sort=updated -f direction=desc -f per_page=100 \
+| jq --arg from "$FROM" --arg to "$TO" \
+    '[.[][] | select(.merged_at != null and .merged_at >= $from and .merged_at <= $to)
+      | {number, title, body, url: .html_url, author: .user.login, mergedAt: .merged_at,
+         headRefName: .head.ref, labels: [.labels[].name]}]'
+```
+
+`$FROM` / `$TO` are ISO-8601 UTC instants (`2026-11-21T07:00:00Z`); convert the user's local day to
+UTC first. A PR's `updated_at` can move after it merges (a comment, a label), so a merge can sit
+past where a naive stop would cut the scan. Stop paging only after a full page in which every
+`updated_at` is older than `$FROM`, and say in the report how many pages or PRs were scanned. A scan
+that hit a cap is a truncated read (rule 1), not an empty window. `additions` and `deletions` are
+not on the list endpoint; read them per PR from `repos/$REPO/pulls/$N` only if needed.
+
+The latest release is plain REST: `gh api "repos/$REPO/releases/latest" --jq .tag_name` (404 means
+none). `gh release list` is GraphQL; use `gh api -X GET "repos/$REPO/releases" -f per_page=1` when
+drafts or prereleases matter. `gh release create` is REST and works unchanged.
+
 ### Read one PR's fields
 
 `gh pr view $N --repo $REPO --json …` becomes:
@@ -453,6 +478,8 @@ part, then stops and reports**, naming the PR and the exact command or click a h
 | --- | --- | --- |
 | **Mark a PR ready for review** (`gh pr ready`) | GraphQL mutation `markPullRequestReadyForReview`. `PATCH /pulls/{n}` cannot clear `draft`. | Either never open it as a draft (**Create a PR**), or leave it a draft and report: *"PR #N is a draft; GraphQL is blocked so it cannot be marked ready here. Run `gh pr ready N --repo $REPO`, or use the Ready for review button."* Never count a draft as delivered. |
 | **Enable auto-merge** (`gh pr merge --auto`) | GraphQL mutation `enablePullRequestAutoMerge`. | Stop. Report that arming is unavailable and the PR is left un-armed. A direct merge is a different act and does not substitute for a queue arming. |
+| **Read review-thread resolution** (`reviewThreads`, `isResolved`) | The REST `pulls/{n}/comments` list returns comments but not which threads are resolved. | Read the comments over REST and treat every thread as *unresolved-unknown*: answer each reviewer comment that has no reply from the agent, and say in the report that resolution state could not be read. Never treat an unreadable thread as resolved. |
+| **Resolve a review thread** (`resolveReviewThread`) | GraphQL mutation. | Skip the optional resolve and say so in the report. The reply on the thread is the durable record and is plain REST. |
 | **Read merge-queue state** (`mergeQueue`, `mergeQueueEntry`, `autoMergeRequest`) | GraphQL-only; the rulesets endpoint (`repos/$REPO/rules/branches/{branch}`) sees a queue configured by *ruleset* but is blind to one configured through classic branch protection. | Fail closed to the stricter rule: an unreadable queue state means **treat the branch as queued and merge nothing there**, and say which source could not be read. Never infer "no queue" from an unreadable second source. |
 
 A direct merge, unlike arming one, *does* have a REST form —

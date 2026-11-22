@@ -96,6 +96,24 @@ The greps and tool flags for each language live in
 - **Performance of the code under test.** Slow *tests* are in scope; slow *production code* is not.
 - **Generated/vendored fixtures.** Recorded fixture data is data, not test logic — don't flag its shape.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh issue list`, `gh pr list`, `gh issue create`, `gh pr create` and `gh pr edit` are GraphQL underneath and
+return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRAPHQL_BLOCKED`, or a
+`gh api graphql` call that fails closed) and use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
+and **Edit labels**. Say in the report which mode the run used and how it decided.
+Two de-dup queries below use `--search`; in blocked mode, list `head.ref` from the open-PR list and filter
+for the `arch-` prefix, and read closed-as-not-planned from `state=closed` filtered on
+`.state_reason == "not_planned"`. `gh label create` and the label-edit calls are plain REST and work
+unchanged.
+
+Three rules from that file apply here and outrank convenience: a read a decision depends on **fails
+closed** (an unreadable backlog is not an empty one); a step with no REST path (marking a draft PR
+ready) is **stop-and-report**, never skipped; and no unattended step may depend on `gh search` or the
+`search/issues` endpoint, so a search-shaped de-dup becomes a repo-scoped list plus a client-side
+filter.
+
 ## Workflow
 
 Use a todo list to track findings as you process them — the sweep spans many files.
@@ -161,7 +179,8 @@ gh issue list --repo <config.repo> --state closed --label <config.labels.testQua
 
 Each `--limit` is well above any realistic count for its query; if a list comes back at exactly its
 limit, treat that dedup as truncated, not complete, and say so in the report rather than filing
-against an incomplete view.
+against an incomplete view. **De-dup fails closed**: if neither the porcelain nor the REST form can list
+the open issues and open PRs, this run opens nothing and reports which call failed.
 
 Skip when:
 

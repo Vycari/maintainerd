@@ -173,6 +173,23 @@ ready/in-progress state, or resting in a state that's waiting on the _bot_, not 
 
 ### 1 — Gather (one batch of read-only calls)
 
+**When GitHub's GraphQL API is blocked**, `gh repo view --json`, `gh pr list`, the hand-written
+`gh api graphql` approval scan below and `gh issue edit`/`view` all return 403. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed) and say which mode ran. Then, per
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md):
+
+- Preflight: `gh api "repos/$REPO" --jq .full_name`. The open-PR list: **List PRs by state**, filtered
+  to `$PREFIX` on `head.ref`. The paginated issue read below is already REST and unchanged.
+- The approval scan has no batch REST form. Walk it per repo instead: for each planned issue, read
+  `repos/$REPO/issues/<N>/comments` (paginated, `per_page=100`) and apply the same marker, regex and
+  maintainer-permission test client-side. Comment reactions are on each comment's `reactions` object.
+- **Fail closed:** if any issue's comments cannot be read, that issue goes in a separate "unscanned"
+  bucket in the console and is never counted as "no approval found". Say how many issues were
+  scanned.
+- Label flips: **Edit labels** (add, then DELETE the old one, both REST); read an issue's labels from
+  `repos/$REPO/issues/<N>/labels`.
+
+
 ```bash
 gh auth status >/dev/null && gh repo view "$REPO" --json nameWithOwner   # $REPO = config.repo
 

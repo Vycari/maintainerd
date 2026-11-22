@@ -675,6 +675,28 @@ gh pr view --repo <config.repo> --json number,headRefName,baseRefName,state,revi
 
 If multiple PRs match or none exist for the branch, ask which one before doing anything.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one; the `gh` porcelain below is
+GraphQL underneath and returns 403 there while `gh auth status` stays green. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed), say in the report which mode
+ran and how it decided, and use the REST forms in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for the calls below. Its three
+rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
+rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
+
+- `gh pr view <PR> --json …` (the build-record read, the score read, Phase 1 metadata, branch
+  inference): **Read one PR's fields**, and **Check runs** in place of `statusCheckRollup`. The PR body
+  and `head.sha` are on `repos/<config.repo>/pulls/<PR>`. `reviewDecision` has no REST field; take the
+  formal reviews from `pulls/<PR>/reviews` and judge the latest state per reviewer. To infer the PR
+  from the current branch, use **List PRs by state** with `head=<owner>:<branch>`.
+- `gh pr comment` and the re-review request: **Post a comment** (`-F body=@file`, never `-f`).
+- `gh issue create` for deferred work: **Create an issue**.
+- Review threads (`reviewThreads`, `isResolved`), the PR-body editor check and `resolveReviewThread`
+  are GraphQL-only. Treat every thread as unresolved-unknown and answer each reviewer comment with
+  no reply from you; report that resolution state was unreadable; skip the optional resolve; report
+  the body score as unverified for provenance. Never read an unreadable thread as resolved. See the
+  **No REST path** table.
+
 ## Workflow
 
 ### Phase 1 — Fetch the full review state

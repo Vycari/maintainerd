@@ -93,6 +93,17 @@ Don't over-prescribe the implementation: give pointers and criteria, not a full 
 
 ### 4. Dedup, then confirm before filing
 
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one; the `gh` porcelain below is
+GraphQL underneath and returns 403 there while `gh auth status` stays green. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed), say in the report which mode
+ran and how it decided, and use the REST forms in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for `gh issue list` and `gh issue create` in steps 4 and 5: **List issues by label and state** and **Create an issue**. Its three
+rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
+rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
+In blocked mode `--search "<key terms>"` has no REST form, so list the open issues with the complete
+bracketed read (**List every open issue**) and match the key terms against titles and bodies
+client-side. If that read cannot be completed, do **not** file: tell the user the dedup could not run
+and show the draft, so they can file it or retry. An unreadable backlog is not an empty one.
+
 ```bash
 gh issue list --repo <config.repo> --state open --search "<key terms>" --json number,title,url --limit 30
 ```

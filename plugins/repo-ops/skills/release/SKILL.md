@@ -50,6 +50,23 @@ Keys this skill uses:
 
 Treat any `null` command as "this repo has no such step — skip it."
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one; the `gh` porcelain below is
+GraphQL underneath and returns 403 there while `gh auth status` stays green. Probe once per run
+(`GH_GRAPHQL_BLOCKED`, or a `gh api graphql` call that fails closed), say in the report which mode
+ran and how it decided, and use the REST forms in [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md) for step 2. Its three
+rules apply: a read a decision depends on fails closed, a step with no REST path stops and reports
+rather than being skipped, and nothing unattended depends on `gh search` or `search/issues`.
+
+- `gh release list --limit 1`: **List PRs merged in a window, and the latest release**
+  (`repos/<config.repo>/releases/latest`).
+- `gh pr list --state merged --search "merged:>…"`: the same section's merged-window listing, with the
+  commit date of `$LAST` as the lower bound.
+- A merged-PR read that could not be completed means the release notes could be missing changes:
+  stop and report, do not ship notes built from a partial list. `gh release create` is REST and is
+  unchanged.
+
 ## Workflow
 
 ### 1. Pre-flight: clean tree, right branch, up to date

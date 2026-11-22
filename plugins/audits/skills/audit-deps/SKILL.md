@@ -91,6 +91,20 @@ branch prefix.
 - **Doesn't re-file what CI gates.** If the repo already runs an outdated/license check in CI and it's
   red, that's a CI failure — flag the gap, don't duplicate.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh issue list`, `gh pr list`, `gh issue create` and `gh pr create` are GraphQL underneath and
+return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRAPHQL_BLOCKED`, or a
+`gh api graphql` call that fails closed) and use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
+and **Edit labels**. Say in the report which mode the run used and how it decided.
+
+Three rules from that file apply here and outrank convenience: a read a decision depends on **fails
+closed** (an unreadable backlog is not an empty one); a step with no REST path (marking a draft PR
+ready) is **stop-and-report**, never skipped; and no unattended step may depend on `gh search` or the
+`search/issues` endpoint, so a search-shaped de-dup becomes a repo-scoped list plus a client-side
+filter.
+
 ## Workflow
 
 Use `TaskCreate` to track each finding.
@@ -129,7 +143,8 @@ gh pr list   --repo <config.repo> --state open --json number,title,headRefName -
 
 `--limit` is well above any realistic count of open, dependency-labelled issues; if the issue list
 still comes back at exactly `1000`, treat discovery as truncated, not complete — don't dedup against
-a possibly-short list, say so in the report instead.
+a possibly-short list, say so in the report instead. **Dedup fails closed**: if neither the porcelain nor
+the REST form can list open issues and open PRs, open nothing for this run and say which call failed.
 
 Skip a finding already covered by an open PR/issue, a Dependabot/Renovate PR (don't compete with the
 repo's existing bot), or a `wontfix`/not-planned close (a standing decision — e.g. "we pin X").

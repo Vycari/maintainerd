@@ -65,8 +65,13 @@ Everything below reads the `effective` object this prints. Nothing below reads t
 **Create vs adopt:**
 
 ```bash
-gh repo view <owner/name> --json nameWithOwner,isPrivate,defaultBranchRef >/dev/null 2>&1
+gh api "repos/<owner/name>" --jq '{full_name, private, default_branch}' >/dev/null 2>&1
 ```
+
+This is `gh api` rather than `gh repo view --json`, because the latter is GraphQL and returns 403 where
+GraphQL is blocked, which this existence check would misread as "does not exist". A 404 is "absent";
+any other non-zero exit (403, proxy error, timeout) is **could not tell**: stop and report, never
+create on it. See [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
 
 - Exists, and `--adopt` was passed → adopt.
 - Exists, and it wasn't → **stop** and say so. Silently adopting a repo somebody asked you to create
@@ -102,6 +107,10 @@ Show the call, confirm, run it:
 ```bash
 gh repo create <owner/name> --<private|public> --description "<one line the user gives you>"
 ```
+
+Where GraphQL is blocked, `gh repo create` may 403. The REST form is `POST /orgs/<org>/repos` (or
+`/user/repos`) with `name`, `private` and `description`; if that is refused too, this is a
+GitHub-settings write with no fallback: stop and report the exact call for a human to run.
 
 `private` comes from the profile — don't ask, and don't infer it from the org's other repos. When
 `effective.visibility` is present, the profile's `repoOverrides` entry is declaring this repo public

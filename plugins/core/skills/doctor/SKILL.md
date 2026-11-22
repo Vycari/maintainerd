@@ -15,6 +15,15 @@ guidelines. The one mutation it will *offer* (with confirmation) is creating mis
 since that's the same safe action `bootstrap` offers. Everything else it routes: "run `/bootstrap`
 to regenerate X", "fill in `invariants.md`", "fix this key by hand".
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. Every `gh` call this skill makes
+is `gh api` against a repo-scoped REST endpoint (the repo's merge-method flags and archived state
+are read from `repos/<owner>/<name>`, not `gh repo view`, for exactly this reason), so the checks run
+unchanged in either mode. `gh label create` is REST too. If a call does fail with 403 or a proxy error,
+report that check as **could not verify** with the call that failed; never report it as passing. See
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
+
 ## Inputs
 
 - `/doctor` — full read-only check, print the report.
@@ -169,7 +178,7 @@ PRs, so a misconfiguration here has real blast radius — check it harder than t
 - `mergeMethod` is one of `squash|merge|rebase` **and** is enabled on the repo:
 
   ```bash
-  gh repo view <config.repo> --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed
+  gh api "repos/<config.repo>" --jq '{allow_squash_merge, allow_merge_commit, allow_rebase_merge}'
   ```
 
   A method the repo forbids → **FAIL** (every merge attempt errors).
@@ -221,7 +230,7 @@ Validate it first — a fan-out driven by a broken list produces confident nonse
 - **`repo` matches `owner/name`** and resolves on GitHub:
 
   ```bash
-  gh repo view <entry.repo> --json nameWithOwner,isArchived --jq '.nameWithOwner + (if .isArchived then " (archived)" else "" end)'
+  gh api "repos/<entry.repo>" --jq '.full_name + (if .archived then " (archived)" else "" end)'
   ```
 
   Doesn't resolve → **FAIL** (every `gh --repo` against it will error). Resolves but is **archived** →
