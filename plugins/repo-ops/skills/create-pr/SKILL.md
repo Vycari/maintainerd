@@ -40,37 +40,104 @@ target. When the branch lives in a separate worktree (the recommended pattern) a
 started in another checkout, a gate run from there reviews that other checkout's diff, and the PR
 body would report a review that never looked at the change. So before the gates:
 
-- **Find the PR worktree by its branch**, not by where the shell happens to be, and fetch the base:
+- **Get the PR branch checked out before looking for it.** `BRANCH` is the branch the caller named
+  (a delegating skill such as **research-radar** names one and asks for it to be created from
+  `config.defaultBranch`), or one you name for this change. Resolve it in this order:
 
   ```bash
   BRANCH=<the PR branch>
-  WT=$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH" \
-    '/^worktree /{p=substr($0,10)} $0=="branch "b{print p}')
   SESSION=$(git rev-parse --show-toplevel)   # the session's own checkout
-  git -C "$WT" fetch origin <config.defaultBranch>
+  wt_for() { git worktree list --porcelain | awk -v b="refs/heads/$1" \
+    '/^worktree /{p=substr($0,10)} $0=="branch "b{print p}'; }
+  WT=$(wt_for "$BRANCH")
+  git -C "$SESSION" fetch origin <config.defaultBranch>
   ```
 
-  If `WT` is empty, the branch is not checked out anywhere: stop and say so.
+  1. **`WT` is set**: the branch is checked out there. Use it.
+  2. **The branch exists (locally, or on the remote: `git -C "$SESSION" ls-remote --exit-code
+     --heads origin "$BRANCH"`) but is checked out nowhere**: fetch it
+     (`git -C "$SESSION" fetch origin "$BRANCH"`) and check it out in the session checkout with
+     `git -C "$SESSION" switch "$BRANCH"`, and only when
+     `git -C "$SESSION" status --porcelain` is empty. A dirty session checkout here means work that
+     belongs to some other branch: stop and say so rather than carrying it across.
+  3. **The branch exists neither locally nor on the remote** (a new PR, e.g. a new research-radar digest): create it where
+     the change was made, with `git -C "$SESSION" switch -c "$BRANCH"`, which carries the session's
+     uncommitted work onto it. When the caller asked to branch from `config.defaultBranch`, first
+     confirm `git -C "$SESSION" rev-parse HEAD` equals `git -C "$SESSION" rev-parse
+     origin/<config.defaultBranch>`; if it does not, stop and say so, because the new branch would
+     carry commits the caller did not ask for.
+
+  Then re-run `WT=$(wt_for "$BRANCH")` and `git -C "$WT" fetch origin <config.defaultBranch>`.
+  Only if `WT` is **still** empty, stop and say the branch could not be checked out.
 - **Compute the change set**: committed changes against the fetched base, plus anything not yet
   committed (an earlier `--fix` pass, a staged edit, a new file). This is what the gates must cover
-  and what "this PR's scope" means below.
+  and what "this PR's scope" means below. Keep it as one sorted list:
 
   ```bash
-  git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
-  git -C "$WT" diff --name-only HEAD          # uncommitted, staged or not
-  git -C "$WT" ls-files --others --exclude-standard
+  EXPECTED=$( { git -C "$WT" diff --name-only origin/<config.defaultBranch>...HEAD
+                git -C "$WT" diff --name-only HEAD          # uncommitted, staged or not
+                git -C "$WT" ls-files --others --exclude-standard; } | sort -u )
   ```
 
 - **`cd "$WT"` as its own command before invoking each gate**, so the diff the gate reads is the
   PR's. If the shell cannot stay in `$WT` (some harnesses reset the working directory between
   calls), do not run `/simplify`: record it in the PR body as not run because the session could
   not point it at the PR worktree.
-- **Check both trees after each gate.** Unless `$SESSION` is `$WT`, save
-  `git -C "$SESSION" status --porcelain` before the gate. After it, run
-  `git -C "$WT" status --porcelain` and `git -C "$SESSION" status --porcelain` again. If the
-  session checkout's status changed, the gate worked on the wrong tree: **stop and say so**,
-  revert what it touched there, and do not record a review line for that gate. Every edit a gate
-  keeps must be inside `$WT`.
+- **Confirm each gate covered `$EXPECTED`.** Recompute `$EXPECTED` just before each gate (an edit
+  Simplify kept can change it), and compare it with what the gate reviewed:
+  - **When the gate names the files it read** (in its summary, findings or the diff it printed),
+    sort that list and compare it with `$EXPECTED`. A missing file or an extra one is a mismatch.
+  - **When it names none**, its input is the diff of the directory it ran in, so confirm that input
+    in the same shell, immediately before invoking it: `git rev-parse --show-toplevel` must print
+    `$WT`, and the three commands above run from `.` (not `-C "$WT"`) must give exactly
+    `$EXPECTED`.
+
+  Record a review line for the gate only when that comparison matches. On a mismatch, or when
+  neither check could be made, its coverage is unconfirmed: **stop before recording a result for
+  it**, and either re-run it pointed at the PR (for `code-review`, with `<branch>` as the target,
+  from `$WT`) and compare again, or say in the PR body that it ran but its coverage of the PR could
+  not be confirmed. Never report an unconfirmed gate as run over the PR.
+- **Check both trees after each gate, by content.** `git status --porcelain` cannot tell a gate's
+  edit to a file that was already dirty from no edit at all, so compare content hashes instead.
+  Unless `$SESSION` is `$WT`, snapshot the session checkout before the gate (define `manifest` in
+  every shell that uses it; a harness that resets the shell between calls drops it):
+
+  ```bash
+  manifest() {   # HEAD, staged and unstaged content, every untracked file's hash
+    git -C "$1" rev-parse HEAD
+    git -C "$1" diff --cached --binary | sha256sum
+    git -C "$1" diff --binary | sha256sum
+    git -C "$1" ls-files -z --others --exclude-standard | (cd "$1" && xargs -0 -r sha256sum --)
+  }
+  SNAP=$(mktemp -d)
+  git -C "$SESSION" rev-parse HEAD > "$SNAP/head"
+  git -C "$SESSION" diff --cached --binary > "$SNAP/staged.patch"
+  git -C "$SESSION" diff --binary > "$SNAP/unstaged.patch"
+  git -C "$SESSION" ls-files -z --others --exclude-standard > "$SNAP/untracked.list"
+  tar -C "$SESSION" --null -T "$SNAP/untracked.list" -cf "$SNAP/untracked.tar"
+  manifest "$SESSION" > "$SNAP/before"
+  ```
+
+  After the gate, run `manifest "$SESSION" > "$SNAP/after"` and `git -C "$WT" status --porcelain`.
+  If `cmp -s "$SNAP/before" "$SNAP/after"` fails, the gate worked on the wrong tree: **stop and
+  say so**, and do not record a review line for that gate. Do not reset, clean or stash the session
+  checkout yourself: it may be the user's interactive checkout, and their earlier work is in it.
+  Keep `$SNAP`, show the user `diff "$SNAP/before" "$SNAP/after"`, and hand them these commands,
+  which put the checkout back to the snapshot: they undo only the gate's edits and restore the
+  user's earlier staged, unstaged and untracked work exactly:
+
+  ```bash
+  git -C "$SESSION" reset -q --hard "$(cat "$SNAP/head")"
+  git -C "$SESSION" clean -fdq          # ignored files are untouched; the user's untracked ones come back next
+  tar -C "$SESSION" -xf "$SNAP/untracked.tar"
+  if [ -s "$SNAP/staged.patch" ]; then git -C "$SESSION" apply --index --binary "$SNAP/staged.patch"; fi
+  if [ -s "$SNAP/unstaged.patch" ]; then git -C "$SESSION" apply --binary "$SNAP/unstaged.patch"; fi
+  manifest "$SESSION" | cmp -s - "$SNAP/before"
+  ```
+
+  The last line must exit 0; if it does not, the snapshot did not restore cleanly and `$SNAP` is the
+  only copy of the pre-gate work. Never delete `$SNAP` unless the after-manifest matched the
+  before-manifest. Every edit a gate keeps must be inside `$WT`.
 
 1. **Simplify** — invoke the built-in `/simplify` skill (Skill tool, `skill: "simplify"`) on the
    branch's changes. It runs **first** because it may edit code, and every later gate has to check
