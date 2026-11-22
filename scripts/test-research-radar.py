@@ -522,7 +522,10 @@ sys.exit(2)
         return repo, bindir, calls
 
     def profile_with_gh(self, repo, bindir, env_extra=None):
-        env = {"PATH": bindir + os.pathsep + os.environ["PATH"], **(env_extra or {})}
+        # Default the flag off so a caller shell that exports GH_GRAPHQL_BLOCKED=1 cannot
+        # skip the `gh pr list` path these tests assert on; env_extra still overrides it.
+        env = {"PATH": bindir + os.pathsep + os.environ["PATH"],
+               "GH_GRAPHQL_BLOCKED": "", **(env_extra or {})}
         r = run(["profile", "--repo-root", repo, "--config", os.path.join(repo, "cfg.json"),
                  "--branch", "main"], env_extra=env, cwd=repo)
         self.assertEqual(r.returncode, 0, r.stderr)
