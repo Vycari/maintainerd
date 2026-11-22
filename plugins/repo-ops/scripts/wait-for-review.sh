@@ -42,8 +42,10 @@
 # In first-line mode the DEFAULT stage is still the final reviewer, with one addition, covered
 # staleness: a score at or above the threshold on an ANCESTOR of the head (so every later commit
 # was a fix to a passing review) still yields `approved`, when no review thread is open and the
-# first-line reviewer is happy on the head itself. A second detail line says so. Judging whether
-# that score carried a P1 is the merge gate's job, as it is for a score on the head.
+# first-line reviewer is happy on the head itself. A second detail line says so. The first-line read
+# comes last, and after it the head, the review decision, the open threads and the scores are read
+# again: any change since the poll's read (a new below-bar score included) is not covered. Judging
+# whether that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
 # Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
 # score names the head", so an approval still needs a happy first-line round on the head, and open
@@ -87,7 +89,8 @@
 # review.blockMarker (a bare name such as `greptile_comment` is read as `<!-- greptile_comment -->`),
 # review.mode, review.firstLine.checkName / checkApp / unavailableMinutes, review.mechanicalCommits.
 # Flags for tests and tuning: --timeout-seconds N, --interval-seconds N (default 180, the floor a
-# polite poller keeps against the API), --config FILE.
+# polite poller keeps against the API), --verify-seconds N (the cap on one mechanical-commit verify
+# call, default 120), --config FILE.
 #
 # Requires: bash 3.2+, gh, jq.
 
@@ -98,8 +101,27 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/wait-common.sh
 . "$HERE/lib/wait-common.sh"
 
+# This script owns one extra flag; peel it off before the shared parser sees it. --verify-seconds N
+# caps one mechanical-commit verify call (default 120); it is a tuning and test flag.
+MECH_VERIFY_CAP=120
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --verify-seconds)
+      [ "$#" -ge 2 ] || die 3 "$1 needs a value"
+      MECH_VERIFY_CAP="$2"
+      shift 2
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+{ is_uint "$MECH_VERIFY_CAP" && [ "$MECH_VERIFY_CAP" -gt 0 ]; } || die 3 "--verify-seconds must be a positive integer"
+
 WAIT_HELP=""
-parse_common_args "$@"
+parse_common_args ${args[@]+"${args[@]}"}
 if [ -n "$WAIT_HELP" ]; then
   sed -n '3,/^# Requires/p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
@@ -406,6 +428,7 @@ MECH_CROSS=""
 MECH_BASE=""
 MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
 MECH_THREADS=""  # must find both unchanged
+MECH_SCORES=""   # the scores poll_once judged on; fl_read must find them unchanged
 MECH_HOLD=0      # 1 when this poll ran verify (or a fetch) and was not covered: it decides nothing
 MECH_HELD=0      # 1 when the previous poll held: this one tries the first-line path first
 MECH_SECS=0
@@ -486,7 +509,11 @@ mech_worktree() {
   wt="$MECH_WT_ROOT/$b"
   if [ ! -d "$wt" ]; then
     mech_budget 60 || return 1
-    run_bounded "$MECH_SECS" "${MECH_GIT[@]}" -C "$MECH_TOP" worktree add --detach --quiet "$wt" "$b" || return 1
+    # A worktree add that fails may have run up to its bound: hold, as for a reset.
+    run_bounded "$MECH_SECS" "${MECH_GIT[@]}" -C "$MECH_TOP" worktree add --detach --quiet "$wt" "$b" || {
+      MECH_HOLD=1
+      return 1
+    }
   fi
   MECH_WT="$wt"
 }
@@ -570,9 +597,16 @@ range_covered_by_entry() {
       *" $key=0 "*) return 1 ;;
     esac
     # Each verify starts from a clean checkout of the base whatever the previous run did to it, and
-    # gets at most 120s, clipped to what is left of the wait's deadline.
-    mech_reset "$wt" "$MECH_BASE" || return 1
-    mech_budget 120 || return 1
+    # gets at most MECH_VERIFY_CAP (120s), clipped to what is left of the wait's deadline. A verify
+    # that hangs until the deadline leaves no time for the next poll's first-line path: the wait
+    # then reports timeout, never an approval from the state read before verify.
+    # A reset that fails holds too: it may have used up to its whole bound (a hang), and what the
+    # poll read before it is then as stale as after a verify. Holding costs one interval at most.
+    mech_reset "$wt" "$MECH_BASE" || {
+      MECH_HOLD=1
+      return 1
+    }
+    mech_budget "$MECH_VERIFY_CAP" || return 1
     secs="$MECH_SECS"
     verify=()
     # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
@@ -580,7 +614,6 @@ range_covered_by_entry() {
     [ "${#verify[@]}" -gt 0 ] || return 1
     # From here this poll runs verify, so it holds unless the cover succeeds: what the poll read
     # before verify is stale by the time it ends, whatever verify's outcome (see covered_by_mechanical).
-    # Not before: a reset that fails is quick and runs nothing, so it is just "not covered".
     MECH_HOLD=1
     (cd "$wt" && run_bounded "$secs" "${verify[@]}")
     rc=$?
@@ -707,15 +740,32 @@ covered_by_mechanical() {
 # fl_read <head> — the first-line reviewer's verdict on <head> (vr_read), from a read whose open
 # review threads and review decision must still be the ones the poll judged on (MECH_THREADS,
 # MECH_DECISION): a thread that opened since, or a "changes requested", fails it, as does a read that
-# fails. It is the last read before a covered approval, so the verdict rests on it. Both covered-staleness paths read through it.
+# fails. When the reviewer is happy, the PR (head, review decision) and the bots' scores are read
+# once more after it, and must still be the ones the poll judged on (MECH_SCORES): a below-bar score
+# that landed mid-poll, a moved head or a failed read fails it. It is the last read before a covered
+# approval, so the verdict rests on it. Both covered-staleness paths read through it.
 fl_read() {
-  local vr_gql
+  local vr_gql now_pr now_gql now_head
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
   # Every page carries the decision; each must still be the one the poll judged on.
   printf '%s' "$vr_gql" | jq -s -e --arg d "$MECH_DECISION" \
     '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
   vr_read "$vr_gql" "$1"
+  # Only a happy verdict can approve; any other needs no second look.
+  [ "$VR_KIND" = "happy" ] || return 0
+  now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
+  now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
+  [ "$now_head" = "$1 $MECH_DECISION" ] || return 1
+  # The scores are read as poll_once reads them: rung 0 needs its own check name's runs; without
+  # rung 0, the first-line read already carries the description's last editor.
+  if [ -n "$CHECK_NAME" ]; then
+    now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
+  else
+    now_gql="$vr_gql"
+  fi
+  [ "$(scores_of "$now_pr" "$now_gql" "$1")" = "$MECH_SCORES" ] || return 1
+  return 0
 }
 
 # first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
@@ -929,6 +979,7 @@ poll_once() {
   # Rung 0 first: the configured App's check run on this head, when it has a readable verdict. It
   # replaces the bot ladder below; if the run exists but is unreadable, the ladder decides.
   scores="$(scores_of "$pr" "$gql" "$head")"
+  MECH_SCORES="$scores" # the last read before a covered approval must find them unchanged (fl_read)
   [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
   if [ "$scores" = "INCOMPLETE" ]; then
     # More check suites or runs than one query returns: the configured run may be on a page not

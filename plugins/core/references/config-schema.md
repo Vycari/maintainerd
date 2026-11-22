@@ -627,8 +627,8 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   As a second guard, a range that changes a file named by any `verify` argument (a leading `./`
   ignored) is refused outright.
 
-  **Time limit.** Each call gets at most 120 seconds, clipped to what is left of the wait's
-  deadline. The call runs in its own process group:
+  **Time limit.** Each call gets at most 120 seconds (`wait-for-review.sh --verify-seconds N` tunes
+  it), clipped to what is left of the wait's deadline. The call runs in its own process group:
   - At the limit, the whole group gets TERM, then KILL 2 seconds later.
   - A call stopped at its limit fails even if it then exits 0.
   - Anything the call left running in its group is killed when it returns.
@@ -651,7 +651,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   nothing: it holds, and the next poll judges from a fresh read. In first-line mode with no open
   thread, the poll after a hold tries first-line covered staleness first, before anything slow runs,
   so a verifier that keeps hanging or a fetch that keeps failing delays an approval by one interval,
-  not the whole wait. No covered approval
+  not the whole wait. A worktree setup or reset that fails holds the same way, since it may have
+  used its whole bound. A verifier that hangs until the deadline leaves no time for that next poll:
+  the wait then reports `timeout`, never an approval. No covered approval
   (mechanical or first-line) is reported once the deadline has passed.
 
   **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
@@ -659,7 +661,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   itself. An open thread is reported as `findings:<n>`, as in any mode; with none open and no happy
   round on the head, the score stays stale and the wait keeps going. The first-line read must also
   show the same open threads and review decision the poll judged on; a thread that opened since, or
-  a "changes requested" that landed since, is not covered.
+  a "changes requested" that landed since, is not covered. After a happy first-line read, the head,
+  the review decision and the bots' scores are read once more and must also be unchanged, so a
+  below-bar score that lands while the first-line path runs is never approved over.
 
   `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
   (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as

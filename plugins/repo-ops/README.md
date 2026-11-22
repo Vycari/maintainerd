@@ -267,8 +267,10 @@ names its repository, and contradicting it with `-R` is an error.
 - Without `--stage`, the verdicts above are unchanged, with one addition (**covered staleness**): a
   score at or above the threshold on an *ancestor* of the head still yields `approved` when no
   review thread is open and the first-line reviewer has a completed, happy round on the head. A
-  `covered:` line says so. The script cannot see whether that score carried a P1; the merge gate
-  judges that, as it does for a score on the head.
+  `covered:` line says so. The first-line read comes last, and the head, review decision, open
+  threads and scores are read again after it: a below-bar score that lands meanwhile is not covered.
+  The script cannot see whether that score carried a P1; the merge gate judges that, as it does for
+  a score on the head.
 - **Mechanical commits** (any mode, `review.mechanicalCommits`): a score at or above the threshold on
   an ancestor G of the head is not stale when G..head is one linear chain of verified mechanical
   commits of one entry in the PR base's config (never one the PR adds): right author and committer, GitHub-verified, trailer present,

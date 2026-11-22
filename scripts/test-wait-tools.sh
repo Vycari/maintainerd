@@ -60,12 +60,13 @@ case "$1 $2" in
       # rereadfail: this re-read fails once (a transient API error).
       *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
         [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
-        h="$(serve prhead)" || exit 1
-        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null)"
         n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
         f="$STUB_DIR/prview.$n"
         [ -f "$f" ] || f="$STUB_DIR/prview"
         [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+        # A case with no prhead fixture (no mechanical commits) re-reads the PR fixture's own head.
+        if ls "$STUB_DIR"/prhead* >/dev/null 2>&1; then h="$(serve prhead)" || exit 1; else h="$(jq -r .headRefOid "$f")"; fi
+        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null || jq -r .baseRefOid "$f")"
         jq -c --arg h "$h" --arg b "${b:-dddddddd44444444444444444444444444444444}" \
           '.headRefOid = $h | .baseRefOid = $b' "$f"
         ;;
@@ -75,7 +76,12 @@ case "$1 $2" in
     ;;
   "api graphql")
     # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
-    case "$*" in *"checkName=Vycari Review"*) [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")" ;; esac
+    # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
+    case "$*" in *"checkName=Vycari Review"*)
+      [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")"
+      [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
+      ;;
+    esac
     serve threads
     ;;
   "api -H")
@@ -1094,6 +1100,36 @@ jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "covered: a thread in the first-line read is never approved"
 
+# late_score_hook — makes the first-line read land a below-bar score on the head (the newest bot
+# comment) before it is served, so only a read of the scores after the first-line read can see it.
+late_score_hook() {
+  local new
+  new="$(jq -c ".comments += [$(bot_comment "$(greptile_text 3/5 "${HEAD_SHA:0:7}")")]" "$STUB_DIR/prview")"
+  printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/prview"\n' "$new" "$STUB_DIR" >"$STUB_DIR/flhook"
+  chmod +x "$STUB_DIR/flhook"
+}
+# The scores are read again after the first-line read: a below-bar score that lands mid-poll is
+# never approved over. (VR-286a8092)
+cov_case cov-late-score "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered: a below-bar score that lands during the first-line read is never approved over"
+expect "covered: ...the next poll reports it (findings:0)" findings:0 1
+
+# ...and a head that moves meanwhile is not covered either.
+cov_case cov-late-head "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf 'cccccccc33333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a head that moved by the score re-read is not covered (timeout)" timeout 2
+
+# With rung 0 configured, the re-read reads the scores through rung 0's own check name.
+cov_case cov-rung0-reread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered, rung 0 configured but silent: the ladder's score is re-read the same way -> approved" approved 0
+[ "$(calls_of 'checkName=Greptile Review')" -ge 2 ] && ok "covered, rung 0: ...through rung 0's check name" ||
+  bad "covered, rung 0: re-read" "$(cat "$STUB_DIR/.calls")"
+
 new_case fl-final-on-head
 write_config "$CFG_FL"
 write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
@@ -1746,14 +1782,50 @@ expect "mechanical, first-line: a verify that keeps timing out stops holding -> 
 [ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
   bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
 
+# A verifier that really hangs (not an immediate 124): it is stopped at --verify-seconds, the poll
+# holds, and the next poll approves through the first-line path, within the wait. (Greptile P2 on #117)
+mech_fl_case mech-fl-verify-really-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 15 --interval-seconds 1 --verify-seconds 2
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier that really hangs is stopped, then the first-line path approves" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
+  bad "mechanical, first-line: real hang, verify runs" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+[ $((t1 - t0)) -le 10 ] && ok "mechanical, first-line: ...in the verify cap plus one interval, not the whole wait" ||
+  bad "mechanical, first-line: real hang took too long" "$((t1 - t0))s"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived" "pid $(cat "$CASE/verify-pid")"
+
+# A real hang near the deadline uses what is left: no time for the first-line path, so the wait
+# reports timeout, on time, and never an approval from the state read before verify.
+mech_fl_case mech-fl-verify-hangs-at-deadline true '[]'
+printf '#!/usr/bin/env bash\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...and the hang cannot overrun the deadline" ||
+  bad "mechanical, first-line: hang overran" "took $((t1 - t0))s against a 4s deadline"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived the deadline" "pid $(cat "$CASE/verify-pid")"
+
+# The waiver's own first-line read is followed by a score re-read too: a below-bar score that lands
+# after the mechanical re-read is never approved over. (VR-286a8092)
+mech_fl_case mech-fl-waiver-late-score true '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a below-bar score in the waiver's window is never approved over"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
 # The same for a fetch that keeps failing: it holds one poll only.
 mech_fl_case mech-fl-fetch-fails true '[]'
 rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
 run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
 expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
 
-# A verify workspace that cannot be reset runs no verify, so it does not hold: the first-line path
-# approves. (VR-43e42c3f)
+# A verify workspace that cannot be reset runs no verify, but the reset may have used its whole
+# bound, so the poll holds; the next poll approves through the first-line path. (VR-43e42c3f, #118)
 mech_fl_case mech-fl-reset-fails true '[]'
 printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 0\n' "$CASE" >"$CASE/bin/verify"
 cat >"$CASE/bin/git" <<GITSTUB
@@ -1763,9 +1835,30 @@ exec $(command -v git) "\$@"
 GITSTUB
 chmod +x "$CASE/bin/git"
 PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
-expect "mechanical, first-line: a verify workspace that cannot be reset does not hold -> approved" approved 0
+expect "mechanical, first-line: a verify workspace that cannot be reset holds one poll -> approved" approved 0
 [ ! -f "$CASE/verify-runs" ] && ok "mechanical, first-line: ...and verify never ran" ||
   bad "mechanical, first-line: verify ran after a failed reset" "$(cat "$CASE/verify-runs")"
+[ "$(calls_of 'number,isDraft')" -ge 2 ] && ok "mechanical, first-line: ...the failed reset held its poll (approved on a later read)" ||
+  bad "mechanical, first-line: a failed reset did not hold" "polls: $(calls_of 'number,isDraft')"
+
+# A reset that hangs into the deadline is never followed by an approval from the pre-reset read.
+mech_fl_case mech-fl-reset-hangs true '[]'
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exec sleep 60 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+t0=$(date +%s)
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a reset hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...on time" || bad "mechanical, first-line: reset hang overran" "$((t1 - t0))s"
+
+new_case verify-seconds-bad
+write_config "$CFG_5"
+run_tool "$WFR" 7 -R o/r --verify-seconds 0
+expect "--verify-seconds must be a positive integer" "" 3
 
 # The last read before a covered approval re-checks the review decision: a "changes requested"
 # that lands after the mechanical re-read is not approved. (VR-cb8d0d4c)
