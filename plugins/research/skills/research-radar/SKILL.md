@@ -17,8 +17,8 @@ Two things make it work, and both are leaned on hard:
    recently merged PR titles, recently changed design docs, and an optional interests file (see
    "The interest profile"). The filter is the entire value of the skill; a generic "AI papers this
    week" digest is worthless.
-2. **The committed files are the memory.** Every run commits a digest and advances
-   `radar-state.json` in `config.paths.researchRadarDir`. The state's high-water mark makes each
+2. **The committed files are the memory.** Every run commits a digest, its prefilter record, and
+   the advanced `radar-state.json` in `config.paths.researchRadarDir`. The state's high-water mark makes each
    run's window start where the last complete harvest ended, so nothing falls between runs. The
    digests and the state's recently-seen ids make a paper appear at most once, even as it lingers
    near the top of arXiv for weeks.
@@ -57,7 +57,8 @@ Before anything else, load the repo config (see
    - For the profile: `config.paths.designDocs` and `config.paths.productDocs` (doc roots) and
      `config.paths.source` (source root).
    - `config.review.skipLabel` *(optional)* — a label that marks a PR as exempt from automated
-     review. This skill's PR is prose only (a dated digest plus `radar-state.json`) every run, so
+     review. This skill's PR is prose and data only (a dated digest, its prefilter record and
+     `radar-state.json`) every run, so
      when this is set, step 6 opens the PR as a draft with it applied and then marks it ready. If
      absent, note in your report that the PR will get the repo's normal review.
 
@@ -244,7 +245,8 @@ uses). `https://` and the User-Agent header are both load-bearing.
 
 ```bash
 python3 "$RR" prefilter --manifest "$RADAR/harvest/manifest.json" --profile "$RADAR/profile.json" \
-  --state "$DIR/radar-state.json" --reported-dir "$DIR" > "$RADAR/candidates.json"
+  --state "$DIR/radar-state.json" --reported-dir "$DIR" --record "$RADAR/prefilter-record.json" \
+  > "$RADAR/candidates.json"
 ```
 
 The prefilter is cheap and deliberately broad. It works through these steps in order:
@@ -262,6 +264,15 @@ The output holds the survivors, with core-phrase hits first and then a crude ter
 `--max`, default 150). Each carries the terms it `matched`. It also holds `stats`, counting what
 each stage removed, and `overflowIds` — the ids beyond `--max` that survived every filter but were
 never returned to you, so `advance` (step 4) knows not to mark them seen (see "The window" above).
+
+`--record` also writes the **prefilter record**, a compact account of the run kept alongside the
+digest. It carries the window, `max`, `stats` and `backgroundTerms`; the `returned` and `overflow`
+survivors, each with its id, matched terms and score; and the ids dropped as term misses, as
+already reported, or as already seen. It holds no titles or abstracts, so no arXiv text (and no
+instruction a title might carry) is ever committed through it; look a paper up by its id. It is what lets a later check say why a
+paper never reached the digest: past `--max` (in `overflow`), never matched (in `termMissIds`), or
+out of category or window (in none of the lists). Step 6 commits it. If the record cannot be
+written, the prefilter exits non-zero: stop, as for any failed prefilter.
 
 **Then rank the candidates yourself. This is the work.** Read each candidate's abstract against the
 profile and step 1's picture of the repo. Ask whether it informs a subsystem, a problem the repo is
@@ -331,9 +342,13 @@ Also run step 4: the file and the advanced mark keep the cadence and the ledger 
 
 ### 6. Open the PR (or add to the open one)
 
-The repo is PR-only: never push to `config.defaultBranch`. Commit **both** the digest and
-`radar-state.json`. A digest without its state rewinds the window, and state without its digest
-loses the record of what was surfaced.
+The repo is PR-only: never push to `config.defaultBranch`. Commit the digest, its prefilter record
+and `radar-state.json` together. A digest without its state rewinds the window, and state without
+its digest loses the record of what was surfaced. Copy the record next to the digest under the
+digest's own name, so a same-day re-run's `-2` digest gets a `-2` record:
+`mkdir -p "$DIR/prefilter" && cp "$RADAR/prefilter-record.json" "$DIR/prefilter/<digest name>.json"`.
+The record is JSON in a subdirectory, so the next run's `--reported-dir` scan (top-level `*.md`
+only) never reads it as a digest.
 
 **This PR is always prose only** — a dated digest and a state file, never code — so when
 `config.review.skipLabel` is set it should never get a code review. Applying the label after a
@@ -359,8 +374,10 @@ draft-vs-not on its own, so say so explicitly rather than assuming it infers the
 
 ```bash
 DAY=$(date -u +%Y-%m-%d)                           # UTC, matching the digest's filename
+NAME=<the digest's filename stem from step 5>      # $DAY, or $DAY-2, $DAY-3 for a same-day re-run
 git checkout -b "research-radar-$DAY"              # add -2, -3 if the branch already exists (cron double-fire)
-git add "$DIR/$DAY.md" "$DIR/radar-state.json"     # or $DAY-2.md for a same-day re-run
+mkdir -p "$DIR/prefilter" && cp "$RADAR/prefilter-record.json" "$DIR/prefilter/$NAME.json"
+git add "$DIR/$NAME.md" "$DIR/prefilter/$NAME.json" "$DIR/radar-state.json"
 git commit -m "Research radar — $DAY (<N> papers)"
 git push -u origin HEAD
 if [ -n "<config.review.skipLabel>" ]; then
