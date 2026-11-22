@@ -37,13 +37,23 @@ import sys
 ORDER = {"patch": 1, "minor": 2, "major": 3}
 NAMES = {1: "patch", 2: "minor", 3: "major"}
 
-# Keys whose lines carry no version information in lockfiles (checksums, urls, sizes).
-LOCK_NOISE = re.compile(
-    r'^\s*("?(integrity|resolved|hash|sha\d*|url|size|checksum|checksums|upload-time|registry|'
-    r'source|dependencies|dev|optional|peer|license|engines|bin|funding|cpu|os|libc|'
-    r'inBundle|hasInstallScript|peerDependenciesMeta|deprecated|requires-python|'
-    r'sdist|wheels|extra|name)"?\s*[:=]|\{\s*(url|path|name|filename)\b|\},?\s*$|\],?\s*$)'
+# uv.lock / poetry.lock / Cargo.lock keys that carry neither a version, a source nor an artifact:
+# dependency edges and metadata. A changed line matching nothing here, and none of the stricter
+# rules in extract_toml_lock, is Unknown.
+TOML_NOISE = re.compile(
+    r'^\s*("?(dependencies|dev-dependencies|optional-dependencies|requires-dist|requires-python|'
+    r'resolution-markers|marker|markers|extra|extras|optional|description|python-versions|'
+    r'groups|category)"?\s*=|(sdist|wheels|files)\s*=\s*\[\s*$|\{\s*name\s*=|\},?\s*$|\],?\s*$|\[\s*$)'
 )
+# Keys that say WHERE a package comes from. Any change to one is held: a same-version source swap
+# is exactly what a version-only check cannot see.
+TOML_SOURCE = re.compile(
+    r'^\s*(source|url|reference|resolved_reference|type|registry|git|path|editable|directory|'
+    r'virtual|index)\s*='
+)
+SOURCE_KEYS_INLINE = re.compile(r'\b(git|path|editable|directory|registry|index|url)\s*=')
+ARTIFACT_REF = re.compile(r'\b(?:url|file)\s*=\s*"([^"]+)"')
+HASH_ONLY = re.compile(r'^\s*"?(checksum|hash|size|upload-time)"?\s*=')
 
 
 class Unknown(Exception):
@@ -104,7 +114,11 @@ def _upper_caret(v):
 
 
 def parse_spec(spec):
-    """-> (lower, upper, excluded) with lower/upper a version tuple or None."""
+    """-> (lower, upper, excluded); lower/upper are (version tuple, inclusive) or None.
+
+    Strict on purpose: a bound given twice, an exact or inclusive-upper version with fewer than three
+    parts (npm reads `1` and `<=1.2` as ranges), and anything else whose meaning depends on the
+    ecosystem is Unknown rather than guessed."""
     spec = spec.split(";")[0].strip()
     if not spec or "||" in spec or "@" in spec or "*" in spec or spec.lower() in ("latest", "x"):
         raise Unknown(f"requirement {spec!r} is not a simple version range")
@@ -113,6 +127,12 @@ def parse_spec(spec):
     clauses = [c for c in re.split(r"\s*,\s*|\s+(?=[<>=!~^])", spec) if c]
     if not clauses:
         raise Unknown(f"requirement {spec!r} is empty")
+
+    def set_bound(cur, new, which):
+        if cur is not None:
+            raise Unknown(f"requirement {spec!r} gives its {which} bound more than once")
+        return new
+
     for clause in clauses:
         m = CLAUSE.match(clause.strip())
         if not m:
@@ -121,24 +141,29 @@ def parse_spec(spec):
         if re.search(r"[xX]$", ver) or "*" in ver:
             raise Unknown(f"requirement {spec!r} uses a wildcard")
         v = parse_version(ver)
+        parts = len(ver.lstrip("vV").split("."))
+        if parts < 3 and op in ("==", "===", "=", "<=", ">"):
+            raise Unknown(f"requirement {spec!r} has a partial version whose range is ecosystem-specific")
         if op in ("==", "===", "="):
-            lower = upper = v
+            lower = set_bound(lower, (v, True), "lower")
+            upper = set_bound(upper, (v, True), "upper")
         elif op in (">=", ">"):
-            lower = v
+            lower = set_bound(lower, (v, op == ">="), "lower")
         elif op in ("<=", "<"):
-            upper = v
+            upper = set_bound(upper, (v, op == "<="), "upper")
         elif op == "!=":
             excluded.append(v)
         elif op == "^":
-            lower, upper = v, _upper_caret(v)
+            lower = set_bound(lower, (v, True), "lower")
+            upper = set_bound(upper, (_upper_caret(v), False), "upper")
         elif op in ("~", "~>"):
-            parts = len(ver.split("."))
-            lower = v
-            upper = (v[0] + 1, 0, 0, 0) if parts == 1 else (v[0], v[1] + 1, 0, 0)
+            lower = set_bound(lower, (v, True), "lower")
+            up = (v[0] + 1, 0, 0, 0) if parts == 1 else (v[0], v[1] + 1, 0, 0)
+            upper = set_bound(upper, (up, False), "upper")
         elif op == "~=":
-            parts = len(ver.split("."))
-            lower = v
-            upper = (v[0], v[1] + 1, 0, 0) if parts >= 3 else (v[0] + 1, 0, 0, 0)
+            lower = set_bound(lower, (v, True), "lower")
+            up = (v[0], v[1] + 1, 0, 0) if parts >= 3 else (v[0] + 1, 0, 0, 0)
+            upper = set_bound(upper, (up, False), "upper")
     return lower, upper, tuple(sorted(excluded))
 
 
@@ -155,7 +180,9 @@ def range_level(old_spec, new_spec):
         if (a is None) != (b is None):
             level = hi(level, "major")  # a bound appeared or vanished
         elif a is not None:
-            level = hi(level, bump_level(a, b))
+            if a[1] != b[1]:
+                raise Unknown(f"a bound changed between inclusive and exclusive ({old_spec!r} -> {new_spec!r})")
+            level = hi(level, bump_level(a[0], b[0]))
     # Same bounds, different spelling (`^1.2.3` -> `>=1.2.3,<2`): nothing moved.
     return level
 
@@ -279,73 +306,225 @@ def extract_package_json(lines):
     return removed, added
 
 
+def url_host(ref):
+    m = re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://(?:[^@/]*@)?([^/:?#]+)", ref)
+    return m.group(1).lower() if m else None
+
+
+def artifact_names_version(ref, name, version):
+    """True when the artifact's file name is `<name>-<version>` followed by a separator: how npm
+    tarballs, sdists, wheels and poetry `file` entries are all named."""
+    fname = ref.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    bare = name.rsplit("/", 1)[-1]  # npm scope: @s/pkg -> pkg-1.2.3.tgz
+    return norm(fname).startswith(f"{norm(bare)}-{norm(version)}-")
+
+
+class Entries:
+    """Per-entry bookkeeping for a lockfile: which package each changed line belongs to, whether
+    that entry's version changed, and the hosts its artifacts were fetched from on each side.
+
+    Artifact lines (url/resolved/file, hashes, checksums, integrity) legitimately change on every
+    version bump, so they are accepted only when (1) they belong to a package entry, (2) that
+    entry's version changed, (3) each artifact's file name carries the version of its side of the
+    diff, and (4) every new artifact host is one the old side already used for that package.
+    Anything else - an artifact swap at an unchanged version, a new host, an unreadable artifact -
+    is Unknown.
+
+    (1) is usually the entry in view. A hunk that starts mid-entry (a long `dependencies` list
+    pushes uv's `sdist`/`wheels` past the diff's context) has no name in view; there an artifact
+    with a file name is attributed to the ONE package in this file whose version change it names
+    (`aiohttp-3.14.5.tar.gz` -> aiohttp, 3.14.4 -> 3.14.5), and then held to (2)-(4) as usual. A
+    nameless line with no file name (a bare checksum or integrity) is Unknown."""
+
+    def __init__(self, label):
+        self.label = label
+        self.entries = []
+        self.cur = None
+        self.orphans = []
+
+    def start(self, name):
+        self.cur = {"name": name, "old": None, "new": None, "artifacts": [], "sources": {"-": [], "+": []}}
+        self.entries.append(self.cur)
+
+    def clear(self):
+        self.cur = None
+
+    def version(self, kind, value):
+        if self.cur is None or self.cur["name"] is None:
+            raise Unknown(f"{self.label}: a version changed with no package in view")
+        self.cur["old" if kind == "-" else "new"] = value
+
+    def artifact(self, kind, ref, text):
+        if self.cur is None or self.cur["name"] is None:
+            if ref is None:
+                raise Unknown(f"{self.label}: an artifact line changed with no package in view: {text.strip()!r}")
+            self.orphans.append((kind, ref, text.strip()))
+            return
+        self.cur["artifacts"].append((kind, ref, text.strip()))
+
+    def _adopt_orphans(self):
+        for kind, ref, text in self.orphans:
+            owners = []
+            for e in self.entries:
+                if e["name"] is None or e["old"] is None or e["new"] is None:
+                    continue
+                want = e["old"] if kind == "-" else e["new"]
+                if artifact_names_version(ref, e["name"], want) and e not in owners:
+                    owners.append(e)
+            names = {e["name"] for e in owners}
+            if len(names) != 1:
+                raise Unknown(f"{self.label}: an artifact line changed with no package in view: {text!r}")
+            owners[0]["artifacts"].append((kind, ref, text))
+
+    def source(self, kind, text):
+        """A source line may appear on both sides when the diff realigns around it; only a real
+        difference between the entry's old and new source lines is a source change."""
+        if self.cur is None:
+            raise Unknown(f"{self.label}: a package source changed with no package in view ({text.strip()!r})")
+        self.cur["sources"][kind].append(text.strip())
+
+    def check(self):
+        self._adopt_orphans()
+        for e in self.entries:
+            if sorted(e["sources"]["-"]) != sorted(e["sources"]["+"]):
+                raise Unknown(f"{self.label}: {e['name'] or 'a package'}'s source changed")
+            if not e["artifacts"]:
+                continue
+            if e["old"] is None or e["new"] is None:
+                raise Unknown(f"{self.label}: {e['name']}'s artifact or checksum changed but its version did not")
+            hosts = {"-": set(), "+": set()}
+            for kind, ref, text in e["artifacts"]:
+                if ref is None:
+                    continue
+                want = e["old"] if kind == "-" else e["new"]
+                if not artifact_names_version(ref, e["name"], want):
+                    raise Unknown(f"{self.label}: {e['name']} artifact {ref!r} does not name version {want}")
+                host = url_host(ref)
+                if "://" in ref and host is None:
+                    raise Unknown(f"{self.label}: {e['name']} artifact {ref!r} has no readable host")
+                hosts[kind].add(host)
+            new_hosts = hosts["+"] - hosts["-"]
+            if new_hosts:
+                raise Unknown(f"{self.label}: {e['name']} is now fetched from a different host "
+                              f"({', '.join(sorted(h or '?' for h in new_hosts))})")
+
+
+NPM_ENTRY_NOISE = re.compile(
+    r'^"(license|funding|engines|cpu|os|libc|dev|optional|devOptional|peer|inBundle|deprecated|'
+    r'bin|type|url)"\s*:'
+)
+NPM_NESTED = {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+              "peerDependenciesMeta", "engines", "funding", "bin"}
+
+
 def extract_package_lock(lines):
-    """Version changes keyed by the nearest preceding package key, plus dependency ranges."""
+    """Version changes keyed by their package entry, plus dependency ranges. `resolved` and
+    `integrity` are held to the Entries rules; a changed package key, `name` (an npm alias),
+    `link`, or `hasInstallScript` turning on is Unknown."""
     removed, added = [], []
-    key = None
+    ents = Entries("package-lock.json")
     for kind, text in lines:
         if kind == "@":
-            key = None
+            ents.clear()
             continue
-        km = re.match(r'^\s*"([^"]*)"\s*:\s*\{\s*$', text)
-        if km:
+        s = text.strip()
+        km = re.match(r'^"([^"]*)"\s*:\s*\{\s*$', s)
+        if km and km.group(1) not in NPM_NESTED:
+            if kind != " ":
+                raise Unknown(f"package-lock.json: package entry {km.group(1)!r} was added, removed or renamed")
             k = km.group(1)
             if "node_modules/" in k:
                 k = k.rsplit("node_modules/", 1)[1]
-            key = k
+            ents.start(k.lower() if k else None)
             continue
         if kind == " ":
             continue
-        s = text.strip()
-        if not s or re.match(r"^[{}\[\],]*$", s):
+        if not s or re.match(r"^[{}\[\],]*$", s) or km:
             continue
         vm = re.match(r'^"version"\s*:\s*"([^"]+)"\s*,?$', s)
         if vm:
-            if key is None:
-                raise Unknown("package-lock.json: a version changed with no package key in view")
-            (removed if kind == "-" else added).append((("v", key.lower()), vm.group(1)))
+            ents.version(kind, vm.group(1))
+            (removed if kind == "-" else added).append((("v", ents.cur["name"]), vm.group(1)))
             continue
-        if re.match(r'^"(integrity|resolved|license|name|funding|engines|bin|cpu|os|libc|dev|optional|'
-                    r'peer|inBundle|hasInstallScript|deprecated|lockfileVersion|requires)"\s*:', s):
+        rm = re.match(r'^"resolved"\s*:\s*"([^"]*)"\s*,?$', s)
+        if rm:
+            ents.artifact(kind, rm.group(1), text)
             continue
+        if re.match(r'^"integrity"\s*:', s):
+            ents.artifact(kind, None, text)
+            continue
+        if re.match(r'^"hasInstallScript"\s*:', s):
+            if kind == "+" and re.search(r":\s*true", s):
+                raise Unknown("package-lock.json: a package gained an install script (hasInstallScript)")
+            continue
+        if re.match(r'^"(name|link|lockfileVersion|requires)"\s*:', s):
+            raise Unknown(f"package-lock.json: cannot accept changed line {s!r}")
         dm = NPM_DEP.match(text)
         if dm and re.match(r"^[\^~<>=v\d]", dm.group(2)):
             (removed if kind == "-" else added).append((("r", dm.group(1).lower()), dm.group(2)))
             continue
+        if NPM_ENTRY_NOISE.match(s):
+            continue
         raise Unknown(f"package-lock.json: cannot read changed line {s!r}")
+    ents.check()
     return removed, added
 
 
 def extract_toml_lock(lines):
-    """uv.lock / poetry.lock / Cargo.lock: `name = "x"` then `version = "y"`, and uv's inline
-    `requires-dist` entries with a `specifier`."""
+    """uv.lock / poetry.lock / Cargo.lock: `[[package]]`, `name = "x"`, `version = "y"`, the
+    entry's source and artifacts, and uv's inline `requires-dist` entries with a `specifier`.
+    A changed name or `[[package]]` line (a package added, removed or renamed), any change to where
+    a package comes from, and an artifact change that the Entries rules do not explain is Unknown."""
     removed, added = [], []
-    name = None
+    ents = Entries("lockfile")
     for kind, text in lines:
         if kind == "@":
-            name = None
+            ents.clear()
             continue
-        nm = re.match(r'^\s*name\s*=\s*"([^"]+)"\s*$', text)
+        s = text.strip()
+        if s == "[[package]]":
+            if kind != " ":
+                raise Unknown("lockfile: a package entry was added or removed")
+            ents.start(None)
+            continue
+        nm = re.match(r'^name\s*=\s*"([^"]+)"\s*$', text)
         if nm:
-            name = norm(nm.group(1))
-            if kind == "-" or kind == "+":
-                continue  # a renamed package shows up as unmatched versions below
+            if kind != " ":
+                raise Unknown(f"lockfile: package name line changed ({s!r}): a package was added, removed or replaced")
+            if ents.cur is None or ents.cur["name"] is not None:
+                ents.start(norm(nm.group(1)))
+            else:
+                ents.cur["name"] = norm(nm.group(1))
             continue
         if kind == " ":
             continue
-        vm = re.match(r'^\s*version\s*=\s*"([^"]+)"\s*$', text)
+        if not s:
+            continue
+        vm = re.match(r'^version\s*=\s*"([^"]+)"\s*$', text)
         if vm:
-            if name is None:
-                raise Unknown("lockfile: a version changed with no package name in view")
-            (removed if kind == "-" else added).append((("v", name), vm.group(1)))
+            ents.version(kind, vm.group(1))
+            (removed if kind == "-" else added).append((("v", ents.cur["name"]), vm.group(1)))
+            continue
+        if TOML_SOURCE.match(text):
+            ents.source(kind, text)
+            continue
+        am = ARTIFACT_REF.search(text)
+        if am and re.match(r'^\s*(sdist\s*=\s*\{|wheels\s*=\s*\[\s*\{|\{)', text):
+            ents.artifact(kind, am.group(1), text)
+            continue
+        if HASH_ONLY.match(text):
+            ents.artifact(kind, None, text)
             continue
         im = re.search(r'name\s*=\s*"([^"]+)"[^}]*?specifier\s*=\s*"([^"]+)"', text)
-        if im:
+        if im and not SOURCE_KEYS_INLINE.search(text):
             (removed if kind == "-" else added).append((("r", norm(im.group(1))), im.group(2)))
             continue
-        if LOCK_NOISE.match(text) or not text.strip():
+        if SOURCE_KEYS_INLINE.search(text):
+            raise Unknown(f"lockfile: a dependency source changed ({s!r})")
+        if TOML_NOISE.match(text):
             continue
-        raise Unknown(f"lockfile: cannot read changed line {text.strip()!r}")
+        raise Unknown(f"lockfile: cannot read changed line {s!r}")
+    ents.check()
     return removed, added
 
 
@@ -353,19 +532,62 @@ USES = re.compile(r"^\s*-?\s*uses:\s*['\"]?([^@\s'\"]+)@([^\s'\"#]+)['\"]?\s*(?:
 
 
 def extract_workflow(lines):
+    """Each changed `uses:` line must be replaced IN PLACE: within a hunk, the n-th removed line of a
+    change block pairs with the n-th added line, names the same action, and is identical apart from
+    the ref and its version comment. Anything else - a step added, removed or reordered, a moved
+    indent - is Unknown. A SHA pin is levelled by its `# vX.Y.Z` comment, so a SHA that moves while
+    the comment does not is new code under an old version: Unknown."""
     removed, added = [], []
+    blocks, minus, plus = [], [], []
+
+    def flush():
+        if minus or plus:
+            blocks.append((list(minus), list(plus)))
+        minus.clear()
+        plus.clear()
+
     for kind, text in lines:
-        if kind not in "-+":
-            continue
+        if kind == "-":
+            if plus:
+                flush()
+            minus.append(text)
+        elif kind == "+":
+            plus.append(text)
+        else:
+            flush()
+    flush()
+
+    def read(text):
         m = USES.match(text)
         if not m:
             raise Unknown(f"workflow: changed line is not a `uses:` version {text.strip()!r}")
-        ref, comment = m.group(2), m.group(3)
-        if re.fullmatch(r"[0-9a-fA-F]{40}", ref):
-            if not comment:
-                raise Unknown(f"workflow: {m.group(1)} is pinned to a SHA with no version comment")
-            ref = comment
-        (removed if kind == "-" else added).append((m.group(1).lower(), ref))
+        return m, text[:m.start(1)]
+
+    i = 0
+    for old_lines, new_lines in blocks:
+        if len(old_lines) != len(new_lines):
+            raise Unknown("workflow: a change adds or removes lines, not only `uses:` versions")
+        for old_text, new_text in zip(old_lines, new_lines):
+            (mo, po), (mn, pn) = read(old_text), read(new_text)
+            action = mo.group(1).lower()
+            if mn.group(1).lower() != action or po != pn:
+                raise Unknown(f"workflow: {old_text.strip()!r} became {new_text.strip()!r}, not a version change in place")
+            vals = []
+            for m in (mo, mn):
+                ref, comment = m.group(2), m.group(3)
+                if re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+                    if not comment:
+                        raise Unknown(f"workflow: {m.group(1)} is pinned to a SHA with no version comment")
+                    vals.append((ref.lower(), comment))
+                else:
+                    vals.append((ref, ref))
+            (ref_o, ver_o), (ref_n, ver_n) = vals
+            if ref_o != ref_n and ver_o == ver_n:
+                raise Unknown(f"workflow: {mo.group(1)}'s pinned ref changed but its version ({ver_o}) did not")
+            key = ("a", action, i)
+            i += 1
+            removed.append((key, ver_o))
+            added.append((key, ver_n))
     return removed, added
 
 
@@ -469,7 +691,10 @@ def title_check(title, pkgs, reasons):
         return  # a grouped or free-form title makes no single-package claim
     name = norm(m.group(1))
     try:
-        claimed = range_level(m.group(2), m.group(3))
+        try:
+            claimed = bump_level(parse_version(m.group(2)), parse_version(m.group(3)))
+        except Unknown:
+            claimed = range_level(m.group(2), m.group(3))
     except Unknown:
         reasons.append(f"title claims an update of {m.group(1)} that cannot be levelled")
         return

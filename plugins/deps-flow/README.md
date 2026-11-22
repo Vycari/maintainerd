@@ -20,7 +20,8 @@ run would do.
 
 Not from the PR title. `scripts/classify-bump.py` reads the PR's actual manifest/lockfile diff and
 returns the highest level of any version change (a range change is judged on both bounds, `0.x`
-minors count as major), and fails closed to "major, not confident" when it cannot tell. The skill
+minors count as major), and fails closed to "major, not confident" when it cannot tell, including
+when a lockfile's package source, name or download host changes rather than only its version. The skill
 gates auto-merge on its `eligible` field. Standard library only; tests in
 `scripts/test-classify-bump.py`.
 

@@ -227,10 +227,12 @@ patch-only policy (maintainerd#69), because "requirement" titles, extras and `>=
 inconsistently. Run the classifier on the PR's actual diff and use only its verdict:
 
 ```bash
-gh pr diff <N> --repo "$REPO" > "$TMP/pr.diff"            # when GraphQL is blocked, see gh-rest-fallbacks.md
-gh pr view <N> --repo "$REPO" --json body --jq .body > "$TMP/pr.body"
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/classify-bump.py" --diff "$TMP/pr.diff" \
-  --title "<PR title>" --body-file "$TMP/pr.body" --allow "<config.depsFlow.autoMergeSemver, comma-joined>"
+tmp="$(mktemp -d)"                                        # fresh per PR; removed below
+gh pr diff <N> --repo "$REPO" > "$tmp/pr.diff"            # when GraphQL is blocked, see gh-rest-fallbacks.md
+gh pr view <N> --repo "$REPO" --json body --jq .body > "$tmp/pr.body"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/classify-bump.py" --diff "$tmp/pr.diff" \
+  --title "<PR title>" --body-file "$tmp/pr.body" --allow "<config.depsFlow.autoMergeSemver, comma-joined>"
+rm -rf "$tmp"
 ```
 
 It prints one JSON object. Gate on **`eligible`** (true only when it is confident *and* the level is
@@ -255,10 +257,24 @@ What it does, so you can read its output:
 - **Fails closed** (`level: major`, `confident: false`) on anything it cannot classify: an added or
   removed package, a downgrade, a prerelease/suffix/SHA/digest/URL version, a wildcard or `||` range,
   an unparsed lock format (`yarn.lock`, `pnpm-lock.yaml`, `Gemfile.lock`), a Dockerfile, a file that
-  is not a dependency declaration, or a diff it cannot map to version changes at all.
+  is not a dependency declaration, or a diff it cannot map to version changes at all. Ranges it will
+  not guess at are held too: a bound given twice (`>=1,<2,<3`), a bound that switches between
+  inclusive and exclusive (`<2.0.0` to `<=2.0.0`), and a partial exact or inclusive-upper version
+  (`"1"`, `<=1.2`) whose meaning differs between npm and pip.
+- **Lockfile identity and provenance are checked, not skipped.** A lockfile's artifact lines
+  (`resolved`, `integrity`, uv's `sdist`/`wheels` url and hash, poetry's `file`, Cargo's `checksum`)
+  change on every real bump, so they are accepted only when the package entry they belong to is in
+  view, **that entry's version changed**, each artifact's file name carries its side's version
+  (`left-pad-1.2.1.tgz`, `resend-2.43.1.tar.gz`), and every new download host is one the old entry
+  already used. Held: an artifact or checksum change at an unchanged version, a new host, any change
+  to a package's `source`/registry/git/path, a changed package name or package key (a rename or
+  replacement), an npm `name` alias, and `hasInstallScript` turning on.
 
-A GitHub Action tag bump is levelled by its tag semver (a SHA pin needs a `# vX.Y.Z` comment, else it
-is held). The script's tests live in `scripts/test-classify-bump.py` in this repo.
+A GitHub Action tag bump is levelled by its tag semver. A SHA pin is levelled by its `# vX.Y.Z`
+comment, and is held when it has none **or when the SHA moves while the comment does not** (new code
+under an old version). Each changed `uses:` line must be replaced in place: the same action, the same
+position in the hunk and the same surrounding text, so a reordered, added or re-indented step is held.
+The script's tests live in `scripts/test-classify-bump.py` in this repo.
 
 ### Determining overlap
 
