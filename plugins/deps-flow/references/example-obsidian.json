@@ -38,6 +38,7 @@
     "automated": "automated"
   },
   "audits": {
+    "enabled": false,
     "prCap": 3,
     "issueCap": 5,
     "testPrCap": 2,

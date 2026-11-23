@@ -80,6 +80,55 @@ expect_match "istanbul: takes lines.pct, not statements or branches" \
   '{"metric":"lines","percent":65.5}' "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
 rm -rf "$d"
 
+# ── llvm-cov export (Swift: `swift test --enable-code-coverage --show-codecov-path`) ──
+d="$(scratch)"
+cat > "$d/coverage.json" <<'JSON'
+{"type": "llvm.coverage.json.export", "version": "2.0.1",
+ "data": [{"files": [{"filename": "Sources/A.swift",
+                      "summary": {"lines": {"count": 10, "covered": 9, "percent": 90}}}],
+           "totals": {"lines":     {"count": 200, "covered": 157, "percent": 78.5},
+                      "functions": {"count": 40,  "covered": 20,  "percent": 50},
+                      "regions":   {"count": 300, "covered": 120, "percent": 40, "notcovered": 180},
+                      "instantiations": {"count": 40, "covered": 20, "percent": 50}}}]}
+JSON
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov: exits 0" 0 "$status" "$output"
+expect_match "llvm-cov: takes data[0].totals.lines.percent, not functions, regions or a file's" \
+  '{"metric":"lines","percent":78.5}' "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '{"data": [{"totals": {"lines": {"count": 8, "covered": 3, "percent": 37.5}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT"
+expect_status "auto: detects llvm-cov" 0 "$status" "$output"
+expect_match "auto: names the llvm-cov shape" "(llvm-cov)" "$output"
+expect_match "auto: llvm-cov keeps the fractional percentage" '{"metric":"lines","percent":37.5}' \
+  "$(jq -c . "$d/coverage-summary.json" 2>/dev/null)"
+run "$d" "$ADAPT"
+expect_status "llvm-cov beside its output: the retry succeeds too" 0 "$status" "$output"
+rm -rf "$d"
+
+# llvm-cov reports 0 percent for a build that measured no lines at all; that is not "0%
+# covered", so it fails closed the way istanbul's "Unknown" does.
+d="$(scratch)"
+echo '{"data": [{"totals": {"lines": {"count": 0, "covered": 0, "percent": 0}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov with no measured lines: fails rather than reporting 0" 1 "$status" "$output"
+expect_match "llvm-cov no lines: names the expected key" "data[0].totals.lines.percent" "$output"
+rm -rf "$d"
+
+d="$(scratch)"
+echo '{"data": []}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov with an empty data array: fails" 1 "$status" "$output"
+echo '{"totals": {"percent_covered": 50}}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov forced on another tool's shape: fails" 1 "$status" "$output"
+echo '{"data": [{"totals": {"lines": {"count": 4, "covered": 4, "percent": 140}}}]}' > "$d/coverage.json"
+run "$d" "$ADAPT" --tool llvm-cov --input coverage.json
+expect_status "llvm-cov percentage above 100: fails" 1 "$status" "$output"
+rm -rf "$d"
+
 # ── auto-detection, both shapes and its own output ───────────────────────────
 d="$(scratch)"
 echo '{"totals": {"percent_covered": 77.25}}' > "$d/coverage-summary.json"
@@ -315,6 +364,71 @@ echo '[1, 2, 3]' > "$d/coverage.json"
 run "$d" "$ADAPT" --input coverage.json
 expect_status "adapter, a JSON array: fails with a finding" 1 "$status" "$output"
 expect_match "adapter, a JSON array: names the shape" "not a valid JSON object" "$output"
+rm -rf "$d"
+
+echo
+echo "version stamps and vendored-stamp-check.sh"
+
+STAMPCHK="$ROOT/plugins/core/scripts/vendored-stamp-check.sh"
+BUMP="$ROOT/scripts/bump-version.py"
+CANON_DIR="$ROOT/plugins/core/scripts"
+
+core_version="$(jq -r '.version' "$ROOT/plugins/core/.claude-plugin/plugin.json")"
+for f in coverage-adapt.sh coverage-check.sh; do
+  stamp="$(sed -n 's/^# maintainerd-core: \([0-9][0-9.]*\)$/\1/p' "$CANON_DIR/$f")"
+  if [ "$stamp" = "$core_version" ]; then ok "$f stamp matches the core plugin version"
+  else bad "$f stamp matches the core plugin version" "stamp '$stamp' vs plugin.json '$core_version': run scripts/bump-version.py or fix the stamp"; fi
+done
+
+d="$(scratch)"; mkdir -p "$d/v"
+cp "$CANON_DIR/coverage-adapt.sh" "$CANON_DIR/coverage-check.sh" "$d/v/"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an exact copy: reports current, exit 0" 0 "$status" "$output"
+expect_match "an exact copy: says current" "current" "$output"
+
+echo '# local edit' >> "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "a current stamp on a changed script: MODIFIED, exit 1" 1 "$status" "$output"
+expect_match "a current stamp on a changed script: says MODIFIED" "MODIFIED" "$output"
+expect_match "MODIFIED: prints the copy command" "fix: cp " "$output"
+cp "$CANON_DIR/coverage-adapt.sh" "$d/v/"
+
+sed -i.bak 's/^# maintainerd-core: .*/# maintainerd-core: 0.0.1/' "$d/v/coverage-check.sh"; rm -f "$d/v/coverage-check.sh.bak"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an old stamp on an unchanged script: behind, still exit 0" 0 "$status" "$output"
+expect_match "an old stamp on an unchanged script: says behind" "behind" "$output"
+
+echo '# local edit' >> "$d/v/coverage-check.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_status "an old stamp and a changed script: STALE, exit 1" 1 "$status" "$output"
+expect_match "STALE: prints the copy command" "fix: cp " "$output"
+
+grep -v '^# maintainerd-core: ' "$CANON_DIR/coverage-adapt.sh" > "$d/v/coverage-adapt.sh"
+echo '# local edit' >> "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_match "a pre-stamp copy that differs: UNSTAMPED" "UNSTAMPED" "$output"
+
+rm -f "$d/v/coverage-adapt.sh"
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$CANON_DIR"
+expect_match "a missing copy: MISSING" "MISSING" "$output"
+expect_status "a missing copy: exit 1" 1 "$status" "$output"
+
+run "$d" "$STAMPCHK" --vendored-dir "$d/v" --canonical-dir "$d/nowhere"
+expect_status "an unreadable canonical: fails with exit 2, never passes" 2 "$status" "$output"
+rm -rf "$d"
+
+# bump-version.py rewrites the stamp: build a one-plugin tree around a copy of the script.
+d="$(scratch)"; mkdir -p "$d/scripts" "$d/.claude-plugin" "$d/plugins/core/.claude-plugin" "$d/plugins/core/scripts"
+cp "$BUMP" "$d/scripts/bump-version.py"
+printf '{\n  "plugins": [\n    {\n      "name": "maintainerd-core",\n      "source": "./plugins/core",\n      "version": "1.2.3"\n    }\n  ]\n}\n' > "$d/.claude-plugin/marketplace.json"
+printf '{\n  "name": "maintainerd-core",\n  "version": "1.2.3"\n}\n' > "$d/plugins/core/.claude-plugin/plugin.json"
+printf '#!/usr/bin/env bash\n# maintainerd-core: 1.2.3\n# not a stamp: maintainerd-core: 9.9.9\n' > "$d/plugins/core/scripts/x.sh"
+printf 'no stamp here\n' > "$d/plugins/core/scripts/y.sh"
+run "$d" python3 scripts/bump-version.py core
+expect_status "bump-version on a stamped plugin: succeeds" 0 "$status" "$output"
+expect_match "bump-version rewrites the stamp to the new version" "# maintainerd-core: 1.2.4" "$(cat "$d/plugins/core/scripts/x.sh")"
+expect_match "bump-version leaves a stamp-shaped comment mid-line alone" "not a stamp: maintainerd-core: 9.9.9" "$(cat "$d/plugins/core/scripts/x.sh")"
+expect_match "bump-version leaves an unstamped script alone" "no stamp here" "$(cat "$d/plugins/core/scripts/y.sh")"
 rm -rf "$d"
 
 echo

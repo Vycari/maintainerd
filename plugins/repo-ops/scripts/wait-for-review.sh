@@ -2,7 +2,7 @@
 #
 # wait-for-review.sh — block until a PR's automated review reaches a verdict, then print it.
 #
-#   wait-for-review.sh <pr> [-R owner/repo]
+#   wait-for-review.sh <pr> [-R owner/repo] [--stage vr]
 #
 # Prints a verdict on the first line of stdout, and nothing is ever "still waiting":
 #
@@ -14,8 +14,57 @@
 #                          findings:0 means the score is below the threshold with no open thread —
 #                          the shortfall is in the review summary, not on a line.
 #   no-review-scheduled    nothing will review this PR: it is a draft, carries review.skipLabel,
-#                          or review.bots is configured empty.
+#                          or review.bots is configured empty. With the skip label and a numeric
+#                          threshold, a score a bot already published on the HEAD is still judged
+#                          (approved / findings as usual); only when none is on the head is the
+#                          label's verdict reported, with any older-commit score as a detail line.
 #   timeout                no verdict by the deadline (review.waitTimeoutMinutes, default 20).
+#
+# First-line stage (only with review.mode "first-line"; --stage vr is an error otherwise). The
+# first-line reviewer's check run (review.firstLine.checkName / checkApp) is read, and its verdict
+# JSON is reported, never recomputed:
+#
+#   vr-happy               the reviewer says it is happy with the head (JSON "happy": true).
+#   vr-handoff             not happy, but the reviewer has handed the head to the final reviewer
+#                          (its round cap was reached): "greptile_requested" is the head. Findings
+#                          still open are listed; they are no longer this stage's to chase.
+#   vr-findings:<n>        a round for the head is in and <n> findings are open; one indented line
+#                          per finding id follows ("(disputed)" marks one already disputed).
+#   vr-escalated           a P0 dispute the reviewer still holds ("escalated" non-empty, or the
+#                          title says "Needs maintainer: P0 dispute"). Stop and escalate.
+#   vr-unavailable         the reviewer concluded "Review unavailable": it asked the final
+#                          reviewer itself. Carry on with the final stage.
+#
+# Waiting continues for a queued/in-progress/superseded/"Round incomplete" run, for a verdict whose
+# reviewed_sha is not the head (an "unchanged since <sha>" re-post is the exception: it is terminal
+# for the head it sits on), and for check data truncated by page limits. The deadline defaults to
+# review.firstLine.unavailableMinutes + 5 (45 + 5), or review.waitTimeoutMinutes when that is set.
+# Exit status of the stage: 0 vr-happy / vr-handoff / vr-unavailable / no-review-scheduled,
+# 1 vr-findings / vr-escalated, 2 timeout, 3 the tool could not run.
+#
+# In first-line mode the DEFAULT stage is still the final reviewer, with one addition, covered
+# staleness: a score at or above the threshold on an ANCESTOR of the head (so every later commit
+# was a fix to a passing review) still yields `approved`, when no review thread is open and the
+# first-line reviewer is happy on the head itself. A second detail line says so. The first-line read
+# comes last, and after it the head, the review decision, the open threads and the scores are read
+# again: any change since the poll's read (a new below-bar score included) is not covered. Judging
+# whether that score carried a P1 is the merge gate's job, as it is for a score on the head.
+#
+# Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
+# score names the head", so an approval still needs a happy first-line round on the head, and open
+# threads are reported as findings): a score at or above the threshold on an
+# ANCESTOR G of the head is not stale when G..head is one linear chain of verified mechanical
+# commits of ONE configured entry: authored by its `author` login, committed by it or web-flow,
+# GitHub-verified (reason "valid"), carrying its `trailer:` trailer, pushed to the branch by that
+# login (activity API), and passing its `verify` argv ({sha} substituted) run from a detached
+# worktree of the PR's base commit (so the verifier and everything it reads are the base branch's). A second detail line says so. Anything unreadable or doubtful (compare or activity
+# data truncated, the range touching the config file or the verifier, a fork, no local checkout or
+# no G, verify missing / failing / out of time, the head or base moving meanwhile, the review
+# decision, the open threads or the scores changing meanwhile) is NOT covered, and a poll that ran
+# verify and is not covered decides nothing: it never falls back to the first-line covered-staleness
+# path on what it read before verify, and the next poll judges from a fresh read. The
+# default stage only: --stage vr does not use it. Only entries in the PR base's config count, and a
+# PR that edits the config or a verifier anywhere since its merge base is never covered.
 #
 # Exit status: 0 approved / no-review-scheduled, 1 findings, 2 timeout, 3 the tool could not run
 # (bad usage, gh failure on the first read, invalid config). A verdict is never an error text and an
@@ -40,9 +89,11 @@
 #
 # Config (.claude/maintainerd.json, see references/config-schema.md): review.waitTimeoutMinutes,
 # review.approvalThreshold, review.bots, review.skipLabel, review.checkName, review.checkApp,
-# review.blockMarker.
+# review.blockMarker (a bare name such as `greptile_comment` is read as `<!-- greptile_comment -->`),
+# review.mode, review.firstLine.checkName / checkApp / unavailableMinutes, review.mechanicalCommits.
 # Flags for tests and tuning: --timeout-seconds N, --interval-seconds N (default 180, the floor a
-# polite poller keeps against the API), --config FILE.
+# polite poller keeps against the API), --verify-seconds N (the cap on one mechanical-commit verify
+# call, default 120), --config FILE.
 #
 # Requires: bash 3.2+, gh, jq.
 
@@ -53,8 +104,27 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/wait-common.sh
 . "$HERE/lib/wait-common.sh"
 
+# This script owns one extra flag; peel it off before the shared parser sees it. --verify-seconds N
+# caps one mechanical-commit verify call (default 120); it is a tuning and test flag.
+MECH_VERIFY_CAP=120
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --verify-seconds)
+      [ "$#" -ge 2 ] || die 3 "$1 needs a value"
+      MECH_VERIFY_CAP="$2"
+      shift 2
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+{ is_uint "$MECH_VERIFY_CAP" && [ "$MECH_VERIFY_CAP" -gt 0 ]; } || die 3 "--verify-seconds must be a positive integer"
+
 WAIT_HELP=""
-parse_common_args "$@"
+parse_common_args ${args[@]+"${args[@]}"}
 if [ -n "$WAIT_HELP" ]; then
   sed -n '3,/^# Requires/p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
@@ -72,6 +142,28 @@ CHECK_NAME="$(cfg '.review.checkName' '')"
 CHECK_APP="$(cfg '.review.checkApp' '')"
 BLOCK_MARKER="$(cfg '.review.blockMarker' '<!-- greptile_comment -->')"
 [ -n "$BLOCK_MARKER" ] || BLOCK_MARKER='<!-- greptile_comment -->'
+# A bare marker name (the repo profile spells it that way) is the same marker as its comment form.
+case "$BLOCK_MARKER" in
+  '<!--'*) ;;
+  *) BLOCK_MARKER="<!-- $BLOCK_MARKER -->" ;;
+esac
+# First-line mode. Anything but the exact string "first-line" leaves every line below this block
+# inert: no first-line key is read, no extra query is sent.
+STAGE="${WAIT_STAGE:-final}"
+case "$STAGE" in
+  final | vr) ;;
+  *) die 3 "--stage must be 'vr' or 'final' (final is the default)" ;;
+esac
+FIRST_LINE=0
+if [ "$(cfg '.review.mode' '')" = "first-line" ]; then
+  FIRST_LINE=1
+  FL_NAME="$(cfg '.review.firstLine.checkName' 'Vycari Review')"
+  FL_APP="$(cfg '.review.firstLine.checkApp' 'vycari-review')"
+  FL_UNAVAILABLE_MIN="$(cfg '.review.firstLine.unavailableMinutes' '45')"
+  is_uint "$FL_UNAVAILABLE_MIN" || die 3 "review.firstLine.unavailableMinutes must be a non-negative integer"
+fi
+[ "$STAGE" != "vr" ] || [ "$FIRST_LINE" = "1" ] ||
+  die 3 "--stage vr needs review.mode \"first-line\" in the repository's config"
 # A name without an App is the name-only match rung 0 exists to refuse; an App without a name matches
 # nothing. Either alone is a configuration error, not a silent fallback.
 if [ -n "$CHECK_NAME" ] && [ -z "$CHECK_APP" ]; then
@@ -81,6 +173,10 @@ if [ -z "$CHECK_NAME" ] && [ -n "$CHECK_APP" ]; then
   die 3 "review.checkApp needs review.checkName"
 fi
 is_uint "$TIMEOUT_MIN" || die 3 "review.waitTimeoutMinutes must be a non-negative integer"
+if [ "$STAGE" = "vr" ] &&
+  ! printf '%s' "$WAIT_CONFIG_JSON" | jq -e '(.review // {}).waitTimeoutMinutes != null' >/dev/null 2>&1; then
+  TIMEOUT_MIN=$((FL_UNAVAILABLE_MIN + 5)) # the reviewer's own bound, plus the sweep's slack
+fi
 TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-$((TIMEOUT_MIN * 60))}"
 INTERVAL="${WAIT_INTERVAL_SECONDS:-180}"
 
@@ -109,11 +205,12 @@ esac
 OWNER="${WAIT_REPO%%/*}"
 NAME="${WAIT_REPO##*/}"
 
-PR_FIELDS="number,isDraft,state,labels,headRefOid,body,comments,reviews,reviewDecision"
+PR_FIELDS="number,isDraft,state,labels,headRefOid,headRefName,isCrossRepository,baseRefOid,body,comments,reviews,reviewDecision"
 # The latest edit of the PR description is asked for alongside the threads: the description's score
 # block is only evidence when a configured bot is who last wrote it (see find_scores).
 THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
@@ -127,10 +224,11 @@ THREADS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String
 # newest run, and rung 0 then reports INCOMPLETE (keep waiting) rather than decide on part of it.
 THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName:String!,$endCursor:String){
   repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
     commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
-        nodes{databaseId name status conclusion startedAt completedAt text}}}}}}}
+        nodes{databaseId name status conclusion startedAt completedAt title text}}}}}}}
     reviewThreads(first:100,after:$endCursor){
       pageInfo{hasNextPage endCursor}
       nodes{isResolved isOutdated path line originalLine comments(first:1){nodes{body author{login}}}}
@@ -148,9 +246,11 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
 # re-run has neither startedAt nor completedAt, so ordering by those would let an older completed
 # run's score stand in for it. Check-run databaseIds are allocated in creation order, and GraphQL's
 # CheckRun exposes no createdAt, so the id is the creation order.
-check_run_score() {
-  local run text json
-  run="$(printf '%s' "$1" | jq -s -c --arg app "$CHECK_APP" --arg name "$CHECK_NAME" --arg head "$2" '
+# newest_check_run <graphql-json-stream> <head> <app-slug> <name> — prints the newest run (by
+# creation) named <name> on <head> from the App <app-slug> as one JSON object, or "INCOMPLETE" (a
+# JSON string) when a check connection was truncated, or nothing when there is no such run.
+newest_check_run() {
+  printf '%s' "$1" | jq -s -c --arg app "$3" --arg name "$4" --arg head "$2" '
     [.[0].data.repository.pullRequest.commits.nodes[]? | select(.commit.oid == $head) | .commit.checkSuites]
     | if any(.[]; .pageInfo.hasNextPage == true
                   or any(.nodes[]? | select((.app.slug // "") == $app); .checkRuns.pageInfo.hasNextPage == true))
@@ -158,7 +258,22 @@ check_run_score() {
       else [.[] | .nodes[]? | select((.app.slug // "") == $app)
             | .checkRuns.nodes[]? | select(.name == $name)]
            | sort_by(.databaseId // 0) | last // empty
-      end' 2>/dev/null)" || return 0
+      end' 2>/dev/null
+}
+
+# run_json_text <run-json> — the fenced (or bare) JSON object in the run's output.text.
+run_json_text() {
+  local text json
+  text="$(printf '%s' "$1" | jq -r '.text // ""')"
+  # The contract is a fenced JSON object; a bare JSON object is accepted too.
+  json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
+  [ -n "$json" ] || json="$text"
+  printf '%s' "$json"
+}
+
+check_run_score() {
+  local run json
+  run="$(newest_check_run "$1" "$2" "$CHECK_APP" "$CHECK_NAME")" || return 0
   [ -n "$run" ] || return 0
   if [ "$run" = '"INCOMPLETE"' ]; then
     printf 'INCOMPLETE'
@@ -171,10 +286,7 @@ check_run_score() {
   # A NEUTRAL conclusion is never a gate verdict: shadow-mode runs publish neutral and must not be
   # read as a score. (A run still in progress was handled above.)
   [ "$(printf '%s' "$run" | jq -r '.conclusion // ""')" != "NEUTRAL" ] || return 0
-  text="$(printf '%s' "$run" | jq -r '.text // ""')"
-  # The contract is a fenced JSON object; a bare JSON object is accepted too.
-  json="$(printf '%s\n' "$text" | awk '/^[[:space:]]*```/{ if (f) exit; f = 1; next } f { print }')"
-  [ -n "$json" ] || json="$text"
+  json="$(run_json_text "$run")"
   printf '%s' "$json" | jq -r --arg app "$CHECK_APP" '
     select(type == "object"
       and (.mode // "") != "shadow"
@@ -183,6 +295,530 @@ check_run_score() {
       and .score <= .max
       and (.reviewed_sha | type == "string" and test("^[0-9a-fA-F]{7,64}$")))
     | "checkrun:\($app) \(.score)/\(.max) \(.reviewed_sha)"' 2>/dev/null | head -n 1
+  return 0
+}
+
+# vr_read <graphql-json-stream> <head> — the first-line reviewer's check run for <head>. Sets
+# VR_KIND to one of: none (no such run yet), pending (keep waiting), happy, handoff, findings,
+# escalated, unavailable; and VR_N / VR_DETAIL for findings. It reads the reviewer's verdict JSON and
+# never works out happiness itself.
+VR_KIND=""
+VR_N=0
+VR_DETAIL=""
+vr_read() {
+  local run title json head="$2" reviewed requested
+  VR_KIND="none"
+  VR_N=0
+  VR_DETAIL=""
+  run="$(newest_check_run "$1" "$head" "$FL_APP" "$FL_NAME")" || return 0
+  [ -n "$run" ] || return 0
+  if [ "$run" = '"INCOMPLETE"' ]; then
+    VR_KIND="pending"
+    LAST_ERR="first-line: the head commit's check suites/runs were truncated (hasNextPage); the check run may be unseen"
+    return 0
+  fi
+  if [ "$(printf '%s' "$run" | jq -r '.status // ""')" != "COMPLETED" ]; then
+    VR_KIND="pending"
+    return 0
+  fi
+  title="$(printf '%s' "$run" | jq -r '.title // ""')"
+  case "$title" in
+    Superseded* | "Round incomplete"*)
+      VR_KIND="pending" # a newer round is coming / the judge retries
+      return 0
+      ;;
+    "Review unavailable"*)
+      VR_KIND="unavailable"
+      VR_DETAIL="  $title"
+      return 0
+      ;;
+  esac
+  json="$(run_json_text "$run")"
+  if ! printf '%s' "$json" | jq -e 'type == "object" and (.mode // "") == "first-line"' >/dev/null 2>&1; then
+    case "$title" in
+      "Needs maintainer: P0 dispute"*)
+        VR_KIND="escalated"
+        VR_DETAIL="  $title"
+        return 0
+        ;;
+    esac
+    VR_KIND="pending" # unreadable: never guess a verdict
+    LAST_ERR="first-line: the check run's output.text is not the first-line JSON contract"
+    return 0
+  fi
+  # A pure-rebase re-post carries the earlier round's JSON on the new head: terminal for this head.
+  # Any other verdict must name the head, or it is the previous head's.
+  reviewed="$(printf '%s' "$json" | jq -r '.reviewed_sha // ""')"
+  case "$title" in
+    "unchanged since"*) ;;
+    *)
+      if ! is_head_sha "$reviewed" "$head"; then
+        VR_KIND="pending"
+        return 0
+      fi
+      ;;
+  esac
+  if [ "$(printf '%s' "$json" | jq '(.escalated // []) | length')" -gt 0 ] ||
+    case "$title" in "Needs maintainer: P0 dispute"*) true ;; *) false ;; esac; then
+    VR_KIND="escalated"
+    VR_DETAIL="$(printf '%s' "$json" | jq -r '(.escalated // [])[] | "  \(.) (escalated)"')"
+    [ -n "$VR_DETAIL" ] || VR_DETAIL="  $title"
+    return 0
+  fi
+  if [ "$(printf '%s' "$json" | jq -r '.happy == true')" = "true" ]; then
+    VR_KIND="happy"
+    return 0
+  fi
+  VR_N="$(printf '%s' "$json" | jq -r '((.open.p0 // 0) + (.open.p1 // 0) + (.open.p2 // 0))')"
+  is_uint "$VR_N" || VR_N=0
+  # Bind each finding id before the lookup: inside `($j.disputed // []) | ...`, `.` is the disputed
+  # list itself, so `index(.)` would mark every finding once anything at all is disputed.
+  VR_DETAIL="$(printf '%s' "$json" | jq -r '. as $j | ($j.findings // [])[] | . as $id |
+    "  \($id)" + (if (($j.disputed // []) | index([$id])) != null then " (disputed)" else "" end)')"
+  requested="$(printf '%s' "$json" | jq -r '.greptile_requested // ""')"
+  if [ -n "$requested" ] && is_head_sha "$requested" "$head"; then
+    VR_KIND="handoff"
+    return 0
+  fi
+  VR_KIND="findings"
+  return 0
+}
+
+# fetch_gql [check-name] — the PR's review threads, plus the head commit's check runs of that name
+# when one is given. The one place the GraphQL query is sent.
+fetch_gql() {
+  if [ -n "$1" ]; then
+    gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$1" 2>&1
+  else
+    gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1
+  fi
+}
+
+# unresolved_threads <graphql-json-stream> — the open review threads of a fetch_gql result, as one
+# compact JSON array. poll_once and the mechanical re-read share it so both judge "open" alike.
+unresolved_threads() {
+  printf '%s' "$1" | jq -s -c '
+    [.[] | .data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)]'
+}
+
+# mechanical_entries [config-json] — prints the valid review.mechanicalCommits entries of the given
+# config (default: the loaded one) as compact JSON lines. An
+# entry missing a field, or of the wrong type, is dropped (fail closed: it can only cover less), and
+# so is one whose verify argv holds a NUL, which no argv can carry.
+mechanical_entries() {
+  printf '%s' "${1:-$WAIT_CONFIG_JSON}" | jq -c '
+    ((.review // {}).mechanicalCommits // []) | if type == "array" then .[] else empty end
+    | select(type == "object"
+        and (.name | type == "string" and length > 0)
+        and (.author | type == "string" and length > 0)
+        and (.trailer | type == "string" and length > 0)
+        and (.verify | type == "array" and length > 0
+          and all(.[]; type == "string" and (explode | any(. == 0) | not))))' 2>/dev/null
+}
+
+# Mechanical-commit state that lives for the whole run (poll_once runs in this shell, never in a
+# subshell). MECH_CACHE holds " <base>:<entry-digest>:<sha>=<0|1> " verdicts so a commit's verify runs
+# once per run, not once per poll; the key names the base commit and the entry's whole content, so a
+# base branch that changes its verifier or its entry gets a fresh run. A verify that timed out or died
+# on a signal is not cached, so it is tried again while time is left. MECH_WT_ROOT holds the detached
+# worktrees verify runs in.
+MECH_CACHE=" "
+MECH_WT_ROOT=""
+MECH_TOP=""
+MECH_WT=""
+MECH_HEAD_REF=""
+MECH_CROSS=""
+MECH_BASE=""
+MECH_DECISION="" # the review decision and the open threads poll_once judged on; the final re-read
+MECH_THREADS=""  # must find both unchanged
+MECH_SCORES=""   # the scores poll_once judged on; fl_read must find them unchanged
+MECH_HOLD=0      # 1 when this poll ran verify (or a fetch) and was not covered: it decides nothing
+MECH_HELD=0      # 1 when the previous poll held: this one tries the first-line path first
+MECH_SECS=0
+mech_cleanup() {
+  local wt
+  [ -n "$MECH_WT_ROOT" ] || return 0
+  for wt in "$MECH_WT_ROOT"/*; do
+    [ -d "$wt" ] || continue
+    git -C "$MECH_TOP" worktree remove --force "$wt" >/dev/null 2>&1
+  done
+  rm -rf "$MECH_WT_ROOT"
+  git -C "$MECH_TOP" worktree prune >/dev/null 2>&1
+  return 0
+}
+trap mech_cleanup EXIT
+
+# run_bounded <seconds> <argv...> — runs argv with stdin/stdout/stderr on /dev/null, in a process
+# group of its own, and stops it after <seconds>: TERM to the whole group, then KILL to the group
+# RB_GRACE seconds later. Exit status is argv's, or 124 whenever the time limit fired (even if argv
+# then exited 0 from a TERM handler), or >= 128 for a signal. Whatever argv leaves running in its
+# group is killed when it returns. One implementation everywhere, so timeout(1)'s presence or flavour
+# changes nothing. A process that moves itself to another session (setsid) is out of reach.
+RB_GRACE=2
+run_bounded() {
+  local secs="$1" pid wd flag rc
+  shift
+  flag="$(mktemp 2>/dev/null)" || return 1
+  rm -f "$flag"
+  set -m
+  "$@" </dev/null >/dev/null 2>&1 &
+  pid=$!
+  (sleep "$secs" && : >"$flag" && kill -TERM -- "-$pid" && sleep "$RB_GRACE" && kill -KILL -- "-$pid") </dev/null >/dev/null 2>&1 &
+  wd=$!
+  set +m
+  wait "$pid" 2>/dev/null
+  rc=$?
+  kill -KILL -- "-$wd" >/dev/null 2>&1
+  wait "$wd" 2>/dev/null
+  kill -KILL -- "-$pid" >/dev/null 2>&1
+  if [ -e "$flag" ]; then
+    rm -f "$flag"
+    return 124
+  fi
+  return "$rc"
+}
+
+# mech_budget <max-seconds> — sets MECH_SECS to <max-seconds> clipped to what is left of the wait's
+# deadline; fails when nothing is left.
+mech_budget() {
+  local left
+  left=$((deadline - $(now)))
+  [ "$left" -gt 0 ] || return 1
+  MECH_SECS="$1"
+  [ "$left" -ge "$MECH_SECS" ] || MECH_SECS="$left"
+}
+
+# Git run on the verifier's behalf, as an argv prefix (run_bounded's timeout(1) cannot run a shell
+# function): no hooks, no LFS smudge, no credential or ssh prompt.
+MECH_GIT=(env GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1 "GIT_SSH_COMMAND=${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes"
+  git -c core.hooksPath=/dev/null)
+
+# mech_worktree <base> — sets MECH_WT to a detached worktree of this checkout at the PR's base commit
+# (made once per base per run; called directly, never in $(...), so the cleanup trap sees what it
+# made). The verifier runs there: the base branch's verifier, reading the base branch's files, never
+# the working tree's or anything the PR changed. The PR's commits are still objects in the shared
+# store, so `git show {sha}` and the like work. Fails when <base> is not available locally.
+mech_worktree() {
+  local b="$1" wt
+  MECH_WT=""
+  if [ -z "$MECH_TOP" ]; then
+    MECH_TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$MECH_TOP" ] || return 1
+  fi
+  if [ -z "$MECH_WT_ROOT" ]; then
+    MECH_WT_ROOT="$(mktemp -d 2>/dev/null)" || return 1
+    [ -n "$MECH_WT_ROOT" ] || return 1
+  fi
+  wt="$MECH_WT_ROOT/$b"
+  if [ ! -d "$wt" ]; then
+    mech_budget 60 || return 1
+    # A worktree add that fails may have run up to its bound: hold, as for a reset.
+    run_bounded "$MECH_SECS" "${MECH_GIT[@]}" -C "$MECH_TOP" worktree add --detach --quiet "$wt" "$b" || {
+      MECH_HOLD=1
+      return 1
+    }
+  fi
+  MECH_WT="$wt"
+}
+
+# mech_reset <worktree> <base> — puts the worktree back to a clean checkout of <base>, so one verify
+# run cannot leave anything behind for the next. Bounded by the wait's deadline like the verify.
+mech_reset() {
+  mech_budget 60 || return 1
+  run_bounded "$MECH_SECS" "${MECH_GIT[@]}" -C "$1" checkout -q -f --detach "$2" || return 1
+  mech_budget 60 || return 1
+  run_bounded "$MECH_SECS" "${MECH_GIT[@]}" -C "$1" clean -q -f -d -x || return 1
+  mech_budget 60 || return 1
+  run_bounded "$MECH_SECS" sh -c '[ "$(git -C "$1" rev-parse HEAD)" = "$2" ] && [ -z "$(git -C "$1" status --porcelain --ignored)" ]' sh "$1" "$2"
+}
+
+# range_covered_by_entry <entry-json> <compare-json> <activity-json> <G> — true when
+# EVERY commit in the compare range is a verified mechanical commit of this entry (the range's shape,
+# chain and config-file checks are the caller's). Sets MECH_COUNT / MECH_NAME for the note.
+#
+# Who made a commit is bound by three things GitHub records and a person cannot forge alone: the
+# author login (GitHub's mapping of the author email), the committer login (the bot itself, or
+# `web-flow` when GitHub made the commit on its behalf), and the push that put the commit on the
+# branch (the activity API's actor). Commit metadata alone is not enough: GitHub re-signs commits
+# as `web-flow` when a person rebases a branch in the web UI, so a person's action can yield a
+# commit that is authored by the bot, committed by web-flow and verified. The push actor is what
+# tells those apart.
+range_covered_by_entry() {
+  local entry="$1" cmp="$2" act="$3" g="$4" author trailer chain sha i key secs rc wt digest
+  local -a verify
+  MECH_COUNT=0
+  MECH_NAME="$(printf '%s' "$entry" | jq -r .name)"
+  # Logins compare exactly. A GitHub App's account is `<slug>[bot]` and no user login can contain
+  # brackets, so stripping the suffix would let a user who owns the bare `<slug>` login pass as the
+  # App. A configured `app/<slug>` is read as `<slug>[bot]`.
+  author="$(printf '%s' "$entry" | jq -r '.author | if startswith("app/") then (.[4:] + "[bot]") else . end')"
+  trailer="$(printf '%s' "$entry" | jq -r .trailer)"
+  # Every commit: authored and committed by the entry's login (or committed by GitHub's web-flow on
+  # its behalf), verified with reason "valid", carrying the trailer.
+  printf '%s' "$cmp" | jq -e --arg a "$author" --arg t "$trailer" '
+    def login: (. // "");
+    .commits | all(.[];
+      (.author.login | login) == $a
+      and ((.committer.login | login) as $c | $c == $a or $c == "web-flow")
+      and (.commit.verification.verified == true)
+      and (.commit.verification.reason == "valid")
+      and ((.commit.message // "") | split("\n") | any(.[]; startswith($t + ":"))))' >/dev/null 2>&1 || return 1
+  # Every commit was put on the branch by a push whose actor is the entry's login. A push from
+  # <before> to <after> introduced the chain commits after <before> up to <after> when <before> is
+  # on the chain below <after>; otherwise it is only evidence for <after> itself. One page of
+  # activity: a commit the page does not attribute is not covered.
+  chain="$(printf '%s' "$cmp" | jq -c --arg g "$g" '[$g] + [.commits[].sha]')" || return 1
+  printf '%s' "$act" | jq -e --arg a "$author" --argjson chain "$chain" '
+    def login: (. // "");
+    type == "array"
+    and ([.[]
+        | select((.activity_type == "push" or .activity_type == "force_push") and ((.actor.login | login) == $a))
+        | . as $p
+        | ($chain | index($p.after)) as $j
+        | select($j != null and $j >= 1)
+        | ($chain | index($p.before)) as $i
+        | if $i != null and $i < $j then range($i + 1; $j + 1) else $j end] as $cov
+      | all(range(1; $chain | length); . as $k | $cov | any(.[]; . == $k)))' >/dev/null 2>&1 || return 1
+  # The verifier must not be one of the files the range changes: it would be vouching for itself.
+  printf '%s' "$cmp" | jq -e --argjson e "$entry" '
+    [.files[] | .filename, (.previous_filename // empty)] as $f
+    | [$e.verify[] | sub("^(\\./)+"; "")] | any(.[]; . as $x | $f | any(.[]; . == $x)) | not' >/dev/null 2>&1 || return 1
+  digest="$(printf '%s' "$entry" | jq -c -S . | git hash-object --stdin 2>/dev/null)" || return 1
+  [ -n "$digest" ] || return 1
+  mech_worktree "$MECH_BASE" || return 1
+  wt="$MECH_WT"
+  while IFS= read -r sha; do
+    [ -n "$sha" ] || return 1
+    # The deadline is checked for every commit, cached or not.
+    mech_budget 1 || return 1
+    key="$MECH_BASE:$digest:$sha"
+    case "$MECH_CACHE" in
+      *" $key=1 "*)
+        MECH_COUNT=$((MECH_COUNT + 1))
+        continue
+        ;;
+      *" $key=0 "*) return 1 ;;
+    esac
+    # Each verify starts from a clean checkout of the base whatever the previous run did to it, and
+    # gets at most MECH_VERIFY_CAP (120s), clipped to what is left of the wait's deadline. A verify
+    # that hangs until the deadline leaves no time for the next poll's first-line path: the wait
+    # then reports timeout, never an approval from the state read before verify.
+    # A reset that fails holds too: it may have used up to its whole bound (a hang), and what the
+    # poll read before it is then as stale as after a verify. Holding costs one interval at most.
+    mech_reset "$wt" "$MECH_BASE" || {
+      MECH_HOLD=1
+      return 1
+    }
+    mech_budget "$MECH_VERIFY_CAP" || return 1
+    secs="$MECH_SECS"
+    verify=()
+    # NUL-separated: an argument may itself hold newlines (a multi-line `sh -c` script).
+    while IFS= read -r -d '' i; do verify+=("${i//\{sha\}/$sha}"); done < <(printf '%s' "$entry" | jq -j '.verify[] | ., "\u0000"')
+    [ "${#verify[@]}" -gt 0 ] || return 1
+    # From here this poll runs verify, so it holds unless the cover succeeds: what the poll read
+    # before verify is stale by the time it ends, whatever verify's outcome (see covered_by_mechanical).
+    MECH_HOLD=1
+    (cd "$wt" && run_bounded "$secs" "${verify[@]}")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" -eq 124 ] || [ "$rc" -ge 128 ] || MECH_CACHE="$MECH_CACHE$key=0 "
+      return 1
+    fi
+    MECH_CACHE="$MECH_CACHE$key=1 "
+    MECH_COUNT=$((MECH_COUNT + 1))
+  done < <(printf '%s' "$cmp" | jq -r '.commits[].sha')
+  [ "$MECH_COUNT" -gt 0 ]
+}
+
+# covered_by_mechanical <scores> <head> — true when every published score names an ancestor of the
+# head (or the head) and each stale one's range is covered by one configured mechanical entry. The
+# bar is checked by the caller. Anything unreadable is "not covered".
+MECH_NOTE=""
+covered_by_mechanical() {
+  local scores="$1" head="$2" line bot score reviewed entry ok total=0 name="" first="" cmp act g now_head
+  local basecfg entries bcmp now_pr now_gql now_threads now_scores
+  MECH_NOTE=""
+  MECH_HOLD=0
+  [ -n "$scores" ] || return 1
+  [ -n "$(mechanical_entries)" ] || return 1
+  # A verify command runs in the checkout; when the config was fetched for another repo there is none.
+  [ "${WAIT_CONFIG_LOCAL:-0}" = "1" ] || return 1
+  # A fork's branch is pushed outside this repo: its activity is not this repo's to read.
+  [ "$MECH_CROSS" = "false" ] && [ -n "$MECH_HEAD_REF" ] || return 1
+  printf '%s' "$MECH_BASE" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  # The entries that count are the PR base's, never the PR's own: the working tree is usually the PR
+  # branch, and a PR could otherwise add an entry (or a permissive verifier) before the scored
+  # commit and then cover its own later commits with it.
+  mech_budget 1 || return 1
+  basecfg="$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WAIT_REPO/contents/.claude/maintainerd.json?ref=$MECH_BASE" 2>/dev/null)" || return 1
+  entries="$(mechanical_entries "$basecfg")"
+  [ -n "$entries" ] || return 1
+  # Nothing the PR changes, from its merge base to the head, may be the config or a file a verify
+  # argument names. One page only: 300 files or more is not covered.
+  mech_budget 1 || return 1
+  bcmp="$(gh api "repos/$WAIT_REPO/compare/$MECH_BASE...$head" 2>/dev/null)" || return 1
+  printf '%s' "$bcmp" | jq -e --argjson e "$(printf '%s' "$entries" | jq -s -c '[.[].verify[] | sub("^(\\./)+"; "")]')" '
+    (.files | type == "array") and (.files | length) < 300
+    and ([.files[] | .filename, (.previous_filename // empty)]
+      | any(.[]; . == ".claude/maintainerd.json" or (. as $x | $e | any(.[]; . == $x))) | not)' >/dev/null 2>&1 || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    bot="${line%% *}"
+    score="$(printf '%s' "$line" | cut -d' ' -f2)"
+    reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+    [ -n "$reviewed" ] || return 1
+    [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
+    is_head_sha "$reviewed" "$head" && continue
+    mech_budget 1 || return 1
+    cmp="$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" 2>/dev/null)" || return 1
+    # One page only (<=250 commits, <=300 files): a truncated range is not covered. The range is one
+    # linear chain from the reviewed commit G to the head: each commit's only parent is the one
+    # before it, so no commit outside the list is part of what the head contains.
+    printf '%s' "$cmp" | jq -e --arg r "$reviewed" --arg h "$head" '
+      .status == "ahead" and (.commits | type == "array") and (.commits | length) > 0
+      and (.total_commits == (.commits | length)) and (.commits | length) <= 250
+      and (.files | type == "array") and (.files | length) < 300
+      and ((.base_commit.sha // "") | test("^[0-9a-f]{40}$") and startswith($r))
+      and (.commits[-1].sha == $h)' >/dev/null 2>&1 || return 1
+    g="$(printf '%s' "$cmp" | jq -r '.base_commit.sha')"
+    printf '%s' "$cmp" | jq -e --arg g "$g" '
+      ([$g] + [.commits[].sha]) as $chain
+      | [range(0; .commits | length) as $k | .commits[$k]
+          | ((.parents | length) == 1 and .parents[0].sha == $chain[$k])] | all' >/dev/null 2>&1 || return 1
+    # A range that edits the config could have rewritten the entry that vouches for it.
+    printf '%s' "$cmp" | jq -e '[.files[] | .filename, (.previous_filename // empty)]
+      | any(. == ".claude/maintainerd.json") | not' >/dev/null 2>&1 || return 1
+    mech_budget 1 || return 1
+    act="$(gh api "repos/$WAIT_REPO/activity?ref=$(printf '%s' "refs/heads/$MECH_HEAD_REF" | jq -sRr @uri)&per_page=100" 2>/dev/null)" || return 1
+    # Verify runs from the base and inspects the range's commits; fetch them when they are missing.
+    if ! git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || ! git cat-file -e "$g^{commit}" 2>/dev/null ||
+      ! git cat-file -e "$head^{commit}" 2>/dev/null; then
+      MECH_HOLD=1 # a fetch takes time too: hold as for verify
+      mech_budget 60 && run_bounded "$MECH_SECS" "${MECH_GIT[@]}" fetch -q --no-tags origin "$MECH_BASE" "$g" "$head"
+    fi
+    # The base (the verifier's tree), G and the head (so the whole range) must all be here now,
+    # however the fetch went: a commit the verifier cannot see is not one it vouched for.
+    git cat-file -e "$MECH_BASE^{commit}" 2>/dev/null || return 1
+    git cat-file -e "$g^{commit}" 2>/dev/null || return 1
+    git cat-file -e "$head^{commit}" 2>/dev/null || return 1
+    ok=0
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      if range_covered_by_entry "$entry" "$cmp" "$act" "$g"; then
+        ok=1
+        total=$((total + MECH_COUNT))
+        name="$MECH_NAME"
+        break
+      fi
+    done <<<"$entries"
+    [ "$ok" = "1" ] || return 1
+  done <<<"$scores"
+  [ "$total" -gt 0 ] || return 1
+  # Verifying took time: the head it covered must still be the head, and the base whose config and
+  # verifier vouched for it must still be the base. The review decision, the open threads and the
+  # scores were read before verify ran, so a human's "changes requested", a new thread or a new
+  # score that landed meanwhile must show here too: any change means not covered. The answer must
+  # also arrive before the deadline. A poll that ran verify or a fetch already holds (MECH_HOLD), so
+  # a verify that failed or timed out did too; from here on every way out but success holds, cached
+  # verdicts or not: a change, running out of time, or a read or parse that fails, since a failed
+  # read cannot show that nothing changed. The caller must not fall back to another
+  # covered-staleness path, or judge anything else, on the state it read before verify ran.
+  MECH_HOLD=1
+  mech_budget 1 || return 1
+  now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
+  now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.baseRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
+  [ "$now_head" = "$head $MECH_BASE $MECH_DECISION" ] || return 1
+  mech_budget 1 || return 1
+  now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
+  now_threads="$(unresolved_threads "$now_gql")" || return 1
+  [ "$now_threads" = "$MECH_THREADS" ] || return 1
+  now_scores="$(scores_of "$now_pr" "$now_gql" "$head")"
+  [ "$now_scores" = "$scores" ] || return 1
+  mech_budget 1 || return 1
+  MECH_HOLD=0
+  MECH_NOTE="  covered: $first; $total verified mechanical commit(s) ($name) since"
+  return 0
+}
+
+# fl_read <head> — the first-line reviewer's verdict on <head> (vr_read), from a read whose open
+# review threads and review decision must still be the ones the poll judged on (MECH_THREADS,
+# MECH_DECISION): a thread that opened since, or a "changes requested", fails it, as does a read that
+# fails. When the reviewer is happy, the PR (head, review decision) and the bots' scores are read
+# once more after it, and must still be the ones the poll judged on (MECH_SCORES): a below-bar score
+# that landed mid-poll, a moved head or a failed read fails it. When rung 0 needs its own read for
+# those scores, that read's threads and decision are held to MECH_THREADS and MECH_DECISION too. It is the last read before a covered
+# approval, so the verdict rests on it. Both covered-staleness paths read through it.
+fl_read() {
+  local vr_gql now_pr now_gql now_head
+  vr_gql="$(fetch_gql "$FL_NAME")" || return 1
+  [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
+  # Every page carries the decision; each must still be the one the poll judged on.
+  printf '%s' "$vr_gql" | jq -s -e --arg d "$MECH_DECISION" \
+    '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
+  vr_read "$vr_gql" "$1"
+  # Only a happy verdict can approve; any other needs no second look.
+  [ "$VR_KIND" = "happy" ] || return 0
+  now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
+  now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
+  [ "$now_head" = "$1 $MECH_DECISION" ] || return 1
+  # The scores are read as poll_once reads them: rung 0 needs its own check name's runs; without
+  # rung 0, the first-line read already carries the description's last editor.
+  if [ -n "$CHECK_NAME" ]; then
+    now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
+    # This read is the newest, so it must not show a thread or a decision the poll did not judge
+    # on either: scores_of reads neither, and a match on the scores alone would approve over them.
+    [ "$(unresolved_threads "$now_gql")" = "$MECH_THREADS" ] || return 1
+    printf '%s' "$now_gql" | jq -s -e --arg d "$MECH_DECISION" \
+      '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
+  else
+    now_gql="$vr_gql"
+  fi
+  [ "$(scores_of "$now_pr" "$now_gql" "$1")" = "$MECH_SCORES" ] || return 1
+  return 0
+}
+
+# first_line_waiver_ok <head> <open-thread-count> — in first-line mode, covered staleness (mechanical
+# or not) waives only "the score names the head"; an approval still needs the first-line reviewer's
+# completed, happy round on the head itself. Open review threads pass here because they are reported
+# as findings:<n> (never approved), whatever the first-line reviewer says. Outside first-line mode
+# there is nothing more to hold. Anything unreadable, late or changed is "no", and the caller holds
+# on a "no" (it follows a mechanical cover, so the poll's own read is stale by now).
+first_line_waiver_ok() {
+  [ "$FIRST_LINE" = "1" ] || return 0
+  [ "$2" -eq 0 ] || return 0
+  mech_budget 1 || return 1
+  fl_read "$1" || return 1
+  [ "$VR_KIND" = "happy" ]
+}
+
+# covered_by_first_line <scores> <head> — covered staleness (first-line mode only). True when every
+# published score is at the bar, names an ANCESTOR of the head (or the head), and the first-line
+# reviewer has a completed, happy round on the head. Anything unreadable is "not covered".
+COVERED_NOTE=""
+covered_by_first_line() {
+  local scores="$1" head="$2" line bot score reviewed num den status first=""
+  COVERED_NOTE=""
+  [ -n "$scores" ] || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    bot="${line%% *}"
+    score="$(printf '%s' "$line" | cut -d' ' -f2)"
+    reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+    [ -n "$reviewed" ] || return 1
+    num="${score%%/*}"
+    den="${score##*/}"
+    if [ "$den" != "$THR_DEN" ] || [ "$num" -lt "$THR_NUM" ]; then
+      return 1
+    fi
+    if ! is_head_sha "$reviewed" "$head"; then
+      status="$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" --jq .status 2>/dev/null)" || return 1
+      case "$status" in ahead | identical) ;; *) return 1 ;; esac
+    fi
+    [ -n "$first" ] || first="$bot $score on ${reviewed:0:7}"
+  done <<<"$scores"
+  fl_read "$head" || return 1
+  [ "$VR_KIND" = "happy" ] || return 1
+  COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
   return 0
 }
 
@@ -244,16 +880,31 @@ find_scores() {
   return 0
 }
 
+# scores_of <pr-json> <graphql-json-stream> <head> — the scores a poll judges on: rung 0 (the
+# configured App's check run on the head; may be PENDING or INCOMPLETE) when it answers, else the
+# bot ladder of find_scores. poll_once and the mechanical re-read share it so both read alike.
+scores_of() {
+  local pr="$1" gql="$2" head="$3" s="" editor
+  [ -z "$CHECK_NAME" ] || s="$(check_run_score "$gql" "$head")"
+  if [ -z "$s" ]; then
+    editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
+    s="$(find_scores "$pr" "$editor")"
+  fi
+  printf '%s' "$s"
+}
+
 # One poll. Sets VERDICT (empty = not decided yet) and DETAIL (extra stdout lines).
 VERDICT=""
 DETAIL=""
 LAST_ERR=""
 poll_once() {
-  local pr gql threads editor head scores line bot score reviewed num den
-  local unresolved n decision all_met stale
+  local pr gql threads head scores line bot score reviewed num den
+  local unresolved n decision all_met stale held skip_labelled head_scored
 
   VERDICT=""
   DETAIL=""
+  COVERED_NOTE="" # a note from an earlier poll must never ride on this poll's verdict
+  MECH_HOLD=0
   pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS" 2>&1)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
@@ -268,11 +919,18 @@ poll_once() {
     VERDICT="no-review-scheduled"
     return 0
   fi
+  # The skip label: no reviewer is scheduled. In the final stage with a numeric threshold, a score a
+  # bot already published on the head (it raced the label, or the label came later) still counts,
+  # so read the scores first and only report no-review-scheduled when none of them is on the head.
+  skip_labelled=0
   if [ -n "$SKIP_LABEL" ] && printf '%s' "$pr" | jq -e --arg l "$SKIP_LABEL" '[.labels[]?.name] | index($l)' >/dev/null 2>&1; then
-    VERDICT="no-review-scheduled"
-    return 0
+    if [ "$STAGE" = "vr" ] || [ -z "$THR_NUM" ]; then
+      VERDICT="no-review-scheduled"
+      return 0
+    fi
+    skip_labelled=1
   fi
-  if [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
+  if [ "$STAGE" = "final" ] && [ "$(printf '%s' "$BOTS_JSON" | jq 'length')" = "0" ] && [ -z "$CHECK_NAME" ]; then
     VERDICT="no-review-scheduled"
     return 0
   fi
@@ -287,41 +945,99 @@ poll_once() {
     return 1
   }
   decision="$(printf '%s' "$pr" | jq -r '.reviewDecision // ""')"
+  MECH_HEAD_REF="$(printf '%s' "$pr" | jq -r '.headRefName // ""')"
+  MECH_CROSS="$(printf '%s' "$pr" | jq -r 'if .isCrossRepository == false then "false" else "true" end')"
+  MECH_BASE="$(printf '%s' "$pr" | jq -r '.baseRefOid // ""')"
 
-  if [ -n "$CHECK_NAME" ]; then
-    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$CHECK_NAME" 2>&1)"
-  else
-    gql="$(gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1)"
-  fi || {
+  if [ "$STAGE" = "vr" ]; then
+    gql="$(fetch_gql "$FL_NAME")" || {
+      LAST_ERR="gh api graphql failed: $gql"
+      return 1
+    }
+    vr_read "$gql" "$head"
+    case "$VR_KIND" in
+      happy) VERDICT="vr-happy" ;;
+      handoff)
+        VERDICT="vr-handoff"
+        DETAIL="$VR_DETAIL"
+        ;;
+      findings)
+        VERDICT="vr-findings:$VR_N"
+        DETAIL="$VR_DETAIL"
+        ;;
+      escalated)
+        VERDICT="vr-escalated"
+        DETAIL="$VR_DETAIL"
+        ;;
+      unavailable)
+        VERDICT="vr-unavailable"
+        DETAIL="$VR_DETAIL"
+        ;;
+    esac
+    return 0 # none / pending: keep waiting
+  fi
+  gql="$(fetch_gql "$CHECK_NAME")" || {
     LAST_ERR="gh api graphql failed: $gql"
     return 1
   }
-  threads="$(printf '%s' "$gql" | jq -s -c '
-    [.[] | .data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)]')" || {
+  threads="$(unresolved_threads "$gql")" || {
     LAST_ERR="could not parse review threads"
     return 1
   }
-  editor="$(printf '%s' "$gql" | jq -s -r '[.[] | .data.repository.pullRequest.userContentEdits.nodes[0].editor.login // empty][0] // "" | '"$NORM_LOGIN"'')" || editor=""
   unresolved="$threads"
   n="$(printf '%s' "$unresolved" | jq 'length')"
+  MECH_DECISION="$decision"
+  MECH_THREADS="$unresolved"
 
   # Is there a review of THIS head yet? Every configured bot that has published a score must have
   # scored the head (else its score is stale and we keep waiting), and — numeric threshold — every
   # one of them must meet the bar. Absence of any score is "not reviewed yet", never a pass.
   # Rung 0 first: the configured App's check run on this head, when it has a readable verdict. It
   # replaces the bot ladder below; if the run exists but is unreadable, the ladder decides.
-  scores=""
-  if [ -n "$CHECK_NAME" ]; then
-    scores="$(check_run_score "$gql" "$head")"
-    [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
-    if [ "$scores" = "INCOMPLETE" ]; then
-      # More check suites or runs than one query returns: the configured run may be on a page not
-      # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
-      LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+  scores="$(scores_of "$pr" "$gql" "$head")"
+  MECH_SCORES="$scores" # the last read before a covered approval must find them unchanged (fl_read)
+  [ "$scores" != "PENDING" ] || return 0 # the reviewer is still working on this head
+  if [ "$scores" = "INCOMPLETE" ]; then
+    # More check suites or runs than one query returns: the configured run may be on a page not
+    # read. Never let the lower rungs decide on that; wait, and say why if the deadline hits.
+    LAST_ERR="rung 0: the head commit's check suites/runs were truncated (hasNextPage); the configured check run may be unseen"
+    return 0
+  fi
+  if [ "$skip_labelled" = "1" ]; then
+    # Skip-labelled: judge a score on the head as on any PR; with none, nothing will review it. A
+    # score on a known older commit is named in the detail (it is not a review of this head, and no
+    # bot will refresh it), never waited on. A score whose commit cannot be read is not "an older
+    # commit": it may well be the head, so it is never waived. Below the threshold it halts as a
+    # found failing score does (findings:<n>); at or above it, it waives nothing.
+    head_scored=0
+    unreadable_below=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
+      ! is_head_sha "$reviewed" "$head" || head_scored=1
+      if [ -z "$reviewed" ]; then
+        score="$(printf '%s' "$line" | cut -d' ' -f2)"
+        num="${score%%/*}"
+        den="${score##*/}"
+        if [ "$den" != "$THR_DEN" ] || ! [ "$num" -ge "$THR_NUM" ] 2>/dev/null; then
+          unreadable_below="${unreadable_below}  ${line%% *} scored $score on an unreadable commit, below review.approvalThreshold $THRESHOLD; the skip label does not waive a found score"$'\n'
+        fi
+      fi
+    done <<<"$scores"
+    if [ -n "$unreadable_below" ]; then
+      VERDICT="findings:$n"
+      DETAIL="${unreadable_below%$'\n'}"
+      [ "$n" -eq 0 ] || DETAIL="$(printf '%s' "$unresolved" | jq -r '.[] |
+        "  \(.path // "?"):\((.line // .originalLine // 0))  " +
+        ((.comments.nodes[0].body // "") | gsub("<[^>]*>"; "") | gsub("\\s+"; " ") | sub("^ "; "") | .[0:160])')"$'\n'"$DETAIL"
+      return 0
+    fi
+    if [ "$head_scored" = "0" ]; then
+      VERDICT="no-review-scheduled"
+      [ -z "$scores" ] || DETAIL="$(printf '%s\n' "$scores" | awk 'NF { if ($3 == "") printf "  %s scored %s on an unreadable commit, at or above the threshold; the PR carries the skip label\n", $1, $2; else printf "  %s scored %s on %s, not the head; the PR carries the skip label\n", $1, $2, $3 }')"
       return 0
     fi
   fi
-  [ -n "$scores" ] || scores="$(find_scores "$pr" "$editor")"
   stale=0
   all_met=1
   if [ -z "$THR_NUM" ]; then
@@ -332,6 +1048,10 @@ poll_once() {
       reviewed="$(printf '%s' "$line" | cut -d' ' -f3)"
       is_head_sha "$reviewed" "$head" || stale=1
     done <<<"$scores"
+    if [ "$stale" = "1" ] && covered_by_mechanical "$scores" "$head" && first_line_waiver_ok "$head" "$n"; then
+      stale=0
+      COVERED_NOTE="$MECH_NOTE"
+    fi
     [ "$stale" = "0" ] || return 0
     [ "$decision" = "APPROVED" ] || [ -n "$scores" ] || return 0
   else
@@ -350,6 +1070,36 @@ poll_once() {
         DETAIL="  $bot scored $score, below review.approvalThreshold $THRESHOLD on the head commit"
       fi
     done <<<"$scores"
+    # Covered staleness: the bar was met on an ancestor of the head. A poll that ran a mechanical
+    # cover decides nothing unless the cover succeeds: what it read before verify (or a fetch) is
+    # stale by now, so it never falls back to the first-line path below, which would approve from
+    # that read. It holds, and the next poll judges from a fresh one: in first-line mode with
+    # nothing open, that poll tries the first-line path first, before anything slow runs, so a
+    # verifier that keeps hanging (or a fetch that keeps failing) costs one interval, not the wait.
+    if [ "$stale" = "1" ] && [ "$all_met" = "1" ]; then
+      held="$MECH_HELD"
+      MECH_HELD=0
+      if [ "$held" = "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+        covered_by_first_line "$scores" "$head"; then
+        stale=0
+      elif covered_by_mechanical "$scores" "$head"; then
+        # Verified mechanical commits since the passing score (any mode). Open threads are
+        # reported below; in first-line mode an approval also needs a happy first-line round on
+        # the head, and a "no" holds too.
+        first_line_waiver_ok "$head" "$n" || {
+          MECH_HELD=1
+          return 0
+        }
+        stale=0
+        COVERED_NOTE="$MECH_NOTE"
+      elif [ "$MECH_HOLD" = "1" ]; then
+        MECH_HELD=1
+        return 0
+      elif [ "$held" != "1" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] && covered_by_first_line "$scores" "$head"; then
+        # First-line mode only: nothing is open and the first-line reviewer is happy on the head.
+        stale=0
+      fi
+    fi
     [ "$stale" = "0" ] || return 0
   fi
 
@@ -369,12 +1119,15 @@ poll_once() {
   fi
 
   if [ -z "$THR_NUM" ]; then
-    [ "$decision" = "APPROVED" ] && VERDICT="approved"
+    if [ "$decision" = "APPROVED" ]; then
+      VERDICT="approved"
+      DETAIL="$COVERED_NOTE"
+    fi
     return 0
   fi
   if [ "$all_met" = "1" ]; then
     VERDICT="approved"
-    DETAIL=""
+    DETAIL="$COVERED_NOTE"
   else
     VERDICT="findings:0"
   fi
@@ -391,11 +1144,19 @@ while :; do
     # slow review. Say so instead of waiting out the deadline and calling it a timeout.
     die 3 "$LAST_ERR"
   fi
+  # A covered approval lands before the deadline: it rests on reads made after the poll's own (a
+  # mechanical re-read, a first-line read), and one that ran past the deadline approves nothing; the
+  # timeout below reports it. A plain approval is the poll's single read, so the last look at the
+  # deadline (and --timeout-seconds 0) can still report it.
+  if [ "$VERDICT" = "approved" ] && [ -n "$COVERED_NOTE" ] && [ "$(now)" -ge "$deadline" ]; then
+    VERDICT=""
+    LAST_ERR="a covered approval was read only after the deadline; not reported"
+  fi
   if [ -n "$VERDICT" ]; then
     printf '%s\n' "$VERDICT"
     [ -z "$DETAIL" ] || printf '%s\n' "$DETAIL"
     case "$VERDICT" in
-      approved | no-review-scheduled) exit 0 ;;
+      approved | no-review-scheduled | vr-happy | vr-handoff | vr-unavailable) exit 0 ;;
       *) exit 1 ;;
     esac
   fi

@@ -8,13 +8,20 @@ in.
 
 | Skill | What it does | Typical trigger |
 | --- | --- | --- |
-| [`worklog`](skills/worklog/SKILL.md) | Write up a day's work — drawn from the day's merged PRs for completeness, enriched by the live session for the *why* — into a session-summary note, a link from the project hub, and one line in the daily note. | "log this session", "write up a dev log" |
+| [`worklog`](skills/worklog/SKILL.md) | Write up a day's work — drawn from the day's merged PRs for completeness, enriched by the live session for the *why* — into a session-summary note, a link from the project hub, and one line in the daily note. Takes an optional free-text directive that steers the summary. With `--daily` it is a sweep: it rewrites only the daily-note bullets across every configured repo, writes no session note, and is meant to run headless on a schedule. | "log this session", "write up a dev log", `claude -p` on cron |
 
 ## Why merged PRs rather than the session
 
 A session knows why a change was made; it doesn't know what else shipped that day from cloud
 sessions, other terminals, or scheduled agents. Taking the PR list as the spine and the session as
 enrichment is what makes the log complete rather than merely detailed.
+
+## Daily sweep, not per-event hooks
+
+The digest is the product; per-event firing kills synthesis value. Run `worklog --daily` once a day
+(the SKILL's "Running it headless" section has the `claude -p` line for cron or a LaunchAgent) rather
+than wiring the skill to a hook that fires per PR. The session note stays available, but it is
+opt-in: an interactive `/worklog`, or `--session-note` on a sweep.
 
 Re-runs are append-safe: the skill never clobbers content it didn't write, and rewrites its own
 daily-note line in place rather than adding a second one.

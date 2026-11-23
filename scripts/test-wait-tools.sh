@@ -26,6 +26,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 HEAD_SHA="aaaaaaa1111111111111111111111111111111111"
+BASE_SHA="dddddddd44444444444444444444444444444444"
 OLD_SHA="bbbbbbb2222222222222222222222222222222222"
 
 # The stub gh. Dispatches on the subcommand and serves $STUB_DIR fixtures.
@@ -49,12 +50,85 @@ serve() {
   [ ! -f "$f.fail" ] || exit 1
 }
 echo "$*" >>"$STUB_DIR/.calls"
+echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
 case "$1 $2" in
-  "pr view") serve prview ;;
-  "api graphql") serve threads ;;
-  "api -H") serve remoteconfig ;;
+  "pr view")
+    case "$*" in
+      # The re-read after verifying: the PR fixture as it stands now (the one the last poll read,
+      # without advancing its sequence), so a verify stub that rewrites the fixture changes its
+      # decision and scores; its head is prhead's and its base the case's unless prbase says
+      # otherwise. A head-only re-read gets the head alone, so a tool that ignores the base is caught.
+      # rereadfail: this re-read fails once (a transient API error).
+      *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
+        [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
+        n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
+        f="$STUB_DIR/prview.$n"
+        [ -f "$f" ] || f="$STUB_DIR/prview"
+        [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+        # A case with no prhead fixture (no mechanical commits) re-reads the PR fixture's own head.
+        if ls "$STUB_DIR"/prhead* >/dev/null 2>&1; then h="$(serve prhead)" || exit 1; else h="$(jq -r .headRefOid "$f")"; fi
+        b="$(cat "$STUB_DIR/prbase" 2>/dev/null || cat "$STUB_DIR/.base" 2>/dev/null || jq -r .baseRefOid "$f")"
+        jq -c --arg h "$h" --arg b "${b:-dddddddd44444444444444444444444444444444}" \
+          '.headRefOid = $h | .baseRefOid = $b' "$f"
+        ;;
+      *"--json headRefOid "*) serve prhead ;;
+      *) serve prview ;;
+    esac
+    ;;
+  "api graphql")
+    # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
+    # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
+    # rung0late: a jq filter applied to the second and later rung-0 (Greptile Review) reads, so a
+    # thread or a review decision lands after the poll's own read (only the re-read can see it).
+    case "$*" in *"checkName=Vycari Review"*)
+      [ ! -f "$STUB_DIR/flsleep" ] || sleep "$(cat "$STUB_DIR/flsleep")"
+      [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
+      ;;
+    *"checkName=Greptile Review"*)
+      if [ -f "$STUB_DIR/rung0late" ]; then
+        n=$(($(cat "$STUB_DIR/.count.rung0" 2>/dev/null || echo 0) + 1))
+        printf '%s' "$n" >"$STUB_DIR/.count.rung0"
+        if [ "$n" -ge 2 ]; then
+          out="$(serve threads)" || exit 1
+          printf '%s\n' "$out" | jq -c "$(cat "$STUB_DIR/rung0late")"
+          exit 0
+        fi
+      fi
+      ;;
+    esac
+    serve threads
+    ;;
+  "api -H")
+    case "$*" in
+      # The PR base's config (mechanical commits): the checkout's own unless a case says otherwise.
+      *"?ref="*) if ls "$STUB_DIR"/basecfg* >/dev/null 2>&1; then serve basecfg; else cat "$STUB_DIR/../repo/.claude/maintainerd.json"; fi ;;
+      *) serve remoteconfig ;;
+    esac
+    ;;
+  "api repos/"*"/compare/"*)
+    # The PR base's compare (mechanical commits): base...head, the base named by the case.
+    # A `--jq <filter>` caller (the first-line ancestry check) gets the filter applied when the
+    # fixture is a JSON compare object; a plain-text fixture ("ahead") is served as it is.
+    b="$(cat "$STUB_DIR/.base" 2>/dev/null)"
+    case "$2" in
+      *"/compare/${b:-dddddddd}"*) if [ -f "$STUB_DIR/basecompare" ]; then out="$(serve basecompare)"; else out="$(serve compare)"; fi ;;
+      *) out="$(serve compare)" ;;
+    esac || exit 1
+    if [ "${3:-}" = "--jq" ] && printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      printf '%s' "$out" | jq -r "$4"
+    else
+      printf '%s\n' "$out"
+    fi
+    ;;
+  "api repos/"*"/activity"*) serve activity ;;
   "run view") serve joblog ;;
-  "repo view") echo "o/r" ;;
+  "repo view")
+    # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
+    case "$*" in
+      *"--json url"*) echo "https://${STUB_REPO_HOST:-github.com}/o/r" ;;
+      *) echo "o/r" ;;
+    esac
+    ;;
   "api repos/o/r/actions/jobs/"*) serve job ;;
   *) echo "stub: unhandled: $*" >&2; exit 1 ;;
 esac
@@ -81,8 +155,9 @@ greptile_text() { # <score> <sha7>
 }
 write_prview() { # <file-suffix or ""> <jq-filter-over-base>
   local base
-  base="$(jq -n --arg head "$HEAD_SHA" '{
-    number: 7, isDraft: false, state: "OPEN", labels: [], headRefOid: $head, body: "",
+  base="$(jq -n --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '{
+    number: 7, isDraft: false, state: "OPEN", labels: [], headRefOid: $head, headRefName: "feat",
+    isCrossRepository: false, baseRefOid: $base, body: "",
     comments: [], reviews: [], reviewDecision: "", statusCheckRollup: []}')"
   printf '%s' "$base" | jq -c "$2" >"$STUB_DIR/prview$1"
 }
@@ -139,6 +214,11 @@ expect_not_contains() {
     *) ok "$1" ;;
   esac
 }
+expect_not_approved() { # <label> — the first line of the output is anything but approved
+  if [ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ]; then ok "$1"; else bad "$1" "got: $OUT"; fi
+}
+# A review-thread fixture filter: one open thread, opened late (by a person).
+LATE_THREAD='.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]'
 calls_of() { grep -c "$1" "$STUB_DIR/.calls" 2>/dev/null || true; }
 
 CFG_5='{"review":{"approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
@@ -153,6 +233,10 @@ write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
 write_threads "" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "5/5 on head with no open threads -> approved" approved 0
+# The deadline discard covers only covered approvals: a plain one from the poll's single read is
+# reported even when that read is the last look at the deadline.
+run_tool "$WFR" 7 -R o/r --timeout-seconds 0 --interval-seconds 1
+expect "--timeout-seconds 0: a plain approval on the one look -> approved" approved 0
 
 new_case review-approved-resolved
 write_config "$CFG_5"
@@ -312,6 +396,7 @@ new_case review-pr-url-other-repo
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
 echo '{"review":{"skipLabel":"greptile:skip","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}' >"$STUB_DIR/remoteconfig"
+write_threads "" '[]'
 run_tool "$WFR" https://github.com/x/y/pull/7 --timeout-seconds 3 --interval-seconds 1
 expect "a PR URL for another repo is polled there and judged by THAT repo's config" no-review-scheduled 0
 grep -q 'pr view 7 -R x/y' "$STUB_DIR/.calls" && ok "the URL's repository, not the checkout's, is polled" || bad "url repo" "$(cat "$STUB_DIR/.calls")"
@@ -334,6 +419,42 @@ write_threads "" '[]'
 run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
 [ "$RC" = "3" ] && ok "an unreadable remote config fails closed (exit 3)" || bad "remote config error" "rc=$RC out=$OUT"
 
+# A PR URL on another host (GitHub Enterprise) is resolved on that host: every gh call goes there.
+new_case review-pr-url-enterprise
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+echo "$CFG_5" >"$STUB_DIR/remoteconfig"
+run_tool "$WFR" https://GHE.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL is accepted" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "every gh call goes to the URL's host (GH_HOST)" ||
+  bad "enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+grep -q 'pr view 7 -R o/r' "$STUB_DIR/.calls" && ok "the URL's repository is polled on that host" || bad "enterprise repo" "$(cat "$STUB_DIR/.calls")"
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  ok "a github.com checkout of the same owner/name is not the Enterprise repo: its config is read there" ||
+  bad "enterprise: local config used for another host's repo" "$(cat "$STUB_DIR/.calls")"
+
+new_case review-pr-url-enterprise-checkout
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+STUB_REPO_HOST=ghe.example.com run_tool "$WFR" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "an Enterprise PR URL from a checkout of that repo" no-review-scheduled 0
+grep -q 'contents/.claude/maintainerd.json' "$STUB_DIR/.calls" &&
+  bad "enterprise: a checkout on the URL's host is the target, its config is local" "$(cat "$STUB_DIR/.calls")" ||
+  ok "a checkout of the repo on the URL's host reads its own config"
+
+new_case review-pr-url-overrides-gh-host
+write_config "$CFG_5"
+write_prview "" '.isDraft = true'
+GH_HOST=ghe.example.com run_tool "$WFR" https://github.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "a github.com PR URL with GH_HOST set elsewhere" no-review-scheduled 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "github.com" ] && ok "the URL's host wins over a contradicting GH_HOST" ||
+  bad "GH_HOST override" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+
+new_case review-pr-url-bad-host
+write_config "$CFG_5"
+run_tool "$WFR" 'https://gh$e.example.com/o/r/pull/7'
+[ "$RC" = "3" ] && ok "a PR URL whose host is not a host name is a usage error" || bad "bad host" "rc=$RC"
+
 new_case review-url-contradicts-R
 write_config "$CFG_5"
 run_tool "$WFR" https://github.com/x/y/pull/7 -R o/r
@@ -342,8 +463,55 @@ run_tool "$WFR" https://github.com/x/y/pull/7 -R o/r
 new_case review-skip-label
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
+write_threads "" '[]' # the scores are read first: a score on the head would still count
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "skipLabel on the PR -> no-review-scheduled" no-review-scheduled 0
+
+new_case review-skip-label-head-score-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score on the head -> findings:0, the label does not waive it" "findings:0" 1
+expect_contains "the found score is named" "scored 3/5"
+
+new_case review-skip-label-head-score-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[{"resolved":false,"path":"a.sh","line":2,"body":"P1: raced the label"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a head score with an open thread -> findings:1" "findings:1" 1
+
+new_case review-skip-label-stale-score
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 bbbbbbb)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a score on an OLDER commit -> no-review-scheduled, not a wait" no-review-scheduled 0
+expect_contains "the older-commit score is named in the detail" "scored 3/5 on bbbbbbb, not the head"
+
+new_case review-skip-label-unreadable-commit-below
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 3/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 3/5 score whose commit is unreadable -> findings:0, never waived" "findings:0" 1
+expect_contains "the unreadable-commit score is named" "scored 3/5 on an unreadable commit, below"
+
+new_case review-skip-label-unreadable-commit-met
+write_config "$CFG_5"
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment '<h2>Confidence Score: 5/5</h2>')]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "skipLabel plus a 5/5 score whose commit is unreadable -> no-review-scheduled (nothing failing to waive)" no-review-scheduled 0
+expect_contains "the passing unreadable-commit score is named" "scored 5/5 on an unreadable commit, at or above"
+
+new_case review-skip-label-vr-stage
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","skipLabel":"greptile:skip","bots":["greptile-apps[bot]"]}}'
+write_prview "" ".labels = [{name:\"greptile:skip\"}] | .comments = [$(bot_comment "$(greptile_text 3/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 --stage vr "${FAST[@]}"
+expect "--stage vr with skipLabel -> no-review-scheduled (the final stage reads the score)" no-review-scheduled 0
 
 new_case review-draft
 write_config "$CFG_5"
@@ -707,6 +875,14 @@ rollup "" "$(check_run build COMPLETED SUCCESS), $(check_run lint COMPLETED SKIP
 run_tool "$WFC" 7 "${FASTC[@]}"
 expect "all complete, none failed -> green" green 0
 
+new_case checks-pr-url-enterprise
+rollup "" "$(check_run build COMPLETED SUCCESS)"
+echo '{}' >"$STUB_DIR/remoteconfig"
+run_tool "$WFC" https://ghe.example.com/o/r/pull/7 --timeout-seconds 3 --interval-seconds 1 --settle-seconds 0
+expect "wait-for-checks: an Enterprise PR URL is read on its host" green 0
+[ "$(sort -u "$STUB_DIR/.hosts")" = "ghe.example.com" ] && ok "wait-for-checks: every gh call goes to the URL's host" ||
+  bad "wait-for-checks enterprise host" "hosts: $(sort -u "$STUB_DIR/.hosts" | tr '\n' ' ')"
+
 new_case checks-green-status-context
 rollup "" "$(check_run build COMPLETED SUCCESS), {\"__typename\":\"StatusContext\",\"context\":\"ci/legacy\",\"state\":\"SUCCESS\"}"
 run_tool "$WFC" 7 "${FASTC[@]}"
@@ -833,6 +1009,1017 @@ run_tool "$WFC" 7 "${FASTC[@]}"
 new_case checks-usage
 run_tool "$WFC"
 [ "$RC" = "3" ] && ok "missing PR argument is a usage error" || bad "usage" "rc=$RC"
+
+echo
+# --- first-line mode: the VR stage, and covered staleness ----------------------------------------
+
+CFG_FL='{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+# vr_run <databaseId> <title> <json-or-empty> [status] — the first-line reviewer's check run
+vr_run() {
+  jq -n -c --argjson id "$1" --arg title "$2" --arg t "$3" --arg status "${4:-COMPLETED}" '{databaseId: $id,
+    name: "Vycari Review", status: $status, conclusion: "NEUTRAL", startedAt: "2026-10-16T00:00:00Z",
+    completedAt: "2026-10-16T00:01:00Z", title: $title, text: (if $t == "" then null else ("```json\n" + $t + "\n```") end)}'
+}
+vr_json() { # <sha> <happy> <p0> <p1> <p2> <findings-json> <disputed-json> <escalated-json> <greptile_requested-json>
+  jq -n -c --arg sha "$1" --argjson happy "$2" --argjson p0 "$3" --argjson p1 "$4" --argjson p2 "$5" \
+    --argjson f "$6" --argjson d "$7" --argjson e "$8" --argjson g "$9" '{score: 4, max: 5, reviewed_sha: $sha,
+    round: 1, mode: "first-line", open: {p0: $p0, p1: $p1, p2: $p2}, findings: $f, disputed: $d, escalated: $e,
+    happy: $happy, greptile_requested: $g}'
+}
+vr_case() { # <case> <config> <title> <json> [status]
+  new_case "$1"
+  write_config "$2"
+  write_prview "" '.comments = []'
+  write_threads "" '[]'
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "$3" "$4" "${5:-COMPLETED}")]")]"
+}
+
+vr_case vr-happy "$CFG_FL" "Confidence Score: 5/5" "$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a happy verdict is reported, not recomputed -> vr-happy" vr-happy 0
+
+# A 3/5 that VR calls happy is happy: the script never works happiness out from the score.
+vr_case vr-happy-is-read "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" true 0 0 1 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: happy comes from the JSON flag even with open P2s" vr-happy 0
+
+vr_case vr-findings "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 2 1 '["VR-aaaa1111","VR-bbbb2222","VR-cccc3333"]' '["VR-bbbb2222"]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: not happy, nothing handed off -> vr-findings:3" "vr-findings:3" 1
+expect_contains "vr stage: finding ids are listed" "VR-aaaa1111"
+expect_contains "vr stage: a disputed finding is marked" "VR-bbbb2222 (disputed)"
+expect_not_contains "vr stage: an undisputed finding is not marked" "VR-aaaa1111 (disputed)"
+expect_not_contains "vr stage: no other undisputed finding is marked" "VR-cccc3333 (disputed)"
+
+# An id that is a prefix of a disputed one is a different finding: the match is exact, not substring.
+vr_case vr-disputed-exact "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 2 0 '["VR-ffff","VR-ffff6666"]' '["VR-ffff6666"]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: two findings, one disputed -> vr-findings:2" "vr-findings:2" 1
+expect_contains "vr stage: the disputed id is marked" "VR-ffff6666 (disputed)"
+expect_not_contains "vr stage: a prefix of a disputed id is not marked" "VR-ffff (disputed)"
+
+vr_case vr-escalated "$CFG_FL" "Needs maintainer: P0 dispute (VR-dddd4444)" "$(vr_json "$HEAD_SHA" false 1 0 0 '["VR-dddd4444"]' '["VR-dddd4444"]' '["VR-dddd4444"]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: an escalated P0 dispute -> vr-escalated" vr-escalated 1
+expect_contains "vr stage: the escalated id is named" "VR-dddd4444 (escalated)"
+
+vr_case vr-escalated-by-title "$CFG_FL" "Needs maintainer: P0 dispute (VR-dddd4444)" "$(vr_json "$HEAD_SHA" false 1 0 0 '["VR-dddd4444"]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: the title alone marks an escalation" vr-escalated 1
+
+vr_case vr-cap "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-eeee5555"]' '[]' '[]' "\"$HEAD_SHA\"")"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: round cap reached, head handed to the final reviewer -> vr-handoff" vr-handoff 0
+expect_contains "vr stage: the unresolved findings are still listed" "VR-eeee5555"
+
+vr_case vr-cap-other-head "$CFG_FL" "Confidence Score: 3/5" "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-eeee5555"]' '[]' '[]' "\"$OLD_SHA\"")"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a hand-off recorded for another commit is not this head's -> vr-findings:1" "vr-findings:1" 1
+
+vr_case vr-unavailable "$CFG_FL" "Review unavailable: model overloaded" ""
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: Review unavailable -> vr-unavailable, carry on with the final stage" vr-unavailable 0
+
+vr_case vr-in-progress "$CFG_FL" "" "" IN_PROGRESS
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a run still in progress keeps waiting -> timeout" timeout 2
+
+vr_case vr-round-incomplete "$CFG_FL" "Round incomplete: judge unavailable" ""
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: Round incomplete keeps waiting -> timeout" timeout 2
+
+vr_case vr-stale-head "$CFG_FL" "Confidence Score: 5/5" "$(vr_json "$OLD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a verdict for an earlier commit is not this head's -> timeout" timeout 2
+
+vr_case vr-unchanged-repost "$CFG_FL" "unchanged since bbbbbbb" "$(vr_json "$OLD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: an 'unchanged since' re-post is terminal for the head it sits on" vr-happy 0
+
+new_case vr-no-run
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: no VR run yet -> timeout (address-review owns the 60-minute escalation)" timeout 2
+
+new_case vr-default-timeout-from-config
+write_config '{"review":{"mode":"first-line","firstLine":{"unavailableMinutes":0},"waitTimeoutMinutes":0}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites '[]'
+run_tool "$WFR" 7 -R o/r --interval-seconds 1 --stage vr
+expect "vr stage: review.waitTimeoutMinutes still overrides the default deadline" timeout 2
+
+new_case vr-draft
+write_config "$CFG_FL"
+write_prview "" '.isDraft = true'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: a draft PR has nothing to wait for" no-review-scheduled 0
+
+new_case vr-truncated
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" "$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)")]" true)]"
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "vr stage: truncated check data is never read as a verdict -> timeout" timeout 2
+
+# Inert unless the mode is first-line.
+new_case vr-stage-needs-mode
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+write_prview "" '.comments = []'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage vr
+expect "--stage vr without review.mode first-line is a tool error" "" 3
+
+new_case vr-stage-bad-value
+write_config "$CFG_FL"
+write_prview "" '.comments = []'
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}" --stage bogus
+expect "--stage rejects an unknown stage" "" 3
+
+new_case vr-stage-on-checks
+write_config "$CFG_FL"
+echo '{}' >"$STUB_DIR/prview"
+run_tool "$WFC" 7 -R o/r --timeout-seconds 3 --interval-seconds 1 --stage vr
+expect "wait-for-checks.sh refuses --stage" "" 3
+
+# Covered staleness.
+cov_case() { # <case> <config> <greptile-score> <greptile-sha7> <compare-status> <vr-json> <threads-json>
+  new_case "$1"
+  write_config "$2"
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$3" "$4")")]"
+  write_threads "" "$7"
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" "$6")]")]"
+  printf '%s' "$5" >"$STUB_DIR/compare"
+}
+HAPPY="$(vr_json "$HEAD_SHA" true 0 0 0 '[]' '[]' '[]' null)"
+UNHAPPY="$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-ffff6666"]' '[]' '[]' null)"
+THREAD_OPEN='[{"resolved":false,"path":"a.py","line":3,"body":"P1 something"}]'
+
+cov_case cov-ok "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: Greptile 5/5 on an ancestor + VR happy on head + no open thread -> approved" approved 0
+expect_contains "covered: the output says why the older score stands" "covered:"
+
+cov_case cov-vr-unhappy "$CFG_FL" 5/5 bbbbbbb ahead "$UNHAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: VR not happy on head -> the score stays stale (timeout)" timeout 2
+
+cov_case cov-open-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: an open Greptile thread blocks it -> still stale (timeout)" timeout 2
+
+cov_case cov-below-bar "$CFG_FL" 4/5 bbbbbbb ahead "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a score under the threshold is never covered -> timeout" timeout 2
+
+cov_case cov-not-ancestor "$CFG_FL" 5/5 bbbbbbb diverged "$HAPPY" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a score on a commit that is not an ancestor of head -> timeout" timeout 2
+
+cov_case cov-compare-fails "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+touch "$STUB_DIR/compare.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: an unreadable ancestry check is not covered -> timeout" timeout 2
+
+cov_case cov-vr-fallback "$CFG_FL" 5/5 bbbbbbb ahead "" '[]'
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Review unavailable: x" "")]")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: VR unavailable on head is a fallback, not a completed round -> timeout" timeout 2
+
+cov_case cov-default-mode "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "inert: without review.mode first-line the same data stays stale (timeout)" timeout 2
+if grep -q compare "$STUB_DIR/.calls"; then bad "inert: no compare call" "$(cat "$STUB_DIR/.calls")"; else ok "inert: no compare call without first-line mode"; fi
+
+# Every approve path checks the deadline: a first-line read that ends past it is not approved.
+# (VR-5c1cb308)
+cov_case cov-late-vr "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
+
+# The fallback's own first-line read carries the review threads: one open there is not approved.
+cov_case cov-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered: a thread in the first-line read is never approved"
+
+# late_score_hook — makes the first-line read land a below-bar score on the head (the newest bot
+# comment) before it is served, so only a read of the scores after the first-line read can see it.
+late_score_hook() {
+  local new
+  new="$(jq -c ".comments += [$(bot_comment "$(greptile_text 3/5 "${HEAD_SHA:0:7}")")]" "$STUB_DIR/prview")"
+  printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/prview"\n' "$new" "$STUB_DIR" >"$STUB_DIR/flhook"
+  chmod +x "$STUB_DIR/flhook"
+}
+# The scores are read again after the first-line read: a below-bar score that lands mid-poll is
+# never approved over. (VR-286a8092)
+cov_case cov-late-score "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered: a below-bar score that lands during the first-line read is never approved over"
+expect "covered: ...the next poll reports it (findings:0)" findings:0 1
+
+# ...and a head that moves meanwhile is not covered either.
+cov_case cov-late-head "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf 'cccccccc33333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered: a head that moved by the score re-read is not covered (timeout)" timeout 2
+
+# With rung 0 configured, the re-read reads the scores through rung 0's own check name.
+cov_case cov-rung0-reread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config '{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "covered, rung 0 configured but silent: the ladder's score is re-read the same way -> approved" approved 0
+[ "$(calls_of 'checkName=Greptile Review')" -ge 2 ] && ok "covered, rung 0: ...through rung 0's check name" ||
+  bad "covered, rung 0: re-read" "$(cat "$STUB_DIR/.calls")"
+
+# The rung-0 re-read is the last read before a covered approval, so its threads and review
+# decision must still be the ones the poll judged on, not only its scores: a thread or a "changes
+# requested" that only that read shows is never approved over. (Greptile 4656446068 on #140)
+CFG_FL_RUNG0='{"review":{"mode":"first-line","approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"checkName":"Greptile Review","checkApp":"greptile-apps"}}'
+cov_case cov-rung0-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' "$LATE_THREAD" >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a thread that only the rung-0 re-read shows is never approved over"
+cov_case cov-rung0-late-decision "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested that only the rung-0 re-read shows is never approved over"
+# ...on a later page of that read too.
+cov_case cov-rung0-late-decision-page2 "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+write_config "$CFG_FL_RUNG0"
+printf '%s' '., (.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED")' >"$STUB_DIR/rung0late"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, rung 0: a changes-requested on a later page of the rung-0 re-read is never approved over"
+
+new_case fl-final-on-head
+write_config "$CFG_FL"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "first-line mode: a Greptile 5/5 on the head still approves with no VR call" approved 0
+expect_not_contains "first-line mode: no covered note when the score names the head" "covered:"
+
+# Mechanical commits (review.mechanicalCommits): verified bot commits after a passing score. Each
+# case's head is a real commit (mech_case); the fixed HEAD_SHA comes back after the section.
+FIXED_HEAD_SHA="$HEAD_SHA"
+# mech_commit <sha> <login|""> <verified> <message> [parents] [committer] [reason] -> one
+# compare-API commit object (mech_compare rewrites the parent chain).
+mech_commit() {
+  jq -n -c --arg sha "$1" --arg login "$2" --argjson v "$3" --arg msg "$4" --argjson p "${5:-1}" \
+    --arg cm "${6:-web-flow}" --arg why "${7:-valid}" '{
+    sha: $sha, parents: [range($p) | {sha: "p"}],
+    author: (if $login == "" then null else {login: $login} end),
+    committer: (if $cm == "" then null else {login: $cm} end),
+    commit: {message: $msg, verification: {verified: $v, reason: $why}}}'
+}
+MECH_MSG=$'chore: renumber\n\nExample-Bot: renumber'
+# mech_compare <status> <commits-json-array> [files-json-array] -> compare fixture for
+# $MECH_G...$HEAD_SHA: the last commit becomes the head and each commit's first parent the one
+# before it (G for the first). Also writes the default activity: the bot pushed each commit alone.
+MECH_FILES='[{"filename":"db/0002.sql"}]'
+mech_compare() {
+  jq -n -c --arg st "$1" --argjson c "$2" --argjson f "${3:-$MECH_FILES}" --arg g "$MECH_G" --arg h "$HEAD_SHA" '
+    ($c | .[-1].sha = $h) as $c
+    | ([$g] + [$c[].sha]) as $chain
+    | {status: $st, base_commit: {sha: $g}, total_commits: ($c | length),
+       commits: [range(0; $c | length) as $k | $c[$k] | .parents[0].sha = $chain[$k]], files: $f}' >"$STUB_DIR/compare"
+  jq -c '([.base_commit.sha] + [.commits[].sha]) as $ch
+    | [range(($ch | length) - 1; 0; -1) as $k
+       | {activity_type: "push", before: $ch[$k - 1], after: $ch[$k], actor: {login: "example-bot[bot]"}}]' \
+    "$STUB_DIR/compare" >"$STUB_DIR/activity"
+}
+# A verify command stub that records its argument and the commit it runs at; $1 is its exit status.
+mech_verify() {
+  mkdir -p "$CASE/bin"
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/verified"\ngit rev-parse HEAD >>"%s/where" 2>/dev/null\nexit %s\n' \
+    "$CASE" "$CASE" "$1" >"$CASE/bin/verify"
+  chmod +x "$CASE/bin/verify"
+}
+mech_config() { # -> writes config with one entry whose verify is the stub
+  write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+    mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+      verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+}
+# mech_pr_base — commits the case repo as it stands as the PR's base commit (baseRefOid): the tree
+# verify runs from. Later prview fixtures carry it.
+mech_pr_base() {
+  git -C "$CASE/repo" add -A >/dev/null 2>&1
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m 'pr base' >/dev/null 2>&1
+  BASE_SHA="$(git -C "$CASE/repo" rev-parse HEAD)"
+  printf '%s' "$BASE_SHA" >"$STUB_DIR/.base"
+}
+# mech_base <score> — commits the case repo as it stands (a new G) and points the score at it.
+mech_base() {
+  git -C "$CASE/repo" add -A >/dev/null 2>&1
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m base >/dev/null 2>&1
+  MECH_G="$(git -C "$CASE/repo" rev-parse HEAD)"
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$1" "${MECH_G:0:7}")")]"
+}
+mech_case() { # <case> <score> <verify-exit>
+  new_case "$1"
+  git init -q "$CASE/repo" >/dev/null 2>&1
+  mech_verify "$3"
+  mech_config
+  mech_pr_base
+  mech_base "$2"
+  # The head is a real commit after G: verify needs the range locally, so the tool checks for it.
+  git -C "$CASE/repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+    commit -q --allow-empty -m head >/dev/null 2>&1
+  HEAD_SHA="$(git -C "$CASE/repo" rev-parse HEAD)"
+  git -C "$CASE/repo" checkout -q --detach "$MECH_G" >/dev/null 2>&1
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$2" "${MECH_G:0:7}")")]"
+  printf '%s' "$HEAD_SHA" >"$STUB_DIR/prhead"
+  write_threads "" '[]'
+}
+GOOD1="$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG")"
+GOOD2="$(mech_commit c2 'example-bot[bot]' true "$MECH_MSG" 1 'example-bot[bot]')"
+
+mech_case mech-ok 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a passing score + verified bot commits that verify -> approved" approved 0
+expect_contains "mechanical: the output says why the older score stands" "covered:"
+expect_contains "mechanical: the output names the entry" "(renumber)"
+[ "$(wc -l <"$CASE/verified")" = "2" ] && grep -q -- '--verify-commit c1' "$CASE/verified" &&
+  ok "mechanical: verify ran once per commit with {sha} substituted" ||
+  bad "mechanical: verify argv" "$(cat "$CASE/verified" 2>/dev/null)"
+[ "$(sort -u "$CASE/where" 2>/dev/null)" = "$BASE_SHA" ] && ok "mechanical: verify ran in a checkout of the PR's base commit" ||
+  bad "mechanical: verify location" "want $BASE_SHA; got $(cat "$CASE/where" 2>/dev/null)"
+
+mech_case mech-below-bar 4/5 0
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score under the bar is never covered -> timeout" timeout 2
+
+mech_case mech-verify-fails 5/5 1
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify exiting non-zero -> stale (timeout)" timeout 2
+[ "$(calls_of 'compare/')" -ge 2 ] && [ "$(wc -l <"$CASE/verified")" = "1" ] &&
+  ok "mechanical: a failed verify is remembered, not re-run every poll" ||
+  bad "mechanical: failed-verify cache" "compare calls $(calls_of 'compare/'); verified: $(cat "$CASE/verified" 2>/dev/null)"
+
+mech_case mech-verify-missing 5/5 0
+rm "$CASE/bin/verify"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify command missing -> stale (timeout)" timeout 2
+
+mech_case mech-mixed-author 5/5 0
+mech_compare ahead "[$GOOD1,$(mech_commit c3 someone true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: one human-authored commit in the range -> stale (timeout)" timeout 2
+
+mech_case mech-null-author 5/5 0
+mech_compare ahead "[$(mech_commit c3 '' true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unlinked (null) author -> stale (timeout)" timeout 2
+
+mech_case mech-unverified 5/5 0
+mech_compare ahead "[$GOOD1,$(mech_commit c3 'example-bot[bot]' false "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit GitHub does not verify -> stale (timeout)" timeout 2
+
+mech_case mech-no-trailer 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true 'chore: no trailer here')]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit without the trailer -> stale (timeout)" timeout 2
+
+mech_case mech-trailer-in-subject 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true 'chore: Example-Bot: not a trailer')]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the trailer must start a line -> stale (timeout)" timeout 2
+
+mech_case mech-merge-commit 5/5 0
+mech_compare ahead "[$(mech_commit c3 'example-bot[bot]' true "$MECH_MSG" 2)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a merge commit (two parents) -> stale (timeout)" timeout 2
+
+mech_case mech-touches-config 5/5 0
+mech_compare ahead "[$GOOD1]" '[{"filename":".claude/maintainerd.json"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a range that edits the config file -> stale (timeout)" timeout 2
+
+mech_case mech-truncated 5/5 0
+mech_compare ahead "[$GOOD1]"
+jq -c '.total_commits = 400' "$STUB_DIR/compare" >"$STUB_DIR/compare.new" && mv "$STUB_DIR/compare.new" "$STUB_DIR/compare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a truncated compare page (commits) -> stale (timeout)" timeout 2
+
+mech_case mech-truncated-files 5/5 0
+mech_compare ahead "[$GOOD1]" "$(jq -n -c '[range(300) | {filename: "db/\(.).sql"}]')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a truncated compare page (300 files) -> stale (timeout)" timeout 2
+
+mech_case mech-diverged 5/5 0
+mech_compare diverged "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score on a non-ancestor -> stale (timeout)" timeout 2
+
+mech_case mech-compare-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+touch "$STUB_DIR/compare.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable compare -> stale (timeout)" timeout 2
+
+mech_case mech-open-thread 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_threads "" "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: covered, but an open thread still yields findings" findings:1 1
+
+mech_case mech-bad-entry 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot"}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an entry missing 'verify' covers nothing -> stale (timeout)" timeout 2
+
+mech_case mech-absent 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$CFG_5"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: no review.mechanicalCommits -> today's behaviour (timeout)" timeout 2
+if grep -q compare "$STUB_DIR/.calls"; then bad "mechanical: no compare call when unconfigured" "$(cat "$STUB_DIR/.calls")"; else ok "mechanical: no compare call when unconfigured"; fi
+
+mech_case mech-score-on-head 5/5 0
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 "${HEAD_SHA:0:7}")")]"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a score on the head approves without covering" approved 0
+expect_not_contains "mechanical: no covered note when the score names the head" "covered:"
+
+mech_case mech-config-other-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+cp "$CASE/repo/.claude/maintainerd.json" "$CASE/cfg.json"
+run_tool "$WFR" 7 -R x/other --config "$CASE/cfg.json" --timeout-seconds 3 --interval-seconds 1
+expect "mechanical: --config for a repo that is not this checkout -> stale (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never ran in a foreign checkout" ||
+  bad "mechanical: verify ran in a foreign checkout" "$(cat "$CASE/verified")"
+
+mech_case mech-config-same-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+cp "$CASE/repo/.claude/maintainerd.json" "$CASE/cfg.json"
+run_tool "$WFR" 7 -R o/r --config "$CASE/cfg.json" --timeout-seconds 3 --interval-seconds 1
+expect "mechanical: --config for this checkout's own repo still covers" approved 0
+
+mech_case mech-multiline-argv 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "true\nfalse", "{sha}"]}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a multi-line verify script runs whole (its failing line fails it) -> timeout" timeout 2
+
+mech_case mech-multiline-argv-ok 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_config "$(jq -n -c --arg out "$CASE/argv" --arg h "$HEAD_SHA" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", ("test \"$1\" = " + $h + "\nprintf %s \"$2\" >" + $out), "x", "{sha}", "two\nlines"]}]}}')"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a multi-line verify script that passes covers" approved 0
+[ "$(cat "$CASE/argv" 2>/dev/null)" = $'two\nlines' ] && ok "mechanical: an argument with a newline reaches verify intact" ||
+  bad "mechanical: newline argument" "$(cat "$CASE/argv" 2>/dev/null)"
+
+mech_case mech-note-no-leak 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${HEAD_SHA:0:7}")")]"
+rm -f "$STUB_DIR/prview"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: approved mode, a later score on the head approves" approved 0
+expect_not_contains "mechanical: a covered note from an earlier poll does not leak onto it" "covered:"
+
+mech_case mech-cache 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+write_prview "" ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+expect "mechanical: approved mode, no approval yet -> timeout" timeout 2
+[ "$(calls_of 'compare/')" -ge 2 ] && [ "$(wc -l <"$CASE/verified")" = "2" ] &&
+  ok "mechanical: each commit is verified once per run, not once per poll" ||
+  bad "mechanical: verify cache" "compare calls $(calls_of 'compare/'); verified: $(cat "$CASE/verified" 2>/dev/null)"
+
+mech_case mech-deadline 5/5 0
+printf '#!/usr/bin/env bash\nsleep 5\n' >"$CASE/bin/verify"
+mech_compare ahead "[$GOOD1]"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical: a slow verify -> timeout" timeout 2
+[ $((t1 - t0)) -le 4 ] && ok "mechanical: a slow verify cannot overrun the deadline" ||
+  bad "mechanical: deadline" "took $((t1 - t0))s against a 2s deadline"
+
+mech_case mech-verifier-in-range 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_pr_base
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["./scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]" '[{"filename":"db/0002.sql"},{"filename":"scripts/check.sh"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a range that edits the verifier itself -> stale (timeout)" timeout 2
+
+# The verifier and what it reads come from the PR base, so a PR cannot weaken a file the verify
+# argv does not name (a sourced library) before the scored commit.
+mech_lib_case() { # <case> <base lib exit> <PR lib exit>
+  mech_case "$1" 5/5 0
+  printf 'check() { return %s; }\n' "$2" >"$CASE/repo/lib.sh"
+  mech_pr_base
+  printf 'check() { return %s; }\n' "$3" >"$CASE/repo/lib.sh"
+  mech_base 5/5
+  write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+    mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+      verify: ["sh", "-c", ". ./lib.sh && check", "x", "{sha}"]}]}}')"
+  mech_compare ahead "[$GOOD1]"
+}
+mech_lib_case mech-verifier-from-base 1 0
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR that loosens a library the verifier sources is not trusted (base's fails) -> timeout" timeout 2
+
+mech_lib_case mech-verifier-from-base-ok 0 1
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verify runs the base's verifier and library (passes there) -> approved" approved 0
+[ "$(git -C "$CASE/repo" worktree list --porcelain | grep -c '^worktree ')" = "1" ] &&
+  ok "mechanical: the verify worktree is removed on exit" ||
+  bad "mechanical: worktree left behind" "$(git -C "$CASE/repo" worktree list)"
+
+# The base branch tightened its verifier after the PR branched: the base's version is the one run.
+mech_case mech-base-tightened 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_base 5/5
+printf '#!/bin/sh\nexit 1\n' >"$CASE/repo/scripts/check.sh"
+mech_pr_base
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a verifier the base tightened since the PR branched applies -> timeout" timeout 2
+
+# A base whose entry changes between polls gets a fresh verify, never the old entry's cached pass.
+mech_case mech-cache-entry-changed 5/5 0
+jq -n -c '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["true", "{sha}"]}]}}' >"$STUB_DIR/basecfg.1"
+jq -n -c '{review: {approvalThreshold: "approved", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["false", "{sha}"]}]}}' >"$STUB_DIR/basecfg.2"
+write_config "$(cat "$STUB_DIR/basecfg.1")"
+write_prview .1 ".reviewDecision = \"REVIEW_REQUIRED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+write_prview .2 ".reviewDecision = \"APPROVED\" | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+rm -f "$STUB_DIR/prview"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the base's entry changed to a failing verify -> the old pass is not reused (timeout)" timeout 2
+
+# The time limit holds against verifiers that resist it, and nothing they start survives it.
+mech_case mech-term-exits-zero 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "trap \"exit 0\" TERM; while :; do sleep 1; done", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+expect "mechanical: a verify that exits 0 when stopped at its limit does not pass (timeout)" timeout 2
+
+mech_case mech-term-ignored 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "trap \"\" TERM; sleep 30", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical: a verify that ignores TERM -> timeout" timeout 2
+[ $((t1 - t0)) -le 7 ] && ok "mechanical: a verify that ignores TERM is killed, not waited on" ||
+  bad "mechanical: TERM-resistant verify" "took $((t1 - t0))s against a 2s deadline"
+
+mech_case mech-grandchild 5/5 0
+write_config "$(jq -n -c --arg f "$CASE/leaked" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", ("(sleep 4; touch " + $f + ") & sleep 30"), "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 2 --interval-seconds 1
+expect "mechanical: a verify that forks and overruns -> timeout" timeout 2
+sleep 5
+[ ! -e "$CASE/leaked" ] && ok "mechanical: what a stopped verify started is stopped with it" ||
+  bad "mechanical: grandchild survived" "$CASE/leaked exists"
+
+mech_case mech-human-committer 5/5 0
+mech_compare ahead "[$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG" 1 someone)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a bot-authored commit committed by a person -> stale (timeout)" timeout 2
+
+mech_case mech-bad-signature-reason 5/5 0
+mech_compare ahead "[$(mech_commit c1 'example-bot[bot]' true "$MECH_MSG" 1 web-flow unknown_key)]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: verification reason other than valid -> stale (timeout)" timeout 2
+
+mech_case mech-human-push 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -c '.[1].actor.login = "someone"' "$STUB_DIR/activity" >"$STUB_DIR/activity.new" && mv "$STUB_DIR/activity.new" "$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a bot commit a person pushed (rebased in the web UI) -> stale (timeout)" timeout 2
+
+mech_case mech-one-push 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -n -c --arg g "$MECH_G" --arg h "$HEAD_SHA" \
+  '[{activity_type: "push", before: $g, after: $h, actor: {login: "example-bot[bot]"}}]' >"$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: one bot push carrying two commits covers both -> approved" approved 0
+
+mech_case mech-push-unseen 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -n -c --arg h "$HEAD_SHA" \
+  '[{activity_type: "force_push", before: "elsewhere", after: $h, actor: {login: "example-bot[bot]"}}]' >"$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a commit no bot push accounts for -> stale (timeout)" timeout 2
+
+mech_case mech-activity-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+touch "$STUB_DIR/activity.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable activity log -> stale (timeout)" timeout 2
+
+mech_case mech-broken-chain 5/5 0
+mech_compare ahead "[$GOOD1,$GOOD2]"
+jq -c '.commits[1].parents[0].sha = "elsewhere"' "$STUB_DIR/compare" >"$STUB_DIR/compare.new" && mv "$STUB_DIR/compare.new" "$STUB_DIR/compare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: commits that are not one chain from the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-cross-repo 5/5 0
+mech_compare ahead "[$GOOD1]"
+write_prview "" ".isCrossRepository = true | .comments = [$(bot_comment "$(greptile_text 5/5 "${MECH_G:0:7}")")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR from a fork -> stale (timeout)" timeout 2
+
+mech_case mech-head-moved 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf 'ccccccc3333333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the head moved while verifying -> not covered (timeout)" timeout 2
+
+# Review state that changes while verify runs: the stub verifier rewrites the PR fixtures mid-run.
+# The wait must not report approved on the strength of the state it read before verify ran.
+mech_case mech-decision-changes 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a changes-requested review that lands during verify is never approved" ||
+  bad "mechanical: decision changed mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_case mech-thread-opens 5/5 0
+mech_compare ahead "[$GOOD1]"
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a thread that opens during verify is never approved" ||
+  bad "mechanical: thread opened mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:1)" findings:1 1
+
+# A score the bot posts on the head while verify runs must be seen: a below-bar verdict on the head
+# outranks the older passing one on G.
+mech_case mech-score-lands 5/5 0
+mech_compare ahead "[$GOOD1]"
+LATE="$(bot_comment "$(greptile_text 3/5 "${HEAD_SHA:0:7}")")"
+printf '#!/usr/bin/env bash\njq -c --argjson c %q ".comments += [\\$c]" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\nexit 0\n' \
+  "$LATE" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical: a below-bar score on the head that lands during verify is never approved" ||
+  bad "mechanical: score landed mid-verify" "got: $OUT"
+expect "mechanical: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_case mech-base-moved 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf 'eeeeeeee55555555555555555555555555555555' >"$STUB_DIR/prbase"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the base moved while verifying (its policy may be revoked) -> not covered (timeout)" timeout 2
+
+mech_case mech-g-missing 5/5 0
+mech_compare ahead "[$GOOD1]"
+obj="$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
+rm -f "$obj"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the scored commit is missing and the fetch fails -> not covered (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never runs without the scored commit" ||
+  bad "mechanical: verify ran without G" "$(cat "$CASE/verified")"
+
+mech_case mech-head-missing 5/5 0
+mech_compare ahead "[$GOOD1]"
+rm -f "$CASE/repo/.git/objects/${HEAD_SHA:0:2}/${HEAD_SHA:2}"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: the head is missing and the fetch fails -> not covered (timeout)" timeout 2
+[ ! -f "$CASE/verified" ] && ok "mechanical: verify never runs without the range's commits" ||
+  bad "mechanical: verify ran without the head" "$(cat "$CASE/verified")"
+
+mech_case mech-user-lookalike 5/5 0
+mech_compare ahead "[$(mech_commit c1 example-bot true "$MECH_MSG" 1 example-bot)]"
+jq -c '.[].actor.login = "example-bot"' "$STUB_DIR/activity" >"$STUB_DIR/activity.new" && mv "$STUB_DIR/activity.new" "$STUB_DIR/activity"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a user login equal to the App's slug is not the App -> stale (timeout)" timeout 2
+
+mech_case mech-app-form 5/5 0
+write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "app/example-bot", trailer: "Example-Bot",
+    verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an app/<slug> author is read as <slug>[bot] -> approved" approved 0
+
+mech_case mech-base-lacks-entry 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '%s' "$CFG_5" >"$STUB_DIR/basecfg"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an entry the PR base's config does not carry covers nothing -> stale (timeout)" timeout 2
+
+mech_case mech-basecfg-fails 5/5 0
+mech_compare ahead "[$GOOD1]"
+printf '%s' "$CFG_5" >"$STUB_DIR/basecfg"
+touch "$STUB_DIR/basecfg.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: an unreadable base config -> stale (timeout)" timeout 2
+
+mech_case mech-base-touches-config 5/5 0
+mech_compare ahead "[$GOOD1]"
+jq -c '.files = [{"filename":".claude/maintainerd.json"},{"filename":"db/0002.sql"}]' "$STUB_DIR/compare" >"$STUB_DIR/basecompare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR that edits the config before the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-base-touches-verifier 5/5 0
+mkdir -p "$CASE/repo/scripts"
+printf '#!/bin/sh\nexit 0\n' >"$CASE/repo/scripts/check.sh"
+chmod +x "$CASE/repo/scripts/check.sh"
+mech_pr_base
+mech_base 5/5
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["scripts/check.sh", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1]"
+jq -c '.files = [{"filename":"scripts/check.sh"},{"filename":"db/0002.sql"}]' "$STUB_DIR/compare" >"$STUB_DIR/basecompare"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: a PR that edits the verifier before the scored commit -> stale (timeout)" timeout 2
+
+mech_case mech-verify-mutates 5/5 0
+write_config "$(jq -n -c '{review: {approvalThreshold: "5/5", bots: ["greptile-apps[bot]"],
+  mechanicalCommits: [{name: "renumber", author: "example-bot[bot]", trailer: "Example-Bot",
+    verify: ["sh", "-c", "test ! -e marker && touch marker", "x", "{sha}"]}]}}')"
+mech_compare ahead "[$GOOD1,$GOOD2]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical: each verify starts from a clean checkout of the base -> approved" approved 0
+
+# First-line mode: mechanical coverage waives only "the score names the head". It approves only with
+# no open thread and the first-line reviewer's happy round on the head; an open thread is reported.
+mech_fl_case() { # <case> <vr-happy:true|false> <threads-json>
+  mech_case "$1" 5/5 0
+  write_config "$(jq -n -c --arg v "$CASE/bin/verify" '{review: {mode: "first-line", approvalThreshold: "5/5",
+    bots: ["greptile-apps[bot]"], mechanicalCommits: [{name: "renumber", author: "example-bot[bot]",
+      trailer: "Example-Bot", verify: [$v, "--verify-commit", "{sha}"]}]}}')"
+  write_threads "" "$3"
+  write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 5/5" \
+    "$(vr_json "$HEAD_SHA" "$2" 0 0 0 '[]' '[]' '[]' null)")]")]"
+  mech_compare ahead "[$GOOD1]"
+}
+mech_fl_case mech-fl-ok true '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: VR happy on the head + no open thread -> approved" approved 0
+expect_contains "mechanical, first-line: the output says why the older score stands" "covered:"
+
+mech_fl_case mech-fl-vr-unhappy false '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: VR not happy on the head -> not covered (timeout)" timeout 2
+
+mech_fl_case mech-fl-open-thread true "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: covered, but an open thread is reported (findings:1)" findings:1 1
+expect_contains "mechanical, first-line: the open thread's detail is printed" "a.py:3"
+
+# A mid-verify change the re-read rejects must not fall through to the first-line covered-staleness
+# path, which would approve from the state read before verify ran.
+mech_fl_case mech-fl-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 0\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a changes-requested review during verify is never approved" ||
+  bad "mechanical, first-line: decision changed mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+mech_fl_case mech-fl-thread-opens true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a thread that opens during verify is never approved" ||
+  bad "mechanical, first-line: thread opened mid-verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# A re-read that fails cannot show the state is unchanged: it holds too, so the first-line path
+# never approves from the pre-verify read of a thread that opened meanwhile.
+mech_fl_case mech-fl-reread-fails true '[]'
+NEW_THREADS="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes = [{isResolved: false, isOutdated: false, path: "a.py", line: 3, originalLine: 3, comments: {nodes: [{body: "P1 late", author: {login: "someone"}}]}}]' "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\n: >"%s/rereadfail"\nexit 0\n' "$NEW_THREADS" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+[ "$(printf '%s' "$OUT" | head -n 1)" != "approved" ] && ok "mechanical, first-line: a re-read that fails after verify is never approved" ||
+  bad "mechanical, first-line: re-read failed after verify" "got: $OUT"
+expect "mechanical, first-line: ...the next poll reports the new thread (findings:1)" findings:1 1
+
+# The first-line read after the mechanical re-read must also land before the deadline.
+mech_fl_case mech-fl-late-vr true '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: a first-line read that ends past the deadline -> timeout, not approved" timeout 2
+
+# A poll that ran verify decides nothing on the state it read before verify, whatever verify's
+# outcome: a verify that fails must not hand the decision to the first-line fallback, which would
+# approve from the pre-verify read of a thread that opened meanwhile. (VR-95b77b8f)
+mech_fl_case mech-fl-verify-fails-thread-opens true '[]'
+NEW_THREADS="$(jq -c "$LATE_THREAD" "$STUB_DIR/threads")"
+printf '#!/usr/bin/env bash\nprintf %%s %q >"%s/threads"\nexit 1\n' "$NEW_THREADS" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a failed verify does not fall back to an approval on the pre-verify read"
+expect "mechanical, first-line: ...the next poll sees the thread, so the stale score stays stale (timeout)" timeout 2
+
+# The same for the review decision, which no first-line read re-checks: a human's "changes
+# requested" that lands while a failing verify runs is never approved from the pre-verify read.
+mech_fl_case mech-fl-verify-fails-decision-changes true '[]'
+printf '#!/usr/bin/env bash\njq -c ".reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/prview" >"%s/prview.new" && mv "%s/prview.new" "%s/prview"\njq -c ".data.repository.pullRequest.reviewDecision = \\"CHANGES_REQUESTED\\"" "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\nexit 1\n' \
+  "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$CASE/bin/verify"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review during a failing verify is never approved"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+# The same when the waiver's first-line read is not happy: a happy read in the fallback must not
+# approve from the pre-verify threads. GraphQL reads per poll: the poll's (1), the re-read (2), the
+# waiver's (3), the fallback's (4); the last repeats.
+mech_fl_case mech-fl-waiver-unhappy-fallback true '[]'
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads" "$STUB_DIR/threads.2"
+write_suites "[$(cr_suite vycari-review "[$(vr_run 100 "Confidence Score: 3/5" \
+  "$(vr_json "$HEAD_SHA" false 0 1 0 '["VR-ffff6666"]' '[]' '[]' null)")]")]"
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.3"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.4"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: an unhappy waiver read does not fall back to an approval"
+expect "mechanical, first-line: ...the next poll reports the open thread (findings:1)" findings:1 1
+
+# The waiver's own read carries the review threads: one that opened after the re-read is seen
+# there. (VR-e9e645d7)
+mech_fl_case mech-fl-waiver-sees-thread true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a thread in the waiver's own read is never approved"
+expect "mechanical, first-line: ...the next poll reports it (findings:1)" findings:1 1
+
+# Holding starts only once verify (or a fetch) runs: a range the cheap checks reject leaves the
+# first-line fallback free to approve on its own terms.
+mech_fl_case mech-fl-human-commit-fallback true '[]'
+mech_compare ahead "[$(mech_commit c3 someone true "$MECH_MSG")]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "mechanical, first-line: a human commit after the score still approves through the first-line path" approved 0
+[ ! -f "$CASE/verified" ] && ok "mechanical, first-line: ...without running verify" ||
+  bad "mechanical, first-line: verify ran on a human commit" "$(cat "$CASE/verified")"
+
+# Liveness: a verify that keeps timing out holds one poll; the next tries the first-line path
+# first, before verify, and approves from that fresh read.
+mech_fl_case mech-fl-verify-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 124\n' "$CASE" >"$CASE/bin/verify"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify that keeps timing out stops holding -> approved" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
+  bad "mechanical, first-line: verify runs on a hang" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+
+# A verifier that really hangs (not an immediate 124): it is stopped at --verify-seconds, the poll
+# holds, and the next poll approves through the first-line path, within the wait. (Greptile P2 on #117)
+mech_fl_case mech-fl-verify-really-hangs true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 15 --interval-seconds 1 --verify-seconds 2
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier that really hangs is stopped, then the first-line path approves" approved 0
+[ "$(wc -l <"$CASE/verify-runs" 2>/dev/null)" -eq 1 ] && ok "mechanical, first-line: ...after verify ran once" ||
+  bad "mechanical, first-line: real hang, verify runs" "$(wc -l <"$CASE/verify-runs" 2>/dev/null)"
+[ $((t1 - t0)) -le 10 ] && ok "mechanical, first-line: ...in the verify cap plus one interval, not the whole wait" ||
+  bad "mechanical, first-line: real hang took too long" "$((t1 - t0))s"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived" "pid $(cat "$CASE/verify-pid")"
+
+# A real hang near the deadline uses what is left: no time for the first-line path, so the wait
+# reports timeout, on time, and never an approval from the state read before verify.
+mech_fl_case mech-fl-verify-hangs-at-deadline true '[]'
+printf '#!/usr/bin/env bash\necho $$ >"%s/verify-pid"\nexec sleep 60\n' "$CASE" >"$CASE/bin/verify"
+t0=$(date +%s)
+run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a verifier hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...and the hang cannot overrun the deadline" ||
+  bad "mechanical, first-line: hang overran" "took $((t1 - t0))s against a 4s deadline"
+! kill -0 "$(cat "$CASE/verify-pid" 2>/dev/null || echo 999999)" 2>/dev/null && ok "mechanical, first-line: ...and the hung verifier is gone" ||
+  bad "mechanical, first-line: the hung verifier survived the deadline" "pid $(cat "$CASE/verify-pid")"
+
+# The waiver's own first-line read is followed by a score re-read too: a below-bar score that lands
+# after the mechanical re-read is never approved over. (VR-286a8092)
+mech_fl_case mech-fl-waiver-late-score true '[]'
+late_score_hook
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a below-bar score in the waiver's window is never approved over"
+expect "mechanical, first-line: ...the next poll reports it (findings:0)" findings:0 1
+
+# The same for a fetch that keeps failing: it holds one poll only.
+mech_fl_case mech-fl-fetch-fails true '[]'
+rm -f "$CASE/repo/.git/objects/${MECH_G:0:2}/${MECH_G:2}"
+run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a fetch that keeps failing stops holding -> approved" approved 0
+
+# A verify workspace that cannot be reset runs no verify, but the reset may have used its whole
+# bound, so the poll holds; the next poll approves through the first-line path. (VR-43e42c3f, #118)
+mech_fl_case mech-fl-reset-fails true '[]'
+printf '#!/usr/bin/env bash\necho x >>"%s/verify-runs"\nexit 0\n' "$CASE" >"$CASE/bin/verify"
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exit 1 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 10 --interval-seconds 1
+expect "mechanical, first-line: a verify workspace that cannot be reset holds one poll -> approved" approved 0
+[ ! -f "$CASE/verify-runs" ] && ok "mechanical, first-line: ...and verify never ran" ||
+  bad "mechanical, first-line: verify ran after a failed reset" "$(cat "$CASE/verify-runs")"
+[ "$(calls_of 'number,isDraft')" -ge 2 ] && ok "mechanical, first-line: ...the failed reset held its poll (approved on a later read)" ||
+  bad "mechanical, first-line: a failed reset did not hold" "polls: $(calls_of 'number,isDraft')"
+
+# A reset that hangs into the deadline is never followed by an approval from the pre-reset read.
+mech_fl_case mech-fl-reset-hangs true '[]'
+cat >"$CASE/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+case " \$* " in *" clean "*) exec sleep 60 ;; esac
+exec $(command -v git) "\$@"
+GITSTUB
+chmod +x "$CASE/bin/git"
+t0=$(date +%s)
+PATH="$CASE/bin:$PATH" run_tool "$WFR" 7 -R o/r --timeout-seconds 4 --interval-seconds 1
+t1=$(date +%s)
+expect "mechanical, first-line: a reset hanging into the deadline -> timeout, not approved" timeout 2
+[ $((t1 - t0)) -le 8 ] && ok "mechanical, first-line: ...on time" || bad "mechanical, first-line: reset hang overran" "$((t1 - t0))s"
+
+new_case verify-seconds-bad
+write_config "$CFG_5"
+run_tool "$WFR" 7 -R o/r --verify-seconds 0
+expect "--verify-seconds must be a positive integer" "" 3
+
+# The last read before a covered approval re-checks the review decision: a "changes requested"
+# that lands after the mechanical re-read is not approved. (VR-cb8d0d4c)
+mech_fl_case mech-fl-waiver-sees-decision true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1" >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review in the waiver's own read is never approved"
+
+# ...on any page of that read: a paginated read's later page counts too.
+mech_fl_case mech-fl-waiver-sees-decision-page2 true '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+{ cat "$STUB_DIR/threads.1"; jq -c '.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' "$STUB_DIR/threads.1"; } >"$STUB_DIR/threads.3"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "mechanical, first-line: a changes-requested review on a later page of the waiver's read is never approved"
+
+HEAD_SHA="$FIXED_HEAD_SHA"
+
+new_case bare-marker
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"],"blockMarker":"greptile_comment"}}'
+write_prview "" ".body = $(jq -Rs . <<<"<!-- greptile_comment -->
+$(greptile_text 5/5 aaaaaaa)
+<!-- /greptile_comment -->")"
+BODY_EDITOR=greptile-apps write_threads "" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a bare blockMarker name is read as its comment form" approved 0
 
 echo
 printf '%s\n' "----------------------------------------"

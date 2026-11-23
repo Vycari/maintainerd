@@ -67,6 +67,11 @@ git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@
 ls pyproject.toml package.json go.mod Cargo.toml 2>/dev/null
 ```
 
+`gh repo view --json` is GraphQL, so where GraphQL is blocked it returns 403 and the `||` falls through to the
+remote-URL parse, which is the intended behaviour there; the label calls below (`gh label create`) are
+REST and unaffected. Neither step needs a fallback, but say in the report if the slug came from the
+URL parse because `gh` failed. See [`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
+
 **Confirm the repo slug and default branch — don't trust detection blindly.** Two traps: (1) if
 `origin` points at a local path or a non-GitHub host, `gh repo view` yields nothing — fall back to the
 URL parse, and if that's also empty, **ask the user**. (2) `origin/HEAD` can be stale or, in a clone
@@ -125,7 +130,8 @@ Infer:
 
 Use `AskUserQuestion` for anything you couldn't determine confidently — typically: which plugins
 they installed (so the `dailyUpdate.subSkills` roster lists only real skills), whether auto-dev is
-`enabled`, label names if they differ from the defaults, and the research-radar `userAgent` email.
+`enabled`, whether the audits are scheduled to run unattended here (`audits.enabled`, default
+`false`: write `true` only when the maintainer says a scheduler sweeps this repo), label names if they differ from the defaults, and the research-radar `userAgent` email.
 
 If step 4 found no PR template, include the offer in this ask: **create a minimal template**
 (step 7 scaffolds it; `paths.prTemplate` gets its path) or **skip it** (`paths.prTemplate: null` —
@@ -148,7 +154,10 @@ in doubt, ask.
 
 Defaults to apply without asking (state them in the report):
 - `labels`: `architecture` / `test-quality` / `security` / `dependencies` / `automated`.
-- `audits`: caps `3 / 5 / 2 / 2 / 3 / 5 / 3 / 5`; oversized-file threshold `oversizedLines` 500; pattern promotion `promoteThreshold` 3, `promoteLookbackDays` 90.
+- `audits`: `enabled` `false` unless the maintainer opted in above (always write the key, so the
+  roster signal is explicit). On a re-run, keep an existing `audits.enabled` exactly as it is: never
+  flip it either way as part of the "keep the config current" pass, and change it only when the
+  maintainer says so in this session; caps `3 / 5 / 2 / 2 / 3 / 5 / 3 / 5`; oversized-file threshold `oversizedLines` 500; pattern promotion `promoteThreshold` 3, `promoteLookbackDays` 90.
 - `models` *(optional)*: write the tier scaffold with every tier set to `"inherit"` (no behavior change until the maintainer binds `fast`/`capable` to real model ids — point them at [`../../references/model-tiers.md`](../../references/model-tiers.md)). Omitting the block entirely is equally valid.
 - `autoDev` label names: the `auto:*` set from the schema.
 - `autoDev.excludedLabels`: `["epic", "question", "wontfix", "duplicate", "invalid"]`.
@@ -358,7 +367,8 @@ report. On a plain `/bootstrap` re-run where `coverage.floor` already exists, sk
 
 **First, vendor the two scripts.** CI runs without the plugin installed, so copy this plugin's
 `scripts/coverage-adapt.sh` and `scripts/coverage-check.sh` into the repo at `.claude/maintainerd/`,
-executable and checked in — the version CI ran should be the version in the diff. The measurement
+executable and checked in — the version CI ran should be the version in the diff. Copy them whole:
+the `# maintainerd-core: <version>` line in each is the stamp `doctor` compares later, so don't strip it. The measurement
 below uses the adapter, so this comes first.
 
 **Then measure, on a fresh worktree of the default branch — never the working copy.** The working

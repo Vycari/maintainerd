@@ -25,13 +25,14 @@ Before anything else, load the repo config (see
 3. Read the keys this skill needs:
    - `config.repo` — GitHub `owner/name`, passed to every `gh ... --repo`.
    - `config.defaultBranch` — the branch audits check out and PRs target.
-   - `config.language` — `python` | `typescript`; selects the language-specific mechanics below.
+   - `config.language` — `python` | `typescript` select the language-specific mechanics below; any other value uses the generic checks.
    - `config.paths.tests` — root of the test tree (everything in scope lives under here).
    - `config.paths.source` — root of the source the suite covers.
    - `config.commands.test` — the suite that must be green before and after a fix.
    - `config.commands.coverage` — coverage command. **If `null`, skip the coverage-gap category entirely** (don't invent one).
    - `config.commands.format` / `config.commands.lint` — pre-flight gates (skip any that are `null`).
    - `config.labels.testQuality` / `config.labels.automated` — labels applied to every PR/issue this skill opens.
+   - `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens, including through `create-pr` (default `[]`). Run the existence check once, before this run's first PR, and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
    - `config.audits.testPrCap` / `config.audits.testIssueCap` — per-run caps (default **2 / 2** if absent; note the fallback in your report).
    - `config.audits.promoteThreshold` / `config.audits.promoteLookbackDays` — pattern-promotion knobs (default **3** within **90** days if absent). See step 7.
    - `config.guidelines.testing` — **the repo's own test conventions.** Read this file in full; it holds the repo-specific rules (the DB/fixture pattern, what may and may not be mocked, isolation rules, assertion expectations, redundant framework boilerplate, naming) that this skill checks the suite against. If it's missing or still full of `TODO` markers, say so in your report and proceed with the language-generic checks only.
@@ -94,6 +95,27 @@ The greps and tool flags for each language live in
 - **Raising the coverage *number* for its own sake.** Chasing a percentage produces assertion-free tests that exercise lines without proving behavior — the exact anti-pattern this skill exists to remove. Only add coverage where a **real untested behavior/branch** exists and the test would *catch a real regression*.
 - **Performance of the code under test.** Slow *tests* are in scope; slow *production code* is not.
 - **Generated/vendored fixtures.** Recorded fixture data is data, not test logic — don't flag its shape.
+
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh issue list`, `gh pr list`, `gh issue create`, `gh pr create` and `gh pr edit` are GraphQL underneath and
+return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRAPHQL_BLOCKED`, or a
+`gh api graphql` call that fails closed) and use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
+and **Edit labels**. Say in the report which mode the run used and how it decided.
+Two de-dup queries below use `--search`; in blocked mode, list `head.ref` from the open-PR list and filter
+for the `arch-` prefix, then read each `arch-*` PR's changed files from `repos/<repo>/pulls/<N>/files`
+(the reference's **Read one PR's fields**) and apply the same file-overlap skip. If any of those file
+reads fails, the overlap check did not run: skip the candidate findings rather than file blind, and
+say so in the report. Read closed-as-not-planned from `state=closed` filtered on
+`.state_reason == "not_planned"`. `gh label create` is plain REST and works unchanged. Replace
+`gh pr edit --add-label` with the reference's **Edit labels** REST calls.
+
+Three rules from that file apply here and outrank convenience: a read a decision depends on **fails
+closed** (an unreadable backlog is not an empty one); a step with no REST path (marking a draft PR
+ready) is **stop-and-report**, never skipped; and no unattended step may depend on `gh search` or the
+`search/issues` endpoint, so a search-shaped de-dup becomes a repo-scoped list plus a client-side
+filter.
 
 ## Workflow
 
@@ -160,7 +182,8 @@ gh issue list --repo <config.repo> --state closed --label <config.labels.testQua
 
 Each `--limit` is well above any realistic count for its query; if a list comes back at exactly its
 limit, treat that dedup as truncated, not complete, and say so in the report rather than filing
-against an incomplete view.
+against an incomplete view. **De-dup fails closed**: if neither the porcelain nor the REST form can list
+the open issues and open PRs, this run opens nothing and reports which call failed.
 
 Skip when:
 
@@ -207,7 +230,8 @@ git push -u origin "$SLUG"
 gh pr create --repo <config.repo> --base <config.defaultBranch> \
   --title "test: <one-line description>" \
   --body "<template below>"
-gh pr edit <NUM> --add-label <config.labels.testQuality> --add-label <config.labels.automated>
+gh pr edit <NUM> --add-label <config.labels.testQuality> --add-label <config.labels.automated> \
+  --add-label <each config.audits.extraPrLabels entry that passed the existence check>
 ```
 
 PR body:

@@ -46,7 +46,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   // ── Identity ────────────────────────────────────────────────────────────
   "repo": "owner/name",            // GitHub slug, e.g. "Vycari/pepper". Used in every `gh ... --repo`.
   "defaultBranch": "main",         // Branch PRs target and audits check out. "main" | "master" | ...
-  "language": "python",            // "python" | "typescript". Selects audit/test detection rules.
+  "language": "python",            // Open string; "python" | "typescript" get dedicated audit rules, any other
+                                   // value must resolve against the profile in use and gets generic audit rules.
 
   // ── Commands ────────────────────────────────────────────────────────────
   // The shell commands a skill runs for pre-flight gates. null = step not applicable; skip it.
@@ -71,6 +72,7 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   "paths": {
     "source":       "src/pepper/",              // root of source the audits sweep
     "tests":        "tests/",                    // root of the test tree
+                                                 // null when the repo has no tests AND coverage is null (exempt)
     "designDocs":   ["planning/"],               // design/architecture docs (audit-design-docs)
     "productDocs":  ["docs/", "README.md", "AGENTS.md"], // user-facing docs (audit-product-docs)
     "changelogDir": "planning/changelog/",       // where daily-changelog writes YYYY-MM-DD.md
@@ -100,6 +102,9 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 
   // ── Per-run caps for the audits (keep review load sustainable) ───────────
   "audits": {
+    "enabled":    false, // opt-in: true = this repo's audits are scheduled to run unattended. A
+                       // roster signal for whatever schedules them, like autoDev.enabled; the
+                       // block's presence alone says nothing. Default false if absent.
     "prCap":      3,   // audit-architecture: max PRs opened per run
     "issueCap":   5,   // audit-architecture: max issues filed per run
     "testPrCap":  2,   // audit-tests: max PRs per run
@@ -108,6 +113,14 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "securityIssueCap": 5, // audit-security: max issues per run (Critical/High over cap still reported)
     "depsPrCap":    3, // audit-deps: max PRs per run (a batched routine-bump PR counts as one)
     "depsIssueCap": 5, // audit-deps: max issues per run
+
+    // OPTIONAL extra label names applied to every PR (not issue) any audit opens, alongside the
+    // audit's own category label and labels.automated, wherever those are applied (create, the
+    // follow-up `gh pr edit`, the REST fallback). Use it for a label that hands the PR to
+    // downstream automation, e.g. ["foreman:watch"] so a response loop answers its review.
+    // Each must already exist; the audits check once per run, drop a missing one and report it,
+    // and never create labels (audits plugin: references/extra-pr-labels.md). Default [] if absent.
+    "extraPrLabels": [],
 
     // audit-architecture: oversized-file line-count threshold, shared across every language
     // block (Python, TypeScript, and the language-generic fallback). Raise it on a repo with
@@ -160,6 +173,8 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
     "extraPrLabels":  [],         // OPTIONAL extra label names (e.g. ["team:triage"]) applied to every PR the pipeline opens, alongside prLabel, everywhere prLabel is applied (create, re-stamp, REST fallbacks). Each must already exist; bootstrap creates them. For routing/ownership labels that do NOT gate review. Default [] if absent.
     "fallbackReviewMinutes": 60,  // how long a ready, CI-green automated PR may sit with zero review activity before auto-dev posts a fallback self-review (CodeRabbit normally reviews within minutes; past this, assume it's rate-limited). Default 60 if absent.
     "maxPrsInFlight": 1,          // how many automated PRs may be open at once. 1 = classic single-PR pipeline (an open PR blocks new builds until it merges). >1 lets the queue drain into several built-but-unmerged PRs awaiting review. Never merges/closes anything. Default 1 if absent.
+    "closedSweepDays": 14,         // window for the per-tick sweep that removes a stale In-progress label from recently CLOSED issues (reconcile otherwise reads open issues only). Default 14 if absent.
+    "closedSweepMax": 20,          // cap on issues cleaned per tick by that sweep (one REST page). 0 turns the sweep off (no request is sent). Default 20 if absent.
     "orphanReclaimMinutes": 90,    // min age of a PR-less in-progress issue before a tick treats it as a crashed build (and rebuilds) rather than one running concurrently in an overlapping tick (and leaves it alone). Default 90 if absent.
     "maintainers":         []      // OPTIONAL extra logins whose comments count as decisions/approvals. Default: a commenter is a maintainer iff their repo permission is admin/maintain/write (`gh api repos/<repo>/collaborators/<login>/permission`). List logins here only where the token can't read that (the call 403s/404s). Never a way to widen who decides beyond people you'd give write access.
   },
@@ -195,6 +210,29 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
   "changelogRadar": {
     "feed":      "https://github.blog/changelog/feed/", // custom RSS/Atom changelog feed URL
     "interests": ["actions", "runner"] // explicit extra interest keywords
+  },
+
+  // ── auto-merge gate (optional; read by an external merge gate, not by a maintainerd skill) ──
+  // TOP-LEVEL, not under `autoDev`: it governs any maintainer-authored PR, not only the auto-dev
+  // pipeline's. Absent, or `enabled` anything other than `true` = off. Every key below is optional
+  // and every default is the conservative one: a repo that merely HAS this block merges nothing.
+  "autoMerge": {
+    "enabled":       false,        // explicit opt-in; must be read from the default branch, never a PR head
+    "maintainers":   [],           // logins whose PRs may be merged; [] = merge nothing. Humans only: a bot login never matches
+    "settleMinutes": 30,           // minutes the review verdict must hold, unchanged, on the PR's head before it counts
+    "vetoLabel":     "auto:no-merge", // a person applies it to hold a PR out of the gate; a hard exclude
+    "maxChangedFiles": 20,         // PRs touching more files are held
+    "maxChangedLines": 400,        // PRs changing more lines (additions + deletions) are held
+    "naPattern":     "(?i)\\bn/?a\\b|not applicable|done", // regex: an unchecked "Human required" item whose text matches is treated as done
+    "humanActionPhrases": [],      // regexes; [] = the gate's built-in list. A PR body matching one needs a person
+    "toolMarkers":   null,         // single-line markers the gate ignores as tool output; null/absent = the gate's built-in list, [] = none
+    "paths": {
+      "allowTests":  true,         // diffs touching only the tests tree
+      "allowDocs":   false,        // diffs touching only docs / markdown
+      "allowSrc":    false,        // ordinary source changes
+      "allowDependencyManifests": false, // lockfiles and dependency manifests (they have their own flow)
+      "allowlist":   null          // globs; when set (even []) ONLY matching diffs are eligible; null = unset
+    }
   },
 
   // ── create-pr gates (optional) ───────────────────────────────────────────
@@ -247,9 +285,31 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
                                      // hook, which warns when `gh pr create` carries this label
                                      // without `--draft` — the bot schedules its review on the open
                                      // event, before a label applied in the same command lands.
-    "replyNamesCommit":  false       // opt-in. true = the repo-ops `review-reply-postcondition` hook
+                                     // address-review treats a non-draft PR carrying it, with no
+                                     // score found, as done once checks pass.
+    "mechanicalCommits": [],         // optional. Verified mechanical bot commits that do not make a
+                                     // passing score stale; see the key's entry below. Absent/empty
+                                     // = any commit after the scored sha is stale.
+    "replyNamesCommit":  false,      // opt-in. true = the repo-ops `review-reply-postcondition` hook
                                      // requires a review reply that claims a fix to name a commit
                                      // reachable from HEAD. false/absent = the hook says nothing.
+
+    // First-line review (two-stage address-review). Everything below is inert until "mode" is
+    // "first-line": absent or any other value = the single-stage loop above, unchanged.
+    "mode":              null,       // "first-line" = a first-line reviewer answers first, then ONE final
+                                     // scored review (review.bots / approvalThreshold). null/absent = off.
+    "rereviewCommand":   "@greptileai review", // the final reviewer's re-review mention. In first-line the
+                                     // first-line reviewer or a human posts it; address-review never does.
+    "onOpen":            true,       // read by the first-line reviewer's dispatcher, not by any skill here
+    "pushCooldownMinutes": 5,        // likewise (dispatcher). Documented so the config has one home.
+    "firstLine": {                   // read only when mode == "first-line"
+      "bots":               ["vycari-review[bot]"], // first-line reviewer logins (threads to answer)
+      "checkName":          "Vycari Review",        // its check run; carries the verdict JSON
+      "checkApp":           "vycari-review",        // slug of the App that must own that check run
+      "maxRounds":          3,       // first-line rounds on a PR before the reviewer hands off anyway
+      "unavailableMinutes": 45,      // how long a due round may stay unconcluded before "unavailable"
+      "disputePrefix":      "Disputed:" // a reply starting with this is a dispute of a P0/P1 finding
+    }
   },
 
   // ── release (the `release` skill) — null/omitted = repo ships continuously, no versioned release ──
@@ -300,7 +360,14 @@ Read with whatever is convenient — the `Read` tool, or `jq` for a single value
 | --- | --- | --- |
 | `repo` | GitHub `owner/name`; passed to every `gh --repo`. | `Vycari/pepper` |
 | `defaultBranch` | Branch PRs target; audits `git checkout` it before sweeping. | `main`, `master` |
-| `language` | Selects the language-specific detection rules in `audit-architecture` and `audit-tests`. | `python`, `typescript` |
+| `language` | An open string. `python` and `typescript` select the language-specific detection rules in `audit-architecture`, `audit-tests`, `audit-security` and `audit-deps`; any other value (`static-site`, `shell`, …) must be a key in the profile's `languages` table when a profile is in use, and the audits fall back to their language-generic checks. | `python`, `typescript`, `static-site` |
+
+`language` is deliberately not an enum: the profile owns the list of build shapes a fleet names, and a
+closed list here would duplicate it. The one hard requirement is that the value resolves against the
+profile (`profile-resolve.sh` fails closed on a language with no entry); `doctor` check 2 reports a
+value outside `python`/`typescript` as informational when a profile resolves it, and as **WARN** only
+when no profile is in play. Per-language adapters (coverage, scaffolded CI, audit rules) stay keyed
+on what maintainerd actually ships.
 
 ### `commands`
 
@@ -329,6 +396,10 @@ required once `commands.migrationGraph` is set (the tool refuses to guess a fram
 ignored otherwise. The tool assumes sequential numeric revision ids, files named `<id>_<slug>.<ext>`,
 and `revision` / `down_revision` assignments in the file — see `repo-ops`' README.
 
+`tests` may be `null` for a repo with no tests, provided the effective `coverage` is also `null` (a
+complete exemption, see `profile-schema.md`); `doctor` then reports the path `n/a (coverage exempt)`
+instead of failing on a directory that cannot exist. With a non-null `coverage`, `tests` must resolve.
+
 `prTemplate` may be `null`: the repo deliberately uses no PR template, and `create-pr` (and
 anything else that writes PR bodies) falls back to its built-in Summary / Changes / Checklist
 structure. A non-null value must point at a file that exists — bootstrap offers to scaffold one
@@ -338,7 +409,7 @@ when the repo has none, and `doctor` flags a dangling path.
 
 Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 
-### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `researchRadar`, `changelogRadar`, `review`, `release`, `deploy`
+### `coverage`, `labels`, `audits`, `models`, `dailyUpdate`, `autoDev`, `depsFlow`, `autoMerge`, `researchRadar`, `changelogRadar`, `review`, `release`, `deploy`
 
 - `coverage.*` *(optional; absent = the ratchet has not been adopted here)* — `floor`, the whole
   percent of line coverage CI refuses to drop below, and `floorCommit`, the default-branch commit it
@@ -347,6 +418,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   below.
 - `labels.*` — GitHub label names the skills apply. They must already exist in the repo (bootstrap
   offers to create them).
+- `audits.enabled` *(optional; default `false`)* — the per-repo opt-in for **scheduled** audits,
+  the counterpart of `autoDev.enabled`. `true` means the maintainer wants this repo's audits run
+  unattended, and a scheduler that sweeps several repos builds its roster from it, not from the
+  presence of the `audits` block: bootstrap writes the caps block into nearly every repo, so the
+  block alone over-selects. Absent or `false` = not scheduled. It does not stop an audit a person
+  invokes by hand: the audit skills read the caps below either way, and only a scheduler reads this
+  key.
 - `audits.*` — per-run caps, plus the two pattern-promotion knobs. Cap defaults `3/5`
   (architecture), `2/2` (test), `3/5` (security), and `3/5` (deps) if absent. `audit-security` still
   *reports* Critical/High findings that exceed its cap;
@@ -395,7 +473,57 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `gh api repos/<repo>/collaborators/<login>/permission`), and the list exists only for repos where
   the token cannot read collaborator permissions. It widens who decides, never who may comment — on
   a public repo everyone else's comments are still read, as information rather than as decisions.
+  `closedSweepDays` *(default `14`)* and `closedSweepMax` *(default `20`)* bound step 1's sweep of
+  recently closed issues that still carry the In-progress label: only issues closed or updated in
+  the window are read, one search page of at most `closedSweepMax` per tick, with issues carrying
+  Skip or an `excludedLabels` label excluded in the query itself (so they never fill the page).
+  Where `search/issues` is refused (a GraphQL-blocking proxy), the sweep falls back to the
+  repo-scoped `issues?state=closed&labels=<inProgress>&since=…` listing, at most 5 pages of 100,
+  filtering opted-out issues client-side and paging past them until `closedSweepMax` are collected. Each is matched to its automated PRs (by branch) through its
+  own timeline, never a page of recent PRs: merged or none → the label is removed; all closed
+  unmerged → step 1's Skip label and comment; open, or any read failed → left alone. `0` disables
+  it and sends no request at all (GitHub reads `per_page=0` as 30).
+  A backlog older than the window is a one-off cleanup, not tick work.
   All optional; absent → the documented defaults.
+- `autoMerge.*` *(optional; **the second block whose absence means "off"**)* — the opt-in and
+  caps for an external gate that enqueues maintainer-authored PRs for merge once review is stable
+  and nothing needs a person. No maintainerd skill reads it; it is documented here because it
+  lives in this file and `doctor` validates it. It is a **top-level** block, not `autoDev.autoMerge`
+  (an earlier draft nested it; the gate reads the top level). The gate reads exactly these keys,
+  each optional, plus existing ones: `review.approvalThreshold`, `review.bots`, `review.checkName`,
+  `review.blockMarker`, `review.skipLabel`, `labels.security` and `paths.prTemplate`.
+  - `enabled` *(`false`)* — only the literal `true` opts in; anything else is off. **Read from the
+    default branch**, never the PR's own head, and the gate treats `.claude/maintainerd.json` as a
+    path it never merges, so a PR cannot widen its own authority.
+  - `maintainers` *(`[]`)* — logins whose PRs are eligible, matched exactly (case-insensitive). A
+    bot login never matches. Must be a list of strings; `[]` merges nothing. The deployment running
+    the gate keeps its own list and a PR's author must be named in both.
+  - `settleMinutes` *(`30`)* — how long the head commit and review verdict must stay unchanged. A
+    **floor**: the deployment has its own minimum and the larger of the two applies, so a repo may
+    raise it and can never lower it.
+  - `vetoLabel` *(`"auto:no-merge"`)* — a label a person applies to keep a PR out; must already
+    exist.
+  - `maxChangedFiles` *(`20`)* / `maxChangedLines` *(`400`)* — size ceilings; a larger diff is held.
+    These bound review attention, not safety. Lowering one is the cautious direction; raising one
+    past its default widens the gate and is a reviewable decision.
+  - `naPattern` *(`(?i)\bn/?a\b|not applicable|done`)* — regex deciding when an unchecked item in
+    the PR template's *Human required* list counts as not applicable. `humanActionPhrases` *(`[]`)*
+    — regexes; a PR body matching one is held for a person, and `[]` means the gate's built-in list,
+    not "none". `toolMarkers` — single-line markers ignored as tool output; absent or `null` means
+    the built-in list, `[]` means none.
+  - `paths.allowTests` *(`true`)*, `paths.allowDocs`, `paths.allowSrc`,
+    `paths.allowDependencyManifests` *(each `false`)* — which classes of diff are eligible; only the
+    literal `true` enables one. `paths.allowlist` *(`null`)* — when a list of globs is present, only
+    diffs entirely inside it are eligible (`[]` admits nothing); `null` or absent means unset.
+  - **Validation** (`doctor` check 2): the block must be an object; `maintainers`,
+    `humanActionPhrases`, `toolMarkers` and `paths.allowlist` lists of strings; `naPattern` a string
+    that compiles as a regex; the numeric keys integers; the `allow*` keys and `enabled` booleans.
+    A wrong shape in the first group makes the gate hold every PR in the repo rather than guess, so
+    those are **FAIL**; a non-integer number or non-boolean, which the gate silently replaces with
+    the default, is **WARN**. Relationships against the defaults above: `settleMinutes` below `30`
+    is **WARN** (a lowering the gate ignores); `maxChangedFiles` above `20` or `maxChangedLines`
+    above `400` is **WARN** (a widening); `enabled: true` with empty `maintainers` is **WARN** (opts
+    in and merges nothing). Keys not listed here are unknown keys (**WARN**).
 - `depsFlow.*` *(the `dependabot` skill — the only maintainerd skill that merges)* — **the one block
   whose absence means "off", not "use the defaults".** A missing block, or `enabled` anything other
   than `true`, disables the skill entirely; merge authority is never acquired by omission. Once
@@ -454,7 +582,8 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
 - `review.responderTier` *(optional; default `null`)* — the `models.*` tier the review-response loop
   wants (see [`model-tiers.md`](model-tiers.md)). It exists because responding to review is
   judgment-heavy — adjudicating whether a finding is right — even when the PR it is responding on was
-  built by a cheaper tier, and a repo shouldn't have to re-decide that in prose every time. Same
+  built by a cheaper tier, and a repo shouldn't have to re-decide that in prose every time. In
+  `review.mode: "first-line"` it covers **both** stages. Same
   honest limit as every other tier: a running skill cannot change its own model, so this binds the
   **subagents** the loop spawns and is otherwise a recommendation the skill reports. `null` = inherit.
 - `review.impasseRounds` *(optional; default `2`)* — how many rounds one **disputed** finding may
@@ -498,6 +627,115 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   for on a `gh pr create` — many review bots schedule their run on the `opened` webhook, before a
   label applied in the same command lands, so the label alone doesn't reliably suppress the review.
   `null`/absent = this repo has no such label; the hook says nothing.
+  `address-review` reads it too: a non-draft PR carrying the label, on which no score is found, is
+  done once its checks pass (the score gate is waived and the round summary says so), rather than
+  halting on "no score found". A score that is found on such a PR is still evaluated normally.
+- `review.mechanicalCommits` *(optional; default absent = off)* — an array of entries that let a
+  score survive small, verified, machine-made commits (a bot that renumbers a migration, say).
+  Each entry has four required fields: `name` (a label for the round summary), `author` (the bot's
+  GitHub login, `<slug>[bot]` for an App, compared exactly; `app/<slug>` is read as `<slug>[bot]`.
+  The suffix is not stripped, because a user can own the bare `<slug>` login), `trailer` (a commit-message trailer
+  key, matched case-sensitively at the start of a line as `<trailer>:`), and `verify` (a non-empty
+  argv array of strings, with `{sha}` replaced by each commit's full sha). Example:
+  `{"name": "renumber", "author": "example-bot[bot]", "trailer": "Example-Bot", "verify": ["some",
+  "command", "--verify-commit", "{sha}"]}`. Under a numeric `review.approvalThreshold`, a score at or
+  above it on commit G is **not stale** for a head H (a score below the threshold is never covered).
+  Under `approvalThreshold: "approved"` there is no score bar to meet: the gate is GitHub's review
+  decision, so any score on G counts as the bot having looked at G, and the decision must still be
+  `APPROVED` at the end. G is **not stale** for a head H when G..H is one linear chain (each
+  commit's only parent is the commit before it, the first's is G, the last is H) and every commit in it (a) is authored by the entry's
+  `author`, (b) is committed by that login or by `web-flow` (GitHub committing on its behalf), (c)
+  has GitHub `verification.verified == true` with `reason == "valid"`, (d) carries the trailer,
+  (e) was put on the PR branch by a push whose actor is the entry's `author` (the repository
+  activity API), and (f) passes `verify`. One entry must cover the whole range.
+
+  **Whose config.** The entries that count are the ones in `.claude/maintainerd.json` at the PR's
+  base commit (`baseRefOid`, read through the contents API), not the working tree's: the checkout
+  is usually the PR branch, and a PR must not add an entry, or loosen a verifier, before the scored
+  commit and then cover its own later commits with it. For the same reason a PR whose changes from
+  its merge base to the head (one compare page, under 300 files) touch the config or any file a
+  `verify` argument names is never covered.
+
+  **Why the push actor.** Author and committer logins and the signature are not, together, proof
+  that the bot made a commit: when a person rebases a branch in GitHub's web UI ("Update branch"),
+  GitHub re-creates the commits with `web-flow` as committer and signs them, so a commit a person
+  caused can be authored by the bot, committed by `web-flow` and verified. Who pushed it is what
+  tells a bot's own commit from one a person rewrote or forged, so a commit no bot push accounts
+  for is not covered. A push from `before` to `after` accounts for every chain commit after
+  `before` up to `after` when `before` is on the chain; otherwise only for `after` itself.
+
+  **Where `verify` runs.** It runs in a detached worktree of the checkout at the PR's base commit
+  (`baseRefOid`). G and the head are fetched from `origin` along with it when missing locally.
+  - `{sha}` is replaced by each commit's full sha.
+  - stdin, stdout and stderr are `/dev/null`.
+  - It must exit 0.
+
+  The verifier and every file it reads (a sourced library, a Makefile, a package script) are
+  therefore the base branch's, the same commit the entry was read from. Nothing the PR changed is in
+  that tree, so a PR cannot loosen a dependency the argv does not name, and a verifier the base has
+  tightened since the PR branched applies at once. The PR's commits are objects in the shared store,
+  so the verifier inspects `{sha}` through git (`git show {sha}`, `git diff {sha}^ {sha}`), not
+  through the files on disk.
+
+  Before each call the worktree is reset to a clean checkout of the base (`checkout -f`,
+  `clean -fdx`), so one call cannot leave anything for the next. Git runs there without hooks, LFS
+  smudge or prompts. The fetch, the worktree setup and each reset are bounded by the wait's
+  deadline, and the deadline is checked before every API read and every commit.
+
+  As a second guard, a range that changes a file named by any `verify` argument (a leading `./`
+  ignored) is refused outright.
+
+  **Time limit.** Each call gets at most 120 seconds (`wait-for-review.sh --verify-seconds N` tunes
+  it), clipped to what is left of the wait's deadline. The call runs in its own process group:
+  - At the limit, the whole group gets TERM, then KILL 2 seconds later.
+  - A call stopped at its limit fails even if it then exits 0.
+  - Anything the call left running in its group is killed when it returns.
+  - A process that moves itself into another session is out of reach.
+
+  **Caching.** A result is remembered for the run, keyed by the base commit, the entry's whole
+  content and the commit sha. So a commit is verified once rather than once per poll, and an entry or
+  base that changes during the wait is verified afresh. A timed-out or signal-killed run is not
+  remembered.
+
+  After the whole range passes, the PR head, base, review decision, open review threads and the
+  bots' scores are read again, because they were read before `verify` ran (up to 120 seconds per
+  commit). A head or base that moved means not covered: a moved base may have dropped the entry or
+  tightened the verifier. So does a review decision, a set of open threads or a set of scores that
+  differs from what the poll judged on (a late "changes requested", a new thread, a new score on the
+  head); the wait then decides on its next
+  read, and never falls back to first-line covered staleness on the old one. So does an answer that
+  arrives after the deadline. More generally, a poll that ran `verify` (or fetched commits for it)
+  and is not covered, for whatever reason (a verify that fails or runs out of time included), decides
+  nothing: it holds, and the next poll judges from a fresh read. In first-line mode with no open
+  thread, the poll after a hold tries first-line covered staleness first, before anything slow runs,
+  so a verifier that keeps hanging or a fetch that keeps failing delays an approval by one interval,
+  not the whole wait. A worktree setup or reset that fails holds the same way, since it may have
+  used its whole bound. A verifier that hangs until the deadline leaves no time for that next poll:
+  the wait then reports `timeout`, never an approval. No covered approval
+  (mechanical or first-line) is reported once the deadline has passed.
+
+  **First-line mode.** Mechanical coverage waives only the condition that the score names the head.
+  An approval still needs no open review thread and a completed, happy first-line round on the head
+  itself. An open thread is reported as `findings:<n>`, as in any mode; with none open and no happy
+  round on the head, the score stays stale and the wait keeps going. The first-line read must also
+  show the same open threads and review decision the poll judged on; a thread that opened since, or
+  a "changes requested" that landed since, is not covered. After a happy first-line read, the head,
+  the review decision and the bots' scores are read once more and must also be unchanged, so a
+  below-bar score that lands while the first-line path runs is never approved over.
+
+  `address-review` and `wait-for-review.sh` then do not wait for or request a re-review, and say so
+  (`covered:` line; the round summary). **Fail closed:** any doubt makes the score stale exactly as
+  without the key — an entry missing a field (it is ignored), a `verify` that is absent, errors or
+  times out, a person's or unverified commit anywhere in the range, a commit no bot push accounts
+  for, an entry missing from the PR base's config, a PR that edits the config or a verifier
+  anywhere from its merge base, a range that is not one chain, a compare or activity result that is unreadable or truncated
+  (more than 250 commits or 300 files; one page of 100 branch activity events), a range that edits
+  `.claude/maintainerd.json` (it could have rewritten the entry that vouches for it) or the
+  verifier, a PR from a fork (its pushes are not this repo's activity), G or the base missing locally after the fetch, the head
+  or base moving during the check, or a config fetched for a repo that is not the working checkout (there
+  is nothing to run `verify` in). Open review threads and a non-met score still decide as usual.
+  Works in every `review.mode`. `verify` is a command from the base branch's config, run from the
+  base branch's tree, so it is as trusted as the base branch itself. Keep it a read-only check.
 - `review.replyNamesCommit` *(optional; default `false`)* — opt in to the `repo-ops`
   `review-reply-postcondition` hook (see that plugin's README). When `true`, a `gh pr comment` or
   inline-thread reply (`gh api …/pulls/N/comments/ID/replies`, or the GraphQL
@@ -514,6 +752,40 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   read as a misconfiguration, so `address-review` treats a non-positive number as `null` and says
   so. Disabling is not recommended in either direction: an uncapped loop is the failure mode both
   keys exist for.
+- `review.mode` *(optional; default `null`)* — `"first-line"` turns `address-review` into a **two-stage
+  loop**: a first-line reviewer (an automated reviewer that reviews every push, configured under
+  `review.firstLine`) is answered first, then one final scored review (`review.bots`,
+  `review.approvalThreshold`) is answered as before. `null`, absent, or any other value leaves the
+  single-stage loop exactly as it was; none of the keys in this group is read in that case. In
+  first-line mode `address-review` **never requests the final review itself** (see
+  `review.rereviewCommand`) and reads the first-line reviewer's verdict from its check run rather than
+  computing it. `responderTier` covers both stages.
+- `review.rereviewCommand` *(optional; default `"@greptileai review"`)* — the one spelling of the
+  re-review mention for the final reviewer. In first-line mode only the first-line reviewer or a
+  human posts it. A skill reading this key to post it is a bug; it exists so every document and
+  tool names the same string.
+- `review.onOpen` *(optional; default `true`)* and `review.pushCooldownMinutes` *(optional; default
+  `5`)* — when the first-line reviewer's dispatcher starts a round. No skill or script in this
+  repository reads them; they are listed so a repo's `review` block has one documented home.
+- `review.firstLine.*` *(optional; read only when `review.mode` is `"first-line"`)*:
+  `bots` *(default `["vycari-review[bot]"]`)* are the logins whose inline threads `address-review`'s
+  first stage answers (compared with `app/` and `[bot]` stripped, like `review.bots`);
+  `checkName` *(default `"Vycari Review"`)* and `checkApp` *(default `"vycari-review"`)* name the
+  check run `wait-for-review.sh --stage vr` reads — matched by the App slug as well as the name,
+  never by name alone; `maxRounds` *(default `3`)* is the number of first-line rounds after which the
+  reviewer hands the PR on with findings still open; `unavailableMinutes` *(default `45`)* is how
+  long a due round may go unconcluded before the reviewer reports itself unavailable (and
+  `wait-for-review.sh --stage vr` uses it plus five minutes as its default deadline);
+  `disputePrefix` *(default `"Disputed:"`)* is what a reply on a P0/P1 thread starts with to dispute
+  the finding. Around every push, `address-review` also answers every unresolved inline thread by a
+  `review.bots` login: `Fixed in <sha>`, or a reply starting `disputePrefix`, `Declined:` or `Deferred:`
+  (the last with an issue reference); the first-line reviewer holds its hand-off until they are
+  answered. The verdict JSON in the check run's `output.text` is
+  `{score, max, reviewed_sha, round, mode: "first-line", open: {p0,p1,p2}, findings: [ids],
+  disputed: [ids], escalated: [ids], happy: bool, greptile_requested: sha|null}`; a title beginning
+  `Needs maintainer: P0 dispute` also marks an escalation, `Review unavailable` an unavailable
+  reviewer, and `unchanged since` a pure-rebase re-post that counts as the earlier round's verdict.
+  **Happy is the reviewer's to compute**; nothing here recomputes it.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to
@@ -610,10 +882,12 @@ the ones it knows into it: `plugins/core/scripts/coverage-adapt.sh`.
 | --- | --- | --- | --- |
 | Python | pytest-cov / coverage.py `--cov-report=json` | `coverage.json` | `.totals.percent_covered` |
 | TypeScript | vitest / jest / nyc `json-summary` | `coverage/coverage-summary.json` | `.total.lines.pct` |
+| Swift | `llvm-cov export` JSON (SwiftPM: `swift test --enable-code-coverage`, then the file `--show-codecov-path` prints) | `coverage.json` | `.data[0].totals.lines.percent` |
 
 ```bash
 coverage-adapt.sh                                   # detect the shape, rewrite coverage-summary.json in place
 coverage-adapt.sh --tool istanbul --input coverage/coverage-summary.json
+coverage-adapt.sh --tool llvm-cov --input coverage.json
 ```
 
 With no `--input` it takes whichever **one** of `coverage-summary.json`, `coverage.json` or
@@ -623,15 +897,15 @@ commit's number is the single failure the ratchet exists to prevent. Pass `--inp
 stale file before the coverage step. Its **own** normalized output doesn't count as a rival — the
 native file stays on disk after the first pass, and a retried CI step has to keep working.
 
-One script rather than one file per language: the two translations are a single `jq` path each, and
+One script rather than one file per language: the translations are a single `jq` path each, and
 a second copy of the argument handling and the fail-closed rules is a second place for them to
 drift. `--tool` selects the format explicitly; the default detects it from the JSON's shape and
 also recognizes its **own** output, so re-running the step is a no-op rather than an error.
 
 It fails, and writes nothing, on anything it cannot read with certainty — a missing file, malformed
 JSON, an unrecognized shape, a percentage outside 0–100, or istanbul's literal `"Unknown"` (what it
-writes when it measured no lines at all). A coverage gate that guesses a number is worse than one
-that stops.
+writes when it measured no lines at all) and llvm-cov's `lines.count` of 0 (which it reports as 0
+percent). A coverage gate that guesses a number is worse than one that stops.
 
 ### The gate
 
@@ -650,6 +924,11 @@ Both scripts are vendored into the consuming repo — `bootstrap` writes them to
 `.claude/maintainerd/` — because CI runs without the plugin installed and a workflow that curls a
 script from a branch is a supply chain nobody reviewed. They are checked in, so the version CI ran
 is the version in the diff.
+
+Each script carries a `# maintainerd-core: <version>` stamp, rewritten by the release tooling
+(`scripts/bump-version.py`) on every core bump, so a copy records which version it came from. `doctor`
+runs `scripts/vendored-stamp-check.sh`, which compares each vendored copy with the loaded plugin's
+script and prints the `cp` command for one that has fallen behind. It never overwrites a copy.
 
 ```yaml
       - name: Coverage
@@ -758,7 +1037,13 @@ Today this holds the `journal` category's vault, and the `deploy` category's pro
 {
   "journal": {
     "vault":        "/Users/you/Obsidian/my-vault", // Obsidian vault root — required by `worklog`
-    "projectsGlob": "Projects/**"                    // where project folders live (optional; default "Projects/**")
+    "projectsGlob": "Projects/**",                   // where project folders live (optional; default "Projects/**")
+    "sweep": {                                       // optional; read only by `worklog --daily`
+      "repos": [                                     // the repos one daily sweep covers
+        { "repo": "my-org/app",    "project": "App" },   // project: folder under projectsGlob; optional,
+        { "repo": "my-org/worker", "project": "App" }    // defaults to a folder named like the repo
+      ]
+    }
   },
   "deploy": {
     "prodHost": "prod-01.your-tailnet.ts.net" // fills the `{prodHost}` placeholder in every
@@ -771,7 +1056,10 @@ Today this holds the `journal` category's vault, and the `deploy` category's pro
 
 The split rule: **repo-scoped settings → repo config; user-scoped settings → user config.** `worklog`
 bridges them — it reads the vault from here, and the *optional* per-repo `journal.project`/`hubNote`
-pointer (above) from the repo config to know which vault project *this* repo maps to. If the user-level
+pointer (above) from the repo config to know which vault project *this* repo maps to. `journal.sweep.repos`
+is the one place a repo list lives for `worklog --daily`: a headless sweep has no meaningful working
+directory, so it cannot learn its repos from one. Several repos may name the same `project`; the daily
+note keeps one bullet per project, so their PRs share it. Absent, a sweep covers the current repo only. If the user-level
 file or `journal.vault` is absent, `worklog` asks for the vault path and offers to write it here.
 
 The same split is why `deploy.prodHost` lives here rather than in any repo's `deploy.versionz`: the
@@ -844,8 +1132,8 @@ A complete umbrella-repo config lives alongside this file as
 lives in the config every skill already reads.
 
 **`language` here is not the top-level `language`.** The top-level key selects language-specific
-audit rules and is `python` | `typescript`. A `repos[].language` is a key into the *profile's*
-language table, which is a different and larger vocabulary (it names build/CI shapes, and includes
+audit rules (`python` | `typescript` get dedicated ones; anything else is open, see above). A `repos[].language` is a key into the *profile's*
+language table, which is a larger vocabulary (it names build/CI shapes, and includes
 `none` for a repo that is tracked but not built). They are deliberately separate namespaces; a repo
 config carries the first, the workspace list carries the second.
 

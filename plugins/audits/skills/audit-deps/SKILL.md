@@ -24,12 +24,15 @@ stop and tell the user to run `/bootstrap`.
 Keys this skill uses:
 - `config.repo` — GitHub `owner/name` for every `gh ... --repo`.
 - `config.defaultBranch` — branch to check out and target PRs at.
-- `config.language` — `python` | `typescript`; selects the ecosystem tooling below.
+- `config.language` — `python` | `typescript` select the ecosystem tooling below; any other value uses the generic checks.
 - `config.commands.{test,build,lint,format}` — **the gate every dependency change must pass** before
   a PR (a bump that breaks the build is worse than being behind). Skip any that are `null`.
 - `config.labels.dependencies` — label applied to every PR/issue this skill opens (default
   `dependencies`).
 - `config.labels.automated` — also applied (default `automated`).
+- `config.audits.extraPrLabels` — extra labels applied to every PR (not issue) this skill opens,
+  including through `create-pr` (default `[]`). Run the existence check once, before this run's
+  first PR, and drop missing ones; never create one. See [`../../references/extra-pr-labels.md`](../../references/extra-pr-labels.md).
 - `config.audits.depsPrCap` / `config.audits.depsIssueCap` — per-run caps (default **3 / 5**).
 - `config.guidelines.*` — if the repo documents a **dependency or license policy** (an allowed-license
   allowlist, a "pin exactly / never auto-bump X" rule, a "stay on major N of Y" constraint), honor
@@ -88,6 +91,20 @@ branch prefix.
 - **Doesn't re-file what CI gates.** If the repo already runs an outdated/license check in CI and it's
   red, that's a CI failure — flag the gap, don't duplicate.
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. `gh issue list`, `gh pr list`, `gh issue create` and `gh pr create` are GraphQL underneath and
+return 403 there while `gh auth status` stays green. Probe once per run (`GH_GRAPHQL_BLOCKED`, or a
+`gh api graphql` call that fails closed) and use the REST forms in
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md): **List issues by label and state**, **List PRs by state**, **Create a PR**, **Create an issue**
+and **Edit labels**. Say in the report which mode the run used and how it decided.
+
+Three rules from that file apply here and outrank convenience: a read a decision depends on **fails
+closed** (an unreadable backlog is not an empty one); a step with no REST path (marking a draft PR
+ready) is **stop-and-report**, never skipped; and no unattended step may depend on `gh search` or the
+`search/issues` endpoint, so a search-shaped de-dup becomes a repo-scoped list plus a client-side
+filter.
+
 ## Workflow
 
 Use `TaskCreate` to track each finding.
@@ -126,7 +143,8 @@ gh pr list   --repo <config.repo> --state open --json number,title,headRefName -
 
 `--limit` is well above any realistic count of open, dependency-labelled issues; if the issue list
 still comes back at exactly `1000`, treat discovery as truncated, not complete — don't dedup against
-a possibly-short list, say so in the report instead.
+a possibly-short list, say so in the report instead. **Dedup fails closed**: if neither the porcelain nor
+the REST form can list open issues and open PRs, open nothing for this run and say which call failed.
 
 Skip a finding already covered by an open PR/issue, a Dependabot/Renovate PR (don't compete with the
 repo's existing bot), or a `wontfix`/not-planned close (a standing decision — e.g. "we pin X").
@@ -155,7 +173,8 @@ Everything else is its **own** unit of work:
 
 For every PR: branch `deps-<category>-<descriptor>` off `config.defaultBranch`, **delegate to
 `create-pr` if installed** (else run `config.commands.*` as pre-flight; no `--no-verify`), label
-`config.labels.dependencies` + `config.labels.automated`, never auto-merge. Caps default **3 PRs /
+`config.labels.dependencies` + `config.labels.automated` plus every checked `config.audits.extraPrLabels`
+entry (pass them to `create-pr` when delegating), never auto-merge. Caps default **3 PRs /
 5 issues**; defer overflow to the next run and note it in the report.
 
 ### 6. Report

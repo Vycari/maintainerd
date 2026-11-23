@@ -271,20 +271,69 @@ def git(args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
 
 
-def merged_pr_titles(repo, cwd, since, branch):
-    """Titles of PRs merged since `since`. Prefer gh; without gh auth, fall back to the
-    first-parent commit subjects of the default branch (a squash merge's subject is the PR title)."""
-    if repo:
+REST_PR_PAGES = 10     # 1,000 recently updated closed PRs: past this, the window is truncated
+
+
+def rest_merged_pr_titles(repo, cwd, since):
+    """Titles of PRs merged since `since` via the REST pulls list, for a sandbox that refuses
+    GraphQL (`gh pr list` is GraphQL underneath). `merged:>=` is a search with no REST form, so
+    list closed PRs newest-updated first and filter on `merged_at` client-side. A PR's
+    `updated_at` can move after it merges, so stop only after a page whose every `updated_at`
+    is older than the window, or a short page. Returns None if any page could not be read: a
+    partial list is not a quiet window (plugins/core/references/gh-rest-fallbacks.md)."""
+    lo = since.isoformat()
+    titles = []
+    for page in range(1, REST_PR_PAGES + 1):
         try:
             out = subprocess.run(
-                ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", "300",
-                 "--search", f"merged:>={since.isoformat()}", "--json", "title", "--jq", ".[].title"],
+                ["gh", "api", "-X", "GET", f"repos/{repo}/pulls", "-f", "state=closed",
+                 "-f", "sort=updated", "-f", "direction=desc", "-f", "per_page=100",
+                 "-f", f"page={page}"],
                 cwd=cwd, capture_output=True, text=True, timeout=120)
-            if out.returncode == 0:
-                return [t for t in out.stdout.splitlines() if t.strip()], "gh pr list"
-            print(f"profile: gh unavailable ({out.stderr.strip()[:120]}); using git log", file=sys.stderr)
         except (OSError, subprocess.TimeoutExpired) as e:
-            print(f"profile: gh unavailable ({e}); using git log", file=sys.stderr)
+            print(f"profile: REST pulls list failed ({e})", file=sys.stderr)
+            return None
+        if out.returncode != 0:
+            print(f"profile: REST pulls list failed ({out.stderr.strip()[:120]})", file=sys.stderr)
+            return None
+        try:
+            prs = json.loads(out.stdout)
+        except ValueError:
+            print("profile: REST pulls list returned unparseable JSON", file=sys.stderr)
+            return None
+        if not isinstance(prs, list):
+            print("profile: REST pulls list returned a non-list", file=sys.stderr)
+            return None
+        titles += [pr.get("title") or "" for pr in prs
+                   if pr.get("merged_at") and pr["merged_at"] >= lo]
+        if len(prs) < 100 or all((pr.get("updated_at") or "") < lo for pr in prs):
+            return [t for t in titles if t.strip()]
+    print(f"profile: REST pulls list hit its {REST_PR_PAGES}-page cap; window may be truncated",
+          file=sys.stderr)
+    return [t for t in titles if t.strip()]
+
+
+def merged_pr_titles(repo, cwd, since, branch):
+    """Titles of PRs merged since `since`. Prefer `gh pr list`; when GraphQL is refused (or
+    `GH_GRAPHQL_BLOCKED=1`), the REST pulls list; without either, fall back to the first-parent
+    commit subjects of the default branch (a squash merge's subject is the PR title)."""
+    if repo:
+        if os.environ.get("GH_GRAPHQL_BLOCKED") != "1":
+            try:
+                out = subprocess.run(
+                    ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", "300",
+                     "--search", f"merged:>={since.isoformat()}", "--json", "title", "--jq", ".[].title"],
+                    cwd=cwd, capture_output=True, text=True, timeout=120)
+                if out.returncode == 0:
+                    return [t for t in out.stdout.splitlines() if t.strip()], "gh pr list"
+                print(f"profile: gh pr list unavailable ({out.stderr.strip()[:120]}); trying REST",
+                      file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"profile: gh pr list unavailable ({e}); trying REST", file=sys.stderr)
+        titles = rest_merged_pr_titles(repo, cwd, since)
+        if titles is not None:
+            return titles, "gh api pulls (REST)"
+        print("profile: no PR list from gh; using git log", file=sys.stderr)
     subjects = git(["log", "--first-parent", f"--since={since.isoformat()}", "--pretty=%s", branch], cwd)
     return [s for s in subjects.splitlines() if s.strip()], f"git log --first-parent {branch}"
 
@@ -458,6 +507,7 @@ def cmd_prefilter(a):
     stats = dict(records=0, deleted=0, oldRevisions=0, category=0, terms=0,
                  alreadyReported=0, alreadySeen=0, survivors=0, returned=0, overflow=0)
     seen, in_cat, out = set(), [], []
+    term_miss, reported_hit, seen_hit = [], [], []
     for path in m["pages"]:
         try:
             root = ET.parse(path).getroot()
@@ -505,13 +555,16 @@ def cmd_prefilter(a):
         signal = [t for t in hits if t not in background]
         # One hand-given phrase is enough; derived terms are noisier, so ask for two.
         if not (any(weights[t] >= 3 for t in signal) or len(signal) >= 2):
+            term_miss.append(r["id"])
             continue
         stats["terms"] += 1
         if r["id"] in reported:
             stats["alreadyReported"] += 1
+            reported_hit.append(r["id"])
             continue
         if r["id"] in recent:
             stats["alreadySeen"] += 1
+            seen_hit.append(r["id"])
             continue
         out.append({**r, "matched": signal, "score": sum(weights[t] for t in signal),
                     "coreHits": sum(weights[t] >= 3 for t in signal)})
@@ -535,6 +588,32 @@ def cmd_prefilter(a):
               # just closed is still lost. See maintainerd#75 for the open question of how (or
               # whether) to carry that case forward.
               "overflowIds": [c["id"] for c in overflow]}
+    if a.record:
+        # The run record (issue #92): a compact, committed account of what this prefilter
+        # did with every in-category id, so a later check can tell a paper lost to --max
+        # (`overflow`) from one the terms never matched (`termMissIds`) or one dropped as already
+        # reported or seen. It holds no arXiv free text (no title, no abstract): every string in it
+        # is an id, a profile term or a date, so a title written to address an agent can never be
+        # committed through it, `overflow` titles no one reviews included. An id is enough to look
+        # a paper up. Written before stdout so a record that cannot be written fails the step
+        # rather than leaving a run with no record.
+        brief = lambda c: {"id": c["id"], "matched": c["matched"], "score": c["score"]}
+        rec = {"recordVersion": 1, "responseDate": m["responseDate"], "from": m["from"],
+               "until": m["until"], "windowSource": m["windowSource"], "max": a.max,
+               "stats": stats, "backgroundTerms": background,
+               "returned": [brief(c) for c in capped],
+               "overflow": [brief(c) for c in overflow],
+               "termMissIds": sorted(term_miss),
+               "alreadyReportedIds": sorted(reported_hit),
+               "alreadySeenIds": sorted(seen_hit)}
+        tmp = a.record + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(rec, f, indent=1)
+                f.write("\n")
+            os.replace(tmp, a.record)
+        except OSError as e:
+            die(f"cannot write the prefilter record {a.record} ({e}); stop, do not open a PR")
     json.dump(result, sys.stdout, indent=2)
     print()
     print(f"prefilter: {json.dumps(stats)}; returning {len(capped)}", file=sys.stderr)
@@ -611,6 +690,8 @@ def main():
     pf.add_argument("--state", help="state file, for ids seen by earlier runs")
     pf.add_argument("--reported-dir", help="digest directory; ids in its *.md are skipped")
     pf.add_argument("--max", type=int, default=150, help="candidates returned for ranking")
+    pf.add_argument("--record", help="also write the compact run record (returned, overflow and "
+                                     "term-miss ids, with titles) to this path, for committing")
     pf.set_defaults(fn=cmd_prefilter)
 
     ad = sub.add_parser("advance", help="move the high-water mark after a complete prefilter")

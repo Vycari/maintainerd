@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "maintainerd": {
+      "source": {
+        "source": "github",
+        "repo": "Vycari/maintainerd"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "repo-ops@maintainerd": true
+  }
+}

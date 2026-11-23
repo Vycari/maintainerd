@@ -15,6 +15,15 @@ guidelines. The one mutation it will *offer* (with confirmation) is creating mis
 since that's the same safe action `bootstrap` offers. Everything else it routes: "run `/bootstrap`
 to regenerate X", "fill in `invariants.md`", "fix this key by hand".
 
+## When GitHub's GraphQL API is blocked
+
+Some sandboxes allow GitHub's REST API and refuse its GraphQL one. Every `gh` call this skill makes
+is `gh api` against a repo-scoped REST endpoint (the repo's merge-method flags and archived state
+are read from `repos/<owner>/<name>`, not `gh repo view`, for exactly this reason), so the checks run
+unchanged in either mode. `gh label create` is REST too. If a call does fail with 403 or a proxy error,
+report that check as **could not verify** with the call that failed; never report it as passing. See
+[`../../references/gh-rest-fallbacks.md`](../../references/gh-rest-fallbacks.md).
+
 ## Inputs
 
 - `/doctor` — full read-only check, print the report.
@@ -57,8 +66,24 @@ the source of truth for what's valid. Then run every check below, collecting fin
 ### 2. Schema conformance
 - Required top-level keys present: `repo`, `defaultBranch`, `language`, `commands`, `paths`,
   `guidelines`. Missing → **FAIL**.
-- `language` is `python` | `typescript` (else **WARN**: audits fall back to language-generic checks).
+- `language` is an open string. `python` | `typescript` get dedicated audit rules. Any other value is
+  **info** (not WARN) when a profile is in play and resolves it (check 14 verifies the resolution), and
+  **WARN** only when no profile resolves it: audits fall back to language-generic checks either way.
 - Types match the schema (arrays are arrays, caps are numbers, `commands.*` are strings or `null`).
+- `review.mechanicalCommits`, when present, is an array of objects that each carry `name`, `author`
+  and `trailer` as non-empty strings and `verify` as a non-empty array of strings → else **WARN**
+  naming the entry (an entry with a missing or mistyped field is ignored by the wait tools, so its
+  commits keep making a score stale). Also **WARN** when no `verify` element contains `{sha}`
+  (the check would not look at the commit it is vouching for), and when `author` is not
+  `*[bot]`-shaped and not an exact login you recognise (advisory).
+- `autoMerge`, when present, validated per the `autoMerge.*` entry in the schema: not an object,
+  a list key that is not a list of strings, a non-string or non-compiling `naPattern`, or
+  `paths.allowlist` that is neither `null` nor a list of strings → **FAIL** (the gate holds every PR
+  in the repo). A non-integer cap or non-boolean `enabled`/`paths.allow*` → **WARN** (the gate
+  substitutes the default). Floor relationships, since a repo may be more cautious than the defaults
+  and never less: `settleMinutes` < 30, `maxChangedFiles` > 20, `maxChangedLines` > 400 → **WARN**
+  naming the key and the default; `enabled: true` with empty `maintainers` → **WARN** (merges
+  nothing). Absent block → no finding (it means off). Prose rule only: no script backs it.
 - **Unknown keys** not in the schema → **WARN** (usually a typo, e.g. `commands.tests` for `test`;
   the skill reading it will silently miss the value).
 
@@ -68,6 +93,11 @@ the source of truth for what's valid. Then run every check below, collecting fin
 `"none"`, this check and check 4 are `n/a (umbrella repo)` — a workspace repo holds config and docs,
 not a source tree, and `paths.source`/`paths.tests` are legitimately `null` there. Report them as
 n/a; never as PASS (nothing was verified) and never as FAIL. Everything else is checked as usual.
+
+**Coverage exemption:** when the effective `coverage` is `null` (a complete exemption — a repo with
+no tests) and `paths.tests` is `null`, `paths.tests` is `n/a (coverage exempt)`: there is no test
+tree to resolve. A `paths.tests` that is set is still checked, and a `null` `paths.tests` with a
+non-null `coverage` is still a finding.
 
 For each `config.paths.*`: the directory/file exists in the repo. `designDocs`/`productDocs` are
 arrays — check each entry. A configured `prTemplate` that doesn't exist → **WARN**. `source`/`tests`
@@ -155,7 +185,7 @@ PRs, so a misconfiguration here has real blast radius — check it harder than t
 - `mergeMethod` is one of `squash|merge|rebase` **and** is enabled on the repo:
 
   ```bash
-  gh repo view <config.repo> --json squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed
+  gh api "repos/<config.repo>" --jq '{allow_squash_merge, allow_merge_commit, allow_rebase_merge}'
   ```
 
   A method the repo forbids → **FAIL** (every merge attempt errors).
@@ -207,7 +237,7 @@ Validate it first — a fan-out driven by a broken list produces confident nonse
 - **`repo` matches `owner/name`** and resolves on GitHub:
 
   ```bash
-  gh repo view <entry.repo> --json nameWithOwner,isArchived --jq '.nameWithOwner + (if .isArchived then " (archived)" else "" end)'
+  gh api "repos/<entry.repo>" --jq '.full_name + (if .archived then " (archived)" else "" end)'
   ```
 
   Doesn't resolve → **FAIL** (every `gh --repo` against it will error). Resolves but is **archived** →
@@ -314,6 +344,24 @@ four before calling it enforced:
    from an org-level parent. When either read fails, say **couldn't verify** for this criterion and
    report the other three; don't assume enforcement, and don't call it a failure either.
 
+**b2. The vendored scripts are current.** Each canonical coverage script carries a
+`# maintainerd-core: <version>` stamp, rewritten by the release tooling, so a copy's stamp says which
+version it was taken from. Run, from the repo root:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/vendored-stamp-check.sh"
+```
+
+It compares `.claude/maintainerd/coverage-adapt.sh` and `coverage-check.sh` with the loaded plugin's
+scripts and prints one line each. `MODIFIED`, `STALE` or `UNSTAMPED` (the stamp matches but the
+script differs, the stamp differs **and** the script differs, or a pre-stamp copy that differs) →
+**WARN**, quoting the line, which carries the `cp`
+command that re-copies it. `MISSING` is the same severity as a missing vendored script above.
+`behind` or `unstamped` with identical content → **PASS** with a note that the stamp lags but the
+script is unchanged. Exit 2 (no `CLAUDE_PLUGIN_ROOT`, or an unreadable canonical) → say **couldn't
+verify**, not a pass. Report-only: never copy over a vendored script, because a repo may carry a
+deliberate local edit, and the diff of a re-copy is the maintainer's to read.
+
 Nothing that actually runs it → **FAIL**: "`coverage.floor` is recorded but nothing enforces it —
 the ratchet is decorative." Report *which* of the four failed, because "the step is there but the
 job is `if: false`" and "there is no step" have different fixes. A referenced-but-missing vendored
@@ -399,9 +447,15 @@ Then, against `effective`:
 | `files.greptileRules` | `.greptile/rules.md` exists | **FAIL** |
 | `files.claudeMd` | `CLAUDE.md` exists | **FAIL** |
 | `ci` is an effective check | `.github/workflows/ci.yml` exists and has a job producing the `ci` check | **FAIL** |
-| `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem | **FAIL** for the file, **WARN** per missing ecosystem |
+| `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem **whose manifest exists** (npm: `package.json`; pip/uv: `pyproject.toml` or `requirements*.txt`; github-actions: `.github/workflows/`) | **FAIL** for the file, **WARN** per missing ecosystem |
 | `claudeSettings` present | `.claude/settings.json` declares each named marketplace and plugin | **WARN** per missing entry |
 | always | `.claude/maintainerd.json` agrees with the effective `commands` and `coverage` | **WARN** per key |
+
+**An ecosystem with no manifest is skipped, not required.** Before reporting a missing `updates`
+entry, look for the ecosystem's manifest (the table above names them; for any other ecosystem, its
+usual manifest). With none present, report that ecosystem as `n/a (no manifest)` — never WARN or
+FAIL — since an entry for it would only fail on every scheduled run. A listed ecosystem whose
+manifest does exist and has no entry is still a WARN.
 
 **A language with no required checks scaffolds no workflow.** A `none`-language repo — tracked but
 not built here — has an empty `requiredChecks` and no `commands`, so there is no `ci` job to look for
