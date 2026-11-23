@@ -344,6 +344,24 @@ four before calling it enforced:
    from an org-level parent. When either read fails, say **couldn't verify** for this criterion and
    report the other three; don't assume enforcement, and don't call it a failure either.
 
+**b2. The vendored scripts are current.** Each canonical coverage script carries a
+`# maintainerd-core: <version>` stamp, rewritten by the release tooling, so a copy's stamp says which
+version it was taken from. Run, from the repo root:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/vendored-stamp-check.sh"
+```
+
+It compares `.claude/maintainerd/coverage-adapt.sh` and `coverage-check.sh` with the loaded plugin's
+scripts and prints one line each. `MODIFIED`, `STALE` or `UNSTAMPED` (the stamp matches but the
+script differs, the stamp differs **and** the script differs, or a pre-stamp copy that differs) →
+**WARN**, quoting the line, which carries the `cp`
+command that re-copies it. `MISSING` is the same severity as a missing vendored script above.
+`behind` or `unstamped` with identical content → **PASS** with a note that the stamp lags but the
+script is unchanged. Exit 2 (no `CLAUDE_PLUGIN_ROOT`, or an unreadable canonical) → say **couldn't
+verify**, not a pass. Report-only: never copy over a vendored script, because a repo may carry a
+deliberate local edit, and the diff of a re-copy is the maintainer's to read.
+
 Nothing that actually runs it → **FAIL**: "`coverage.floor` is recorded but nothing enforces it —
 the ratchet is decorative." Report *which* of the four failed, because "the step is there but the
 job is `if: false`" and "there is no step" have different fixes. A referenced-but-missing vendored
