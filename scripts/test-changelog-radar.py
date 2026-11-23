@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -546,15 +547,99 @@ jobs:
         self.assertEqual(len(survivors), 3)
         self.assertEqual([s["id"] for s in survivors], ["item-new", "item-mid", "item-old"])
 
-    def test_locked_state_context_manager(self):
+    def test_locked_state_mutual_exclusion(self):
+        """Hold locked_state in one process and check that another cannot enter until released."""
         sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
         import importlib
         cr = importlib.import_module("changelog-radar")
 
-        state_file = os.path.join(self.tmp.name, "lock_test_state.json")
-        with cr.locked_state(state_file):
-            # Inside the locked block, the lock file should exist in tempdir
-            pass
+        state_file = os.path.join(self.tmp.name, "lock_block_test.json")
+        held_file = os.path.join(self.tmp.name, "held.txt")
+        done_file = os.path.join(self.tmp.name, "done.txt")
+
+        holder_code = f"""
+import sys, time
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with cr.locked_state(r'{state_file}'):
+    with open(r'{held_file}', 'w') as f:
+        f.write('held')
+    time.sleep(0.4)
+    with open(r'{done_file}', 'w') as f:
+        f.write('done')
+"""
+        proc = subprocess.Popen([sys.executable, "-c", holder_code])
+        try:
+            for _ in range(50):
+                if os.path.exists(held_file):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("Holder process never acquired lock")
+
+            # While holder process holds the lock, attempt to enter in this process.
+            # Must block until holder releases it and writes done_file.
+            with cr.locked_state(state_file):
+                self.assertTrue(os.path.exists(done_file), "Entered locked_state before holder process released it!")
+        finally:
+            proc.wait(timeout=5)
+
+    def test_advance_blocks_while_state_locked(self):
+        """Verify that CLI advance cannot enter or write while locked_state is held by another process."""
+        state_file = os.path.join(self.tmp.name, "s_adv_block.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        held_file = os.path.join(self.tmp.name, "adv_held.txt")
+        done_file = os.path.join(self.tmp.name, "adv_done.txt")
+        input_file = os.path.join(self.tmp.name, "adv_in.json")
+        with open(input_file, "w") as f:
+            json.dump([{"id": "id-2", "published": "2026-10-15T12:00:00Z"}], f)
+
+        holder_code = f"""
+import sys, time
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with cr.locked_state(r'{state_file}'):
+    with open(r'{held_file}', 'w') as f:
+        f.write('held')
+    time.sleep(0.4)
+    with open(r'{done_file}', 'w') as f:
+        f.write('done')
+"""
+        holder = subprocess.Popen([sys.executable, "-c", holder_code])
+        try:
+            for _ in range(50):
+                if os.path.exists(held_file):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("Holder process never acquired lock")
+
+            # Run advance CLI while holder is sleeping inside the lock.
+            # advance must block until holder writes done_file and releases the lock.
+            t0 = time.time()
+            proc = run_script([
+                "advance",
+                "--state", state_file,
+                "--input", input_file,
+                "--expected-mark", "2026-10-14T12:00:00Z",
+            ])
+            elapsed = time.time() - t0
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(os.path.exists(done_file), "advance completed before holder released the lock!")
+            self.assertGreaterEqual(elapsed, 0.35, "advance did not wait for the lock to be released")
+        finally:
+            holder.wait(timeout=5)
 
     def test_advance_locked_cas_rejects_stale_concurrent_run(self):
         # Simulates two overlapping scans:
