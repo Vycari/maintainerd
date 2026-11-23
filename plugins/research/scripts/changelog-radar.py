@@ -16,16 +16,29 @@ Standard library only. Exit status is non-zero on any failure, with the reason o
 """
 
 import argparse
+import contextlib
 import datetime as dt
 import email.utils
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 STATE_VERSION = 1
 DEFAULT_FEED = "https://github.blog/changelog/feed/"
@@ -115,6 +128,43 @@ def read_json_file(path):
     else:
         text = raw.decode("utf-8", errors="replace")
     return json.loads(text)
+
+
+@contextlib.contextmanager
+def locked_state(state_path):
+    """Context manager to lock shared state across read, check, and write (prevents CAS races)."""
+    if not state_path:
+        yield
+        return
+    lock_name = f"changelog-radar-{hashlib.sha256(os.path.abspath(state_path).encode('utf-8')).hexdigest()[:16]}.lock"
+    lock_path = os.path.join(tempfile.gettempdir(), lock_name)
+    with open(lock_path, "a+b") as lock_f:
+        if fcntl is not None:
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                try:
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+        elif msvcrt is not None:
+            lock_f.seek(0, os.SEEK_END)
+            if lock_f.tell() == 0:
+                lock_f.write(b" ")
+                lock_f.flush()
+            lock_f.seek(0)
+            msvcrt.locking(lock_f.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                try:
+                    lock_f.seek(0)
+                    msvcrt.locking(lock_f.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        else:
+            yield
 
 
 def load_state(path):
@@ -487,8 +537,9 @@ def prefilter(records, profile, state=None, feed_url=None):
                 "matchedTerms": matched,
             })
 
-    # Sort descending by score, then newest date
-    survivors.sort(key=lambda x: (-x["score"], x.get("published") or ""))
+    # Sort descending by score, then newest date descending (stable sort)
+    survivors.sort(key=lambda x: x.get("published") or "", reverse=True)
+    survivors.sort(key=lambda x: x["score"], reverse=True)
     return survivors
 
 
@@ -550,62 +601,65 @@ def cmd_advance(args):
         die("--state is required for advance")
 
     feed_url = resolve_feed_url(getattr(args, "feed", None), getattr(args, "cwd", "."))
-    state = load_state(state_path)
 
-    feed_state = get_feed_state(state, feed_url)
-    current_mark = feed_state.get("highWater", {}).get("publishedDate")
-
-    # Compare-and-set mark verification (VR-1ae7cacf)
-    if args.expected_mark is not None:
-        expected = None if args.expected_mark in ("", "none", "null") else args.expected_mark
-        if current_mark != expected:
-            die(f"the state's mark is {current_mark or '(none)'} but this run started from "
-                f"{expected or '(none)'}: another run advanced it since; refusing to overwrite. "
-                "Start over from the latest state.")
-
-    if not state:
-        state = {
-            "version": STATE_VERSION,
-            "feed": feed_url,
-            "highWater": {"publishedDate": None},
-            "recentIds": [],
-            "feeds": {},
-        }
-
-    # Only mark seen the items passed in --input (the evaluated survivors, VR-64c20138)
+    # Read input items before locking to avoid holding lock during stdin read
     if args.input:
         items = read_json_file(args.input)
     else:
         items = json.load(sys.stdin)
 
-    seen_ids = list(feed_state.get("recentIds", []))
-    latest_date = current_mark
+    with locked_state(state_path):
+        state = load_state(state_path)
 
-    for it in items:
-        rid = it.get("id")
-        if rid and rid not in seen_ids:
-            seen_ids.insert(0, rid)
-        pub = it.get("published")
-        if pub and (not latest_date or pub > latest_date):
-            latest_date = pub
+        feed_state = get_feed_state(state, feed_url)
+        current_mark = feed_state.get("highWater", {}).get("publishedDate")
 
-    trimmed_ids = seen_ids[:RECENT_IDS_KEEP]
-    feed_record = {
-        "highWater": {"publishedDate": latest_date},
-        "recentIds": trimmed_ids,
-    }
+        # Compare-and-set mark verification (VR-1ae7cacf)
+        if args.expected_mark is not None:
+            expected = None if args.expected_mark in ("", "none", "null") else args.expected_mark
+            if current_mark != expected:
+                die(f"the state's mark is {current_mark or '(none)'} but this run started from "
+                    f"{expected or '(none)'}: another run advanced it since; refusing to overwrite. "
+                    "Start over from the latest state.")
 
-    if "feeds" not in state or not isinstance(state["feeds"], dict):
-        state["feeds"] = {}
-    state["feeds"][feed_url] = feed_record
+        if not state:
+            state = {
+                "version": STATE_VERSION,
+                "feed": feed_url,
+                "highWater": {"publishedDate": None},
+                "recentIds": [],
+                "feeds": {},
+            }
 
-    # Mirror active feed at top-level for backwards compatibility
-    state["version"] = STATE_VERSION
-    state["feed"] = feed_url
-    state["highWater"] = {"publishedDate": latest_date}
-    state["recentIds"] = trimmed_ids
+        seen_ids = list(feed_state.get("recentIds", []))
+        latest_date = current_mark
 
-    save_state(state_path, state)
+        for it in items:
+            rid = it.get("id")
+            if rid and rid not in seen_ids:
+                seen_ids.insert(0, rid)
+            pub = it.get("published")
+            if pub and (not latest_date or pub > latest_date):
+                latest_date = pub
+
+        trimmed_ids = seen_ids[:RECENT_IDS_KEEP]
+        feed_record = {
+            "highWater": {"publishedDate": latest_date},
+            "recentIds": trimmed_ids,
+        }
+
+        if "feeds" not in state or not isinstance(state["feeds"], dict):
+            state["feeds"] = {}
+        state["feeds"][feed_url] = feed_record
+
+        # Mirror active feed at top-level for backwards compatibility
+        state["version"] = STATE_VERSION
+        state["feed"] = feed_url
+        state["highWater"] = {"publishedDate": latest_date}
+        state["recentIds"] = trimmed_ids
+
+        save_state(state_path, state)
+
     print(f"advanced state {state_path} (feed={feed_url}): highWater={latest_date}, {len(trimmed_ids)} recentIds")
 
 

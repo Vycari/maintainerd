@@ -504,6 +504,107 @@ jobs:
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "2026-10-15T12:00:00Z")
 
+    def test_prefilter_equal_score_sorts_newest_date_first(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": "item-old",
+                "title": "GitHub Actions Old Post",
+                "link": "https://example.com/old",
+                "published": "2026-10-10T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions old update",
+            },
+            {
+                "id": "item-new",
+                "title": "GitHub Actions New Post",
+                "link": "https://example.com/new",
+                "published": "2026-10-15T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions new update",
+            },
+            {
+                "id": "item-mid",
+                "title": "GitHub Actions Mid Post",
+                "link": "https://example.com/mid",
+                "published": "2026-10-12T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions mid update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_sort.json")
+        rec_file = os.path.join(self.tmp.name, "rec_sort.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 3)
+        self.assertEqual([s["id"] for s in survivors], ["item-new", "item-mid", "item-old"])
+
+    def test_locked_state_context_manager(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        state_file = os.path.join(self.tmp.name, "lock_test_state.json")
+        with cr.locked_state(state_file):
+            # Inside the locked block, the lock file should exist in tempdir
+            pass
+
+    def test_advance_locked_cas_rejects_stale_concurrent_run(self):
+        # Simulates two overlapping scans:
+        # Both start at mark 2026-10-14T12:00:00Z.
+        # Run 1 advances to 2026-10-15T12:00:00Z.
+        # Run 2 tries to advance with expected-mark 2026-10-14T12:00:00Z.
+        # With locked_state, Run 2 reads the updated state under lock and is rejected.
+        state_file = os.path.join(self.tmp.name, "s_concurrent.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        input_run1 = os.path.join(self.tmp.name, "run1.json")
+        with open(input_run1, "w") as f:
+            json.dump([{"id": "id-run1", "published": "2026-10-15T12:00:00Z"}], f)
+
+        input_run2 = os.path.join(self.tmp.name, "run2.json")
+        with open(input_run2, "w") as f:
+            json.dump([{"id": "id-run2", "published": "2026-10-16T12:00:00Z"}], f)
+
+        # Run 1 succeeds
+        proc1 = run_script([
+            "advance",
+            "--state", state_file,
+            "--input", input_run1,
+            "--expected-mark", "2026-10-14T12:00:00Z",
+        ])
+        self.assertEqual(proc1.returncode, 0, proc1.stderr)
+
+        # Run 2 (which had read 2026-10-14 before Run 1 finished) attempts CAS advance
+        proc2 = run_script([
+            "advance",
+            "--state", state_file,
+            "--input", input_run2,
+            "--expected-mark", "2026-10-14T12:00:00Z",
+        ])
+        self.assertNotEqual(proc2.returncode, 0)
+        self.assertIn("refusing to overwrite", proc2.stderr)
+        self.assertIn("another run advanced it since", proc2.stderr)
+
+        # Verify Run 1's data was not overwritten
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertEqual(st["highWater"]["publishedDate"], "2026-10-15T12:00:00Z")
+        self.assertIn("id-run1", st["recentIds"])
+        self.assertNotIn("id-run2", st["recentIds"])
+
 
 if __name__ == "__main__":
     unittest.main()
