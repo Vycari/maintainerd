@@ -548,17 +548,18 @@ jobs:
         self.assertEqual([s["id"] for s in survivors], ["item-new", "item-mid", "item-old"])
 
     def test_locked_state_mutual_exclusion(self):
-        """Hold locked_state in one process and check that another cannot enter until released."""
+        """Hold locked_state in one process and check that another cannot enter until parent signals release."""
         sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
         import importlib
         cr = importlib.import_module("changelog-radar")
 
         state_file = os.path.join(self.tmp.name, "lock_block_test.json")
         held_file = os.path.join(self.tmp.name, "held.txt")
+        release_file = os.path.join(self.tmp.name, "release.txt")
         done_file = os.path.join(self.tmp.name, "done.txt")
 
         holder_code = f"""
-import sys, time
+import sys, os, time
 sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
 import importlib
 cr = importlib.import_module('changelog-radar')
@@ -566,7 +567,8 @@ cr = importlib.import_module('changelog-radar')
 with cr.locked_state(r'{state_file}'):
     with open(r'{held_file}', 'w') as f:
         f.write('held')
-    time.sleep(0.4)
+    while not os.path.exists(r'{release_file}'):
+        time.sleep(0.01)
     with open(r'{done_file}', 'w') as f:
         f.write('done')
 """
@@ -575,19 +577,45 @@ with cr.locked_state(r'{state_file}'):
             for _ in range(50):
                 if os.path.exists(held_file):
                     break
-                time.sleep(0.05)
+                time.sleep(0.02)
             else:
                 self.fail("Holder process never acquired lock")
 
-            # While holder process holds the lock, attempt to enter in this process.
-            # Must block until holder releases it and writes done_file.
-            with cr.locked_state(state_file):
-                self.assertTrue(os.path.exists(done_file), "Entered locked_state before holder process released it!")
+            # Holder is actively holding lock until release_file exists.
+            # Spawn a second process attempting to enter locked_state.
+            client_entered = os.path.join(self.tmp.name, "client_entered.txt")
+            client_code = f"""
+import sys, os
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with cr.locked_state(r'{state_file}'):
+    with open(r'{client_entered}', 'w') as f:
+        f.write('entered')
+"""
+            client = subprocess.Popen([sys.executable, "-c", client_code])
+            try:
+                time.sleep(0.1)
+                # Client must be blocked by the lock
+                self.assertIsNone(client.poll(), "Client entered locked_state while holder held the lock!")
+                self.assertFalse(os.path.exists(client_entered), "Client entered locked_state prematurely!")
+
+                # Signal holder to release lock
+                with open(release_file, "w") as f:
+                    f.write("release")
+
+                client.wait(timeout=5)
+                self.assertEqual(client.returncode, 0)
+                self.assertTrue(os.path.exists(client_entered), "Client did not enter after lock was released")
+            finally:
+                if client.poll() is None:
+                    client.kill()
         finally:
             proc.wait(timeout=5)
 
     def test_advance_blocks_while_state_locked(self):
-        """Verify that CLI advance cannot enter or write while locked_state is held by another process."""
+        """Verify that CLI advance blocks until parent sends release signal to lock holder."""
         state_file = os.path.join(self.tmp.name, "s_adv_block.json")
         with open(state_file, "w") as f:
             json.dump({
@@ -597,13 +625,14 @@ with cr.locked_state(r'{state_file}'):
             }, f)
 
         held_file = os.path.join(self.tmp.name, "adv_held.txt")
+        release_file = os.path.join(self.tmp.name, "adv_release.txt")
         done_file = os.path.join(self.tmp.name, "adv_done.txt")
         input_file = os.path.join(self.tmp.name, "adv_in.json")
         with open(input_file, "w") as f:
             json.dump([{"id": "id-2", "published": "2026-10-15T12:00:00Z"}], f)
 
         holder_code = f"""
-import sys, time
+import sys, os, time
 sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
 import importlib
 cr = importlib.import_module('changelog-radar')
@@ -611,7 +640,8 @@ cr = importlib.import_module('changelog-radar')
 with cr.locked_state(r'{state_file}'):
     with open(r'{held_file}', 'w') as f:
         f.write('held')
-    time.sleep(0.4)
+    while not os.path.exists(r'{release_file}'):
+        time.sleep(0.01)
     with open(r'{done_file}', 'w') as f:
         f.write('done')
 """
@@ -620,24 +650,38 @@ with cr.locked_state(r'{state_file}'):
             for _ in range(50):
                 if os.path.exists(held_file):
                     break
-                time.sleep(0.05)
+                time.sleep(0.02)
             else:
                 self.fail("Holder process never acquired lock")
 
-            # Run advance CLI while holder is sleeping inside the lock.
-            # advance must block until holder writes done_file and releases the lock.
-            t0 = time.time()
-            proc = run_script([
+            # Start advance CLI process while holder holds the lock
+            adv_proc = subprocess.Popen([
+                sys.executable, SCRIPT,
                 "advance",
                 "--state", state_file,
                 "--input", input_file,
                 "--expected-mark", "2026-10-14T12:00:00Z",
             ])
-            elapsed = time.time() - t0
+            try:
+                time.sleep(0.1)
+                # advance must be blocked waiting on the lock
+                self.assertIsNone(adv_proc.poll(), "advance finished while holder held the lock!")
+                self.assertFalse(os.path.exists(done_file), "Holder finished before release signal was sent!")
 
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertTrue(os.path.exists(done_file), "advance completed before holder released the lock!")
-            self.assertGreaterEqual(elapsed, 0.35, "advance did not wait for the lock to be released")
+                # Signal holder to release the lock
+                with open(release_file, "w") as f:
+                    f.write("release")
+
+                adv_proc.wait(timeout=5)
+                self.assertEqual(adv_proc.returncode, 0, "advance failed after lock release")
+                self.assertTrue(os.path.exists(done_file), "Holder did not finish after release signal")
+
+                with open(state_file) as f:
+                    st = json.load(f)
+                self.assertEqual(st["highWater"]["publishedDate"], "2026-10-15T12:00:00Z")
+            finally:
+                if adv_proc.poll() is None:
+                    adv_proc.kill()
         finally:
             holder.wait(timeout=5)
 
