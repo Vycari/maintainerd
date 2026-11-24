@@ -195,6 +195,9 @@ in all-caps. A few specifics:
 
 ## What not to do
 
+- **Don't write a closing keyword in front of an issue number.** `closes #N`, `fixed #N` or
+  `resolves #N` in the changelog prose closes `#N` when the PR carrying it merges, even inside a
+  negation. Describe issue history as `#A → #B`, or put a word between the verb and the number.
 - **Don't write a changelog for an arbitrary date range in one file.** One date → one file. If asked
   for a week, generate seven files (or ask the user to pick a single day).
 - **Don't include direct commits to `config.defaultBranch`.** The repo's convention is PR-only. If a

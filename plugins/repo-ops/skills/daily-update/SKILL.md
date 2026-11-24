@@ -206,6 +206,15 @@ GitHub-only sub-skill, the issue numbers/labels it changed), so a reviewer can n
 sub-skill. A regular (non-draft) PR is fine; mark it **draft** only if a sub-skill made conceptual
 drift fixes that benefit from a slower read (e.g. an `audit-*` skill rewrote prose).
 
+**Never write a closing keyword in front of an issue number.** GitHub reads `close`/`closes`/
+`closed`, `fix`/`fixes`/`fixed` or `resolve`/`resolves`/`resolved` directly before `#N` in a PR body,
+an issue body, a comment or a commit message as an instruction, and closes `#N` when the PR merges,
+whatever the sentence meant. A daily PR body is full of issue history ("#A closed #B"), so this is
+the easy way to shut an issue someone just reopened. Negation does not help: `does not close #N`
+still closes it. Write the relationship as `#A → #B`, or put a word between the verb and the number
+("closed issue #B"). The arrow survives a commit message too, where there is no markdown. The daily
+PR closes nothing, so it carries no `Fixes #N` line at all.
+
 ### 4. Report
 
 Reply to the caller with:
@@ -240,6 +249,8 @@ the cron only needs the success/failure signal.
   and pretending otherwise loses changes.
 - **Don't omit a repo from the combined report because it was quiet or skipped.** A missing line is
   indistinguishable from a run that never happened.
+- **Don't write `closed #N` / `fixes #N` / `resolves #N` into the PR body or the commit message.**
+  Write `#A → #B`; see step 3.
 - **Don't reimplement sub-skill logic here.** Read the sub-skill's `SKILL.md` and follow it. If a
   sub-skill needs a behavior change, edit *that* skill's `SKILL.md` and ship it as a separate PR.
 
