@@ -720,7 +720,7 @@ expect_match  "and the profile-side resolution, worded to hold under either flee
   'set repoOverrides.cli.visibility to "private" in the profile (removing it is enough only where defaults.private is true)'
 expect_no_match "no publish call is printed" "private=false"
 expect_no_match "and no fix line at all" "fix:"
-expect_no_match "and no NOTE" "NOTE"
+expect_no_match "and no visibility NOTE" "NOTE  repos/"
 
 # No override, live public: FAIL as today, with the added pointer.
 run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --repo-settings "$d/repo-pub.json"
@@ -779,7 +779,7 @@ expect_match  "with the generic wording" \
 run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json"
 expect_status "repo settings not read: not a difference" 0
 expect_match  "reported as unverified" "repo settings not read"
-expect_no_match "no NOTE" "NOTE"
+expect_no_match "no visibility NOTE" "NOTE  repos/"
 expect_no_match "no FAIL" "FAIL"
 
 run "$DIFF" --repo my-org/app --effective "$d/broken.json"
@@ -884,7 +884,7 @@ mkrepo "$d/r-pub-ok.json" false "$SAA_ON"
 run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
   --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
 expect_status "public by override, everything on: exit 0" 0
-expect_no_match "a met requirement prints nothing" "publicRepos"
+expect_no_match "a met requirement prints nothing" "SKIP  publicRepos"
 
 # Nothing met: one FAIL each, each with its own fix.
 mkrepo "$d/r-pub-bad.json" false '{"secret_scanning":{"status":"disabled"},"secret_scanning_push_protection":{"status":"disabled"}}'
@@ -967,6 +967,26 @@ expect_match  "the visibility difference is reported" "FAIL  repos/my-org/app pr
 expect_match  "and the publicRepos findings alongside it" 'repos/my-org/app is public and secret scanning is "disabled"'
 expect_match  "all of them" "private vulnerability reporting is disabled"
 expect_no_match "no NOTE: the block applies" "not applicable"
+
+# The reverse direction: public by profile, private live. The message must not claim the repo is public.
+mkrepo "$d/r-priv-pub-bad.json" true '{"secret_scanning":{"status":"disabled"}}'
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-priv-pub-bad.json" \
+  --vuln-reporting "$d/vuln-off.json" --fork-approval "$d/fork-loose.json"
+expect_status "public by profile, live private: FAIL" 1
+expect_match  "secret scanning says what is true" 'repos/my-org/cli should be public by profile (the live repo is not) and secret scanning is "disabled"'
+expect_match  "so does vulnerability reporting" "(the live repo is not) and private vulnerability reporting is disabled"
+expect_match  "and fork approval" "(the live repo is not) and its fork pull request approval policy"
+expect_no_match "none of them claims the repo is public" "cli is public and"
+
+# files.* is doctor's: settings-diff says so with an uncounted NOTE, only where the block applies.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_match  "a public repo with required files gets the pointer" "NOTE  publicRepos.files is checked by doctor, not here"
+expect_status "and it is not a difference" 0
+run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json" --repo-settings "$d/r-priv-bad.json"
+expect_no_match "a private repo gets no files pointer" "checked by doctor"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-vo.json" --repo-settings "$d/r-pub-ok.json" --vuln-reporting "$d/vuln-on.json"
+expect_no_match "a block with no files requirement gets none" "checked by doctor"
 
 # Visibility unknown (repo settings not read) and the profile says private.
 run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json"

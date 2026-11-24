@@ -212,8 +212,8 @@ optional key without a version bump; the design records why it is not there yet
   `repos/{slug}/private-vulnerability-reporting` (`--vuln-reporting`) and
   `repos/{slug}/actions/permissions/fork-pr-contributor-approval` (`--fork-approval`). An input not
   passed, a failed read, or a missing `security_and_analysis` is `SKIP`, never a pass and never
-  "disabled". The `files.*` requirements are not read by `settings-diff.sh`; `doctor` checks file
-  existence.
+  "disabled". The `files.*` requirements are not read by `settings-diff.sh`, which prints an
+  uncounted `NOTE` saying so; `doctor` checks file existence (check 14).
 - **Upgrade order.** An older `profile-resolve.sh` has no allow-list for `defaults`, so it ignores
   the block: a fleet can add it first, and older readers just do not report on it.
 
