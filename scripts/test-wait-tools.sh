@@ -61,6 +61,8 @@ case "$1 $2" in
       # rereadfail: this re-read fails once (a transient API error).
       *"--json headRefOid,baseRefOid,reviewDecision,body,comments,reviews"*)
         [ ! -f "$STUB_DIR/rereadfail" ] || { rm -f "$STUB_DIR/rereadfail"; exit 1; }
+        # prviewhook: an executable run when this re-read is served (a thread that opens meanwhile).
+        [ ! -x "$STUB_DIR/prviewhook" ] || "$STUB_DIR/prviewhook"
         n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
         f="$STUB_DIR/prview.$n"
         [ -f "$f" ] || f="$STUB_DIR/prview"
@@ -1211,6 +1213,15 @@ mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
 jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.2"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "covered: a thread in the first-line read is never approved"
+
+# Without rung 0 nothing else reads threads after the PR re-read: a thread that opens between the
+# first-line read and that re-read must be seen by a fresh first-line read. (#146)
+cov_case cov-norung0-late-thread "$CFG_FL" 5/5 bbbbbbb ahead "$HAPPY" '[]'
+printf '#!/usr/bin/env bash\njq -c %q "%s/threads" >"%s/threads.new" && mv "%s/threads.new" "%s/threads"\n' \
+  "$LATE_THREAD" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" "$STUB_DIR" >"$STUB_DIR/prviewhook"
+chmod +x "$STUB_DIR/prviewhook"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "covered, no rung 0: a thread that opens during the PR re-read is never approved over"
 
 # late_score_hook — makes the first-line read land a below-bar score on the head (the newest bot
 # comment) before it is served, so only a read of the scores after the first-line read can see it.
