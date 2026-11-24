@@ -79,6 +79,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" prefilter \
   --input "$SCRATCH_DIR/harvest.json" \
   --state "<stateFilePath>" \
   --max 2 \
+  --overflow "$SCRATCH_DIR/pending.json" \
   --cwd . > "$SCRATCH_DIR/survivors.json" || {
   echo "PREFILTER FAILED — stop" >&2
   exit 1
@@ -147,6 +148,7 @@ Only after issues have been evaluated and filed, advance the state file using th
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" advance \
   --state "<stateFilePath>" \
   --input "$SCRATCH_DIR/survivors.json" \
+  --pending "$SCRATCH_DIR/pending.json" \
   --expected-mark "$PREV_MARK" \
   --cwd .
 

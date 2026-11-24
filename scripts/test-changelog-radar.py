@@ -161,6 +161,32 @@ class FeedParsingTest(unittest.TestCase):
         self.assertTrue(bool(re.search(r"\bactions\b", summary, re.I)))
         self.assertTrue(bool(re.search(r"\bworkflow\b", summary, re.I)))
 
+    def test_atom_empty_summary_falls_back_to_content(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        atom_xml = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Empty Summary Entry</title>
+    <id>tag:blog,2026:empty-summary</id>
+    <link href="https://example.com/empty-summary"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary/>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>GitHub Actions runner update in content body.</p>
+      </div>
+    </content>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(atom_xml.encode("utf-8"))
+        self.assertEqual(len(records), 1)
+        summary = records[0]["summary"]
+        self.assertIn("GitHub Actions runner update in content body.", summary)
+
 
 class ProfileAndPrefilterTest(unittest.TestCase):
     def setUp(self):
@@ -858,6 +884,97 @@ with cr.locked_state(r'{state_file}'):
         survivors2 = json.loads(proc2.stdout)
         self.assertEqual(len(survivors2), 1)
         self.assertNotIn(survivors2[0]["id"], selected_ids)
+
+    def test_overflow_candidates_pending_survives_past_lookback_cutoff(self):
+        """Verify unselected overflow candidates in pending survive past the 30-day lookback window."""
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": "item-today",
+                "title": "GitHub Actions Update Today",
+                "link": "https://example.com/today",
+                "published": "2026-11-20T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions update today",
+            },
+            {
+                "id": "item-recent",
+                "title": "GitHub Actions Update Recent",
+                "link": "https://example.com/recent",
+                "published": "2026-11-15T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions update recent",
+            },
+            {
+                "id": "item-old-backlog",
+                "title": "GitHub Actions Update Old Backlog",
+                "link": "https://example.com/old",
+                "published": "2026-10-10T12:00:00Z",  # 41 days older than item-today (> LOOKBACK_DAYS)
+                "categories": ["actions"],
+                "summary": "Actions update backlog",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_overflow.json")
+        rec_file = os.path.join(self.tmp.name, "rec_overflow.json")
+        state_file = os.path.join(self.tmp.name, "state_overflow.json")
+        overflow_file = os.path.join(self.tmp.name, "pending_overflow.json")
+        survivors_file = os.path.join(self.tmp.name, "survivors_overflow.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Run 1: prefilter with --max 2 and --overflow
+        proc = run_script([
+            "prefilter", "--profile", prof_file, "--input", rec_file,
+            "--max", "2", "--overflow", overflow_file,
+        ])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors1 = json.loads(proc.stdout)
+        self.assertEqual(len(survivors1), 2)
+        survivor1_ids = {s["id"] for s in survivors1}
+        self.assertEqual(survivor1_ids, {"item-today", "item-recent"})
+
+        with open(overflow_file) as f:
+            overflow1 = json.load(f)
+        self.assertEqual(len(overflow1), 1)
+        self.assertEqual(overflow1[0]["id"], "item-old-backlog")
+
+        # Advance with survivors and pending overflow
+        with open(survivors_file, "w") as f:
+            json.dump(survivors1, f)
+        proc_adv = run_script([
+            "advance", "--state", state_file, "--input", survivors_file, "--pending", overflow_file,
+        ])
+        self.assertEqual(proc_adv.returncode, 0, proc_adv.stderr)
+
+        with open(state_file) as f:
+            st1 = json.load(f)
+        self.assertEqual(st1["highWater"]["publishedDate"], "2026-11-20T12:00:00Z")
+        self.assertEqual(len(st1["pending"]), 1)
+        self.assertEqual(st1["pending"][0]["id"], "item-old-backlog")
+
+        # Run 2: prefilter with state file.
+        # Even though item-old-backlog is 41 days older than highWater (exceeding 30-day cutoff),
+        # it is in pending, so it is preserved and evaluated!
+        proc2 = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        survivors2 = json.loads(proc2.stdout)
+        self.assertEqual(len(survivors2), 1)
+        self.assertEqual(survivors2[0]["id"], "item-old-backlog")
+
+        # Advance Run 2 with item-old-backlog: it moves from pending to recentIds
+        with open(survivors_file, "w") as f:
+            json.dump(survivors2, f)
+        proc_adv2 = run_script(["advance", "--state", state_file, "--input", survivors_file])
+        self.assertEqual(proc_adv2.returncode, 0, proc_adv2.stderr)
+
+        with open(state_file) as f:
+            st2 = json.load(f)
+        self.assertIn("item-old-backlog", st2["recentIds"])
+        self.assertEqual(len(st2["pending"]), 0)
 
     def test_recent_ids_retention_window_capped_at_500(self):
         state_file = os.path.join(self.tmp.name, "state_retention.json")

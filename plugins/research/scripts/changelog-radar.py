@@ -289,10 +289,9 @@ def parse_feed_xml(content_bytes):
         pub_date = parse_rfc822_or_iso(
             entry.findtext(f"{ns}published", default="") or entry.findtext(f"{ns}updated", default="")
         )
-        content_elem = entry.find(f"{ns}summary")
-        if content_elem is None:
-            content_elem = entry.find(f"{ns}content")
-        content = clean_html(extract_xhtml_text(content_elem)) if content_elem is not None else ""
+        content = clean_html(extract_xhtml_text(entry.find(f"{ns}summary")))
+        if not content:
+            content = clean_html(extract_xhtml_text(entry.find(f"{ns}content")))
         cats = [
             c.attrib.get("term", "").strip().lower()
             for c in entry.findall(f"{ns}category")
@@ -498,7 +497,7 @@ def resolve_feed_url(feed=None, cwd="."):
 
 
 def get_feed_state(state, feed_url):
-    """Retrieve highWater and recentIds for feed_url from state.
+    """Retrieve highWater, recentIds, and pending candidates for feed_url from state.
 
     Supports:
     - Multi-feed tracking via state["feeds"][feed_url]
@@ -506,10 +505,10 @@ def get_feed_state(state, feed_url):
     - Legacy state without feed key
 
     If state recorded a specific feed and it is different from feed_url,
-    returns an empty state (resetting the high-water mark and seen IDs).
+    returns an empty state (resetting the high-water mark, seen IDs, and pending).
     """
     if not state:
-        return {"highWater": {"publishedDate": None}, "recentIds": []}
+        return {"highWater": {"publishedDate": None}, "recentIds": [], "pending": []}
 
     feeds = state.get("feeds")
     if isinstance(feeds, dict) and feed_url in feeds:
@@ -517,54 +516,78 @@ def get_feed_state(state, feed_url):
         return {
             "highWater": entry.get("highWater") or {"publishedDate": None},
             "recentIds": list(entry.get("recentIds") or []),
+            "pending": list(entry.get("pending") or []),
         }
 
     saved_feed = state.get("feed")
     if saved_feed and feed_url and saved_feed != feed_url:
-        return {"highWater": {"publishedDate": None}, "recentIds": []}
+        return {"highWater": {"publishedDate": None}, "recentIds": [], "pending": []}
 
     return {
         "highWater": state.get("highWater") or {"publishedDate": None},
         "recentIds": list(state.get("recentIds") or []),
+        "pending": list(state.get("pending") or []),
     }
 
 
-def prefilter(records, profile, state=None, feed_url=None, max_count=None):
+def prefilter(records, profile, state=None, feed_url=None, max_count=None, return_overflow=False):
     """Filter out seen/old records and score surviving records by relevance."""
     feed_state = get_feed_state(state, feed_url)
     recent_ids = set(feed_state.get("recentIds", []))
     high_water = feed_state.get("highWater", {}).get("publishedDate")
     hw_dt = parse_iso_dt(high_water) if high_water else None
 
+    pending_records = [p for p in feed_state.get("pending", []) if p.get("id") and p["id"] not in recent_ids]
+    pending_ids = {p["id"] for p in pending_records}
+
+    # Merge harvested records with pending records not yet seen
+    seen_in_batch = set()
+    combined_records = []
+    for r in records:
+        rid = r.get("id")
+        if rid:
+            seen_in_batch.add(rid)
+        combined_records.append(r)
+    for p in pending_records:
+        if p["id"] not in seen_in_batch:
+            combined_records.append(p)
+
     profile_terms = set(profile.get("terms", []))
 
-    survivors = []
-    for r in records:
-        rid = r["id"]
+    candidates = []
+    for r in combined_records:
+        rid = r.get("id")
         # Skip if already seen
         if rid in recent_ids:
             continue
 
         # Drop historical records older than the lookback window relative to high-water mark,
-        # preventing old evicted items from looping indefinitely while preserving backdated entries.
-        if hw_dt and r.get("published"):
+        # UNLESS the record is currently in pending (overflow from a previous run).
+        if rid not in pending_ids and hw_dt and r.get("published"):
             pub_dt = parse_iso_dt(r["published"])
             if pub_dt and (hw_dt - pub_dt).total_seconds() > LOOKBACK_DAYS * 86400:
                 continue
 
         score, matched = score_record(r, profile_terms)
         if score > 0:
-            survivors.append({
+            candidates.append({
                 **r,
                 "score": score,
                 "matchedTerms": matched,
             })
 
     # Sort descending by score, then newest date descending (stable sort)
-    survivors.sort(key=lambda x: x.get("published") or "", reverse=True)
-    survivors.sort(key=lambda x: x["score"], reverse=True)
+    candidates.sort(key=lambda x: x.get("published") or "", reverse=True)
+    candidates.sort(key=lambda x: x["score"], reverse=True)
     if max_count is not None and max_count >= 0:
-        survivors = survivors[:max_count]
+        survivors = candidates[:max_count]
+        overflow = candidates[max_count:]
+    else:
+        survivors = candidates
+        overflow = []
+
+    if return_overflow:
+        return survivors, overflow
     return survivors
 
 
@@ -616,7 +639,14 @@ def cmd_prefilter(args):
     # Read state (optional)
     state = load_state(args.state) if args.state else None
 
-    survivors = prefilter(records, profile, state, feed_url=feed_url, max_count=args.max)
+    survivors, overflow = prefilter(
+        records, profile, state, feed_url=feed_url, max_count=args.max, return_overflow=True
+    )
+    if getattr(args, "overflow", None):
+        os.makedirs(os.path.dirname(os.path.abspath(args.overflow)), exist_ok=True)
+        with open(args.overflow, "w", encoding="utf-8") as f:
+            json.dump(overflow, f, indent=2)
+            f.write("\n")
     print(json.dumps(survivors, indent=2))
 
 
@@ -632,6 +662,14 @@ def cmd_advance(args):
         items = read_json_file(args.input)
     else:
         items = json.load(sys.stdin)
+
+    pending_items = []
+    if getattr(args, "pending", None):
+        if os.path.exists(args.pending):
+            try:
+                pending_items = read_json_file(args.pending)
+            except Exception as e:
+                die(f"cannot read pending file {args.pending}: {e}")
 
     with locked_state(state_path):
         state = load_state(state_path)
@@ -653,24 +691,43 @@ def cmd_advance(args):
                 "feed": feed_url,
                 "highWater": {"publishedDate": None},
                 "recentIds": [],
+                "pending": [],
                 "feeds": {},
             }
 
         seen_ids = list(feed_state.get("recentIds", []))
         latest_date = current_mark
+        processed_ids = set()
 
         for it in items:
             rid = it.get("id")
-            if rid and rid not in seen_ids:
-                seen_ids.insert(0, rid)
+            if rid:
+                processed_ids.add(rid)
+                if rid not in seen_ids:
+                    seen_ids.insert(0, rid)
             pub = it.get("published")
             if pub and (not latest_date or pub > latest_date):
                 latest_date = pub
 
+        # Update pending items:
+        # Start with existing pending items, minus items processed in this run
+        existing_pending = [
+            p for p in feed_state.get("pending", [])
+            if p.get("id") and p["id"] not in processed_ids and p["id"] not in seen_ids
+        ]
+        new_pending_map = {p["id"]: p for p in existing_pending}
+        for p in pending_items:
+            pid = p.get("id")
+            if pid and pid not in processed_ids and pid not in seen_ids:
+                new_pending_map[pid] = p
+
+        updated_pending = list(new_pending_map.values())[:RECENT_IDS_KEEP]
         trimmed_ids = seen_ids[:RECENT_IDS_KEEP]
+
         feed_record = {
             "highWater": {"publishedDate": latest_date},
             "recentIds": trimmed_ids,
+            "pending": updated_pending,
         }
 
         if "feeds" not in state or not isinstance(state["feeds"], dict):
@@ -682,10 +739,11 @@ def cmd_advance(args):
         state["feed"] = feed_url
         state["highWater"] = {"publishedDate": latest_date}
         state["recentIds"] = trimmed_ids
+        state["pending"] = updated_pending
 
         save_state(state_path, state)
 
-    print(f"advanced state {state_path} (feed={feed_url}): highWater={latest_date}, {len(trimmed_ids)} recentIds")
+    print(f"advanced state {state_path} (feed={feed_url}): highWater={latest_date}, {len(trimmed_ids)} recentIds, {len(updated_pending)} pending")
 
 
 def cmd_mark(args):
@@ -723,12 +781,14 @@ def main():
     p_pref.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
     p_pref.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
     p_pref.add_argument("--max", type=int, default=None, help="Maximum number of candidates to output")
+    p_pref.add_argument("--overflow", default=None, help="File to write unselected overflow candidates as JSON")
     p_pref.set_defaults(func=cmd_prefilter)
 
     # advance
     p_adv = sub.add_parser("advance", help="Advance state file with processed items")
     p_adv.add_argument("--state", required=True, help="State JSON file path")
     p_adv.add_argument("--input", default=None, help="JSON list of processed items (or stdin)")
+    p_adv.add_argument("--pending", default=None, help="File containing pending/overflow candidate JSON records")
     p_adv.add_argument("--expected-mark", default=None, help="Expected high-water mark timestamp for compare-and-set")
     p_adv.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
     p_adv.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
