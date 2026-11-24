@@ -276,9 +276,13 @@ gh api "repos/<slug>"                                    > /tmp/repo.json
 gh api "repos/<slug>/branches/<branch>/protection"       > /tmp/prot.json   # 404 body is fine
 gh api "repos/<slug>/rulesets?includes_parents=true"      # then each by id, with its rules
 gh api "repos/<slug>/labels" --paginate --jq '[.[].name]' > /tmp/labels.json
+# when effective.publicRepos is set:
+gh api "repos/<slug>/private-vulnerability-reporting"    > /tmp/vuln.json
+gh api "repos/<slug>/actions/permissions/fork-pr-contributor-approval" > /tmp/fork.json
 
 plugins/core/scripts/settings-diff.sh --repo <slug> --effective /tmp/eff.json \
-  --repo-settings /tmp/repo.json --protection /tmp/prot.json --rulesets /tmp/rules.json --labels /tmp/labels.json
+  --repo-settings /tmp/repo.json --protection /tmp/prot.json --rulesets /tmp/rules.json --labels /tmp/labels.json \
+  --vuln-reporting /tmp/vuln.json --fork-approval /tmp/fork.json
 ```
 
 Then, in this order:
@@ -309,6 +313,19 @@ Changing a repo's visibility to public stays a separate, deliberate human step t
 outside this skill; resolve it by publishing the repo yourself or by setting the override to
 `"private"` (removing it is enough only where `defaults.private` is true).
 
+**A repo created public gets the `publicRepos` settings, after creation.** When the repo is public
+(by `defaults.private` or by `repoOverrides.<key>.visibility`) and the profile has a `publicRepos`
+block, the `publicRepos` FAILs (secret scanning, push protection, private vulnerability reporting,
+the fork-PR approval floor) join the same batch, shown in full and confirmed once like the rest.
+They can only be applied after the repo exists, which is why they are here and not in step 3. A
+`couldn't verify` there (no admin on `security_and_analysis`, or a refused read) is not applied blind.
+
+**Files the profile requires of a public repo are reported, never written.** `publicRepos.files`
+(`license`, `securityPolicy`, `contributing`) is the owner's words: this skill scaffolds none of them,
+not even a template. For each one the profile requires that is missing, list it in the report
+(step 11) as missing, naming the paths GitHub reads, so the person creating the repo sees what the
+standard expects. Which licence to use is a legal decision for the owner.
+
 If `settings-diff.sh` reports **couldn't verify** for a section (the read needed admin and the token
 doesn't have it), do not apply that section blind. A write computed from a failed read is a guess.
 
@@ -332,6 +349,8 @@ adopting a repo they don't own needs.
 - Labels created.
 - Settings: applied (with the calls), refused (with why, and the calls to paste), or already
   conformant.
+- For a public repo: the `publicRepos` files the profile requires that are missing (license,
+  security policy, contributing), listed and not written.
 - **Anything that stopped**: an unproduced required check, a section that couldn't be read, a file
   whose existing content differs from the profile's.
 - The reminder to review and commit the diff. This skill doesn't commit.
