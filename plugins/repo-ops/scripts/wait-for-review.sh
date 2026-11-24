@@ -762,17 +762,14 @@ fl_read() {
   now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
   [ "$now_head" = "$1 $MECH_DECISION" ] || return 1
   # The scores are read as poll_once reads them: rung 0 needs its own check name's runs; without
-  # rung 0, the first-line read already carries the description's last editor.
-  if [ -n "$CHECK_NAME" ]; then
-    now_gql="$(fetch_gql "$CHECK_NAME")" || return 1
-    # This read is the newest, so it must not show a thread or a decision the poll did not judge
-    # on either: scores_of reads neither, and a match on the scores alone would approve over them.
-    [ "$(unresolved_threads "$now_gql")" = "$MECH_THREADS" ] || return 1
-    printf '%s' "$now_gql" | jq -s -e --arg d "$MECH_DECISION" \
-      '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
-  else
-    now_gql="$vr_gql"
-  fi
+  # rung 0, a fresh first-line read carries the description's last editor. Either way this read is
+  # taken after the PR re-read, so it must not show a thread or a decision the poll did not judge on:
+  # scores_of reads neither, and a match on the scores alone would approve over them. Reusing the
+  # first read here would leave a thread opened between it and the PR re-read unseen (#146).
+  now_gql="$(fetch_gql "${CHECK_NAME:-$FL_NAME}")" || return 1
+  [ "$(unresolved_threads "$now_gql")" = "$MECH_THREADS" ] || return 1
+  printf '%s' "$now_gql" | jq -s -e --arg d "$MECH_DECISION" \
+    '[.[].data.repository.pullRequest.reviewDecision // ""] | all(. == $d)' >/dev/null 2>&1 || return 1
   [ "$(scores_of "$now_pr" "$now_gql" "$1")" = "$MECH_SCORES" ] || return 1
   return 0
 }
