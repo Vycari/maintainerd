@@ -691,8 +691,8 @@ run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/
 expect_status "public by override, live public: exit 0" 0
 expect_match  "reported as a NOTE naming the override" \
   "NOTE  repos/my-org/cli is public by override (repoOverrides.cli.visibility)"
-expect_match  "not counted anywhere: the 3 are the unread protection, rulesets and labels" \
-  "Summary: 0 difference(s), 0 warning(s), 3 not verified."
+expect_match  "not counted anywhere: the 7 are the four unread publicRepos reads and the unread protection, rulesets and labels" \
+  "Summary: 0 difference(s), 0 warning(s), 7 not verified."
 expect_no_match "no call touching private is printed" "private="
 
 run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/repo-pub-mc.json"
@@ -720,7 +720,7 @@ expect_match  "and the profile-side resolution, worded to hold under either flee
   'set repoOverrides.cli.visibility to "private" in the profile (removing it is enough only where defaults.private is true)'
 expect_no_match "no publish call is printed" "private=false"
 expect_no_match "and no fix line at all" "fix:"
-expect_no_match "and no NOTE" "NOTE"
+expect_no_match "and no visibility NOTE" "NOTE  repos/"
 
 # No override, live public: FAIL as today, with the added pointer.
 run "$DIFF" --repo my-org/app --effective "$d/eff-app.json" --repo-settings "$d/repo-pub.json"
@@ -779,7 +779,7 @@ expect_match  "with the generic wording" \
 run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json"
 expect_status "repo settings not read: not a difference" 0
 expect_match  "reported as unverified" "repo settings not read"
-expect_no_match "no NOTE" "NOTE"
+expect_no_match "no visibility NOTE" "NOTE  repos/"
 expect_no_match "no FAIL" "FAIL"
 
 run "$DIFF" --repo my-org/app --effective "$d/broken.json"
@@ -787,6 +787,232 @@ expect_status "a malformed effective object is a usage error, not a clean report
 
 run "$DIFF" --effective "$d/eff-app.json"
 expect_status "--repo is required: the fix calls have to address something" 2
+
+
+# ── publicRepos: validation ──────────────────────────────────────────────────
+echo "profile-resolve.sh — shape: defaults.publicRepos"
+
+run "$RESOLVE" --profile "$EXAMPLE" --repo my-org/app --language python-service
+expect_jq "the example's block resolves into every repo's effective settings, with Q1's answer" \
+  '.effective.publicRepos.forkPrApproval == "all_external_contributors" and .effective.publicRepos.secretScanning == true'
+jq 'del(.defaults.publicRepos)' "$EXAMPLE" > "$d/pub-none.json"
+run "$RESOLVE" --profile "$d/pub-none.json" --validate
+expect_status "a profile with no block still validates (the key is optional)" 0
+run "$RESOLVE" --profile "$d/pub-none.json" --repo my-org/app --language python-service
+expect_jq "and its effective settings have no publicRepos key" '.effective | has("publicRepos") | not'
+
+jq '.defaults.publicRepos = []' "$EXAMPLE" > "$d/pub-arr.json"
+run "$RESOLVE" --profile "$d/pub-arr.json" --validate
+expect_status "publicRepos as an array is rejected" 1
+expect_match  "naming the key" "defaults.publicRepos must be an object"
+
+jq '.defaults.publicRepos.secretScaning = true' "$EXAMPLE" > "$d/pub-typo.json"
+run "$RESOLVE" --profile "$d/pub-typo.json" --validate
+expect_status "an unknown key in the block is an error, not silently ignored" 1
+expect_match  "naming it and the legal keys" 'defaults.publicRepos carries "secretScaning", expected one of secretScanning'
+
+jq '.defaults.publicRepos.secretScanning = "yes"' "$EXAMPLE" > "$d/pub-str.json"
+run "$RESOLVE" --profile "$d/pub-str.json" --validate
+expect_status "a string where a boolean belongs is rejected" 1
+expect_match  "naming the key" "defaults.publicRepos.secretScanning must be a boolean"
+
+jq '.defaults.publicRepos.forkPrApproval = "everyone"' "$EXAMPLE" > "$d/pub-fork.json"
+run "$RESOLVE" --profile "$d/pub-fork.json" --validate
+expect_status "an unknown forkPrApproval value is rejected" 1
+expect_match  "listing the three values" "expected one of first_time_contributors_new_to_github, first_time_contributors, all_external_contributors"
+for v in first_time_contributors_new_to_github first_time_contributors all_external_contributors; do
+  jq --arg v "$v" '.defaults.publicRepos.forkPrApproval = $v' "$EXAMPLE" > "$d/pub-fork-ok.json"
+  run "$RESOLVE" --profile "$d/pub-fork-ok.json" --validate
+  expect_status "forkPrApproval $v validates" 0
+done
+
+jq '.defaults.publicRepos.secretScanning = false' "$EXAMPLE" > "$d/pub-pp.json"
+run "$RESOLVE" --profile "$d/pub-pp.json" --validate
+expect_status "pushProtection true without secretScanning true is an error" 1
+expect_match  "saying why" "pushProtection is true without secretScanning: true"
+jq 'del(.defaults.publicRepos.secretScanning)' "$EXAMPLE" > "$d/pub-pp2.json"
+run "$RESOLVE" --profile "$d/pub-pp2.json" --validate
+expect_status "(absent secretScanning is the same error)" 1
+jq '.defaults.publicRepos = {"secretScanning": true}' "$EXAMPLE" > "$d/pub-ss-only.json"
+run "$RESOLVE" --profile "$d/pub-ss-only.json" --validate
+expect_status "secretScanning alone is fine" 0
+
+jq '.defaults.publicRepos.files = {"license": true, "readme": true}' "$EXAMPLE" > "$d/pub-files.json"
+run "$RESOLVE" --profile "$d/pub-files.json" --validate
+expect_status "an unknown files key is rejected" 1
+expect_match  "naming it" 'defaults.publicRepos.files carries "readme"'
+jq '.defaults.publicRepos.files.license = "LICENSE"' "$EXAMPLE" > "$d/pub-files2.json"
+run "$RESOLVE" --profile "$d/pub-files2.json" --validate
+expect_status "a files value that is not a boolean is rejected" 1
+expect_match  "naming it" "defaults.publicRepos.files.license must be a boolean"
+
+jq '.languages["shell"].publicRepos = {"secretScanning": true}' "$EXAMPLE" > "$d/pub-lang.json"
+run "$RESOLVE" --profile "$d/pub-lang.json" --validate
+expect_status "publicRepos in a language block is rejected" 1
+expect_match  "with the fixed-org-wide message and the fleet-policy pointer" \
+  'languages.shell carries "publicRepos", which is fixed org-wide'
+expect_match  "saying it is legal only in defaults" "publicRepos is fleet policy and is legal only in defaults"
+jq '.repoOverrides["site"].publicRepos = {"files": {"contributing": false}}' "$EXAMPLE" > "$d/pub-ov.json"
+run "$RESOLVE" --profile "$d/pub-ov.json" --validate
+expect_status "publicRepos in a repoOverrides entry is rejected (Q2: no per-repo relaxation)" 1
+expect_match  "naming the entry" 'repoOverrides.site carries "publicRepos"'
+expect_match  "and the pointer" "publicRepos is fleet policy and is legal only in defaults"
+expect_no_match "other keys keep the plain message" 'carries "private", which is fixed org-wide — publicRepos'
+
+# ── publicRepos: the diff ────────────────────────────────────────────────────
+echo "settings-diff.sh — publicRepos"
+
+"$RESOLVE" --profile "$EXAMPLE" --repo my-org/app --language python-service > "$d/eff-app2.json"
+"$RESOLVE" --profile "$d/pub-none.json" --repo my-org/cli --language shell > "$d/eff-cli-nopub.json"
+SAA_ON='{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}}'
+mkrepo() {  # mkrepo FILE PRIVATE [security_and_analysis-json]
+  if [ $# -ge 3 ]; then
+    jq -n --argjson p "$2" --argjson s "$3" '{private:$p, allow_squash_merge:true, allow_merge_commit:false, allow_rebase_merge:false, delete_branch_on_merge:true, security_and_analysis:$s}' > "$1"
+  else
+    jq -n --argjson p "$2" '{private:$p, allow_squash_merge:true, allow_merge_commit:false, allow_rebase_merge:false, delete_branch_on_merge:true}' > "$1"
+  fi
+}
+echo '{"enabled": true}'  > "$d/vuln-on.json"
+echo '{"enabled": false}' > "$d/vuln-off.json"
+echo '{"approval_policy": "all_external_contributors"}' > "$d/fork-strict.json"
+echo '{"approval_policy": "first_time_contributors"}'   > "$d/fork-mid.json"
+echo '{"approval_policy": "first_time_contributors_new_to_github"}' > "$d/fork-loose.json"
+echo '{"message": "Access to this GitHub Actions path is not permitted through this proxy."}' > "$d/fork-refused.json"
+
+# Fully conformant public repo.
+mkrepo "$d/r-pub-ok.json" false "$SAA_ON"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_status "public by override, everything on: exit 0" 0
+expect_no_match "a met requirement prints nothing" "SKIP  publicRepos"
+
+# Nothing met: one FAIL each, each with its own fix.
+mkrepo "$d/r-pub-bad.json" false '{"secret_scanning":{"status":"disabled"},"secret_scanning_push_protection":{"status":"disabled"}}'
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-bad.json" \
+  --vuln-reporting "$d/vuln-off.json" --fork-approval "$d/fork-loose.json"
+expect_status "public, nothing enabled: FAIL" 1
+expect_match  "secret scanning is a difference" 'FAIL  repos/my-org/cli is public and secret scanning is "disabled", profile wants "enabled"'
+expect_match  "with a PATCH body" '{"security_and_analysis":{"secret_scanning":{"status":"enabled"}}}'
+expect_match  "push protection is a difference" 'push protection is "disabled"'
+expect_match  "its fix also enables scanning, which it depends on" \
+  '{"security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}}}'
+expect_match  "vulnerability reporting is a difference" "private vulnerability reporting is disabled"
+expect_match  "with its PUT" 'fix: gh api --method PUT "repos/my-org/cli/private-vulnerability-reporting"'
+expect_match  "fork approval is a difference naming both values" \
+  'approval policy is "first_time_contributors_new_to_github", profile wants at least "all_external_contributors"'
+expect_match  "with its PUT" \
+  'fix: gh api --method PUT "repos/my-org/cli/actions/permissions/fork-pr-contributor-approval" -f approval_policy=all_external_contributors'
+expect_match  "four differences, no skips among the publicRepos ones" "Summary: 4 difference(s)"
+
+# Push protection's fix does not repeat scanning when scanning is already on.
+mkrepo "$d/r-pub-pp.json" false '{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"disabled"}}'
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-pp.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_status "only push protection off: FAIL" 1
+expect_match  "the body is only push protection" '{"security_and_analysis":{"secret_scanning_push_protection":{"status":"enabled"}}}'
+expect_no_match "scanning is not reported" "secret scanning is"
+
+# Floor: stricter than required conforms; the middle value fails against the strictest.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-mid.json"
+expect_status "first_time_contributors against a wants-strictest profile: FAIL" 1
+jq '.defaults.publicRepos.forkPrApproval = "first_time_contributors"' "$EXAMPLE" > "$d/pub-fork-mid.json"
+"$RESOLVE" --profile "$d/pub-fork-mid.json" --repo my-org/cli --language shell > "$d/eff-cli-mid.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-mid.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_status "a stricter forkPrApproval than the floor is conformant" 0
+expect_no_match "and silent" "forkPrApproval"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-mid.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-mid.json"
+expect_status "an exactly-equal forkPrApproval is conformant" 0
+
+# security_and_analysis missing: SKIP, never disabled, never a pass.
+mkrepo "$d/r-pub-nosaa.json" false
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-nosaa.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_status "no security_and_analysis in the read: not a difference" 0
+expect_match  "secret scanning is unverified" "SKIP  publicRepos.secretScanning: the repo settings carry no security_and_analysis.secret_scanning"
+expect_match  "push protection is unverified" "SKIP  publicRepos.pushProtection"
+expect_no_match "and nothing is invented as disabled" '"disabled"'
+expect_match  "counted as not verified (2 here plus protection, rulesets, labels)" "5 not verified"
+
+# Unread or failed inputs: SKIP.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json"
+expect_status "vuln and fork reads not passed: not a difference" 0
+expect_match  "vulnerability reporting not read" "SKIP  publicRepos.privateVulnerabilityReporting: not read"
+expect_match  "fork approval not read" "SKIP  publicRepos.forkPrApproval: not read"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-refused.json"
+expect_status "a refused fork-approval read is not a difference" 0
+expect_match  "it is a SKIP carrying the refusal" "SKIP  publicRepos.forkPrApproval: the read returned no recognised approval_policy (Access to this GitHub Actions path"
+echo '{"message": "Not Found"}' > "$d/vuln-404.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-404.json" --fork-approval "$d/fork-strict.json"
+expect_status "a failed vulnerability-reporting read is not a difference" 0
+expect_match  "it is a SKIP" "SKIP  publicRepos.privateVulnerabilityReporting: the read returned no enabled flag (Not Found)"
+
+# Applies-when: private on both measures gets one NOTE and no findings.
+mkrepo "$d/r-priv-bad.json" true '{"secret_scanning":{"status":"disabled"}}'
+run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json" --repo-settings "$d/r-priv-bad.json"
+expect_status "private by profile and live: exit 0" 0
+expect_match  "one NOTE" "NOTE  publicRepos: not applicable (repo is private)"
+expect_no_match "no publicRepos requirement is reported" "publicRepos."
+expect_no_match "and nothing about scanning" "secret scanning"
+
+# Accident case: private by profile, live public. Visibility FAIL and publicRepos findings both.
+run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json" --repo-settings "$d/r-pub-bad.json" \
+  --vuln-reporting "$d/vuln-off.json" --fork-approval "$d/fork-loose.json"
+expect_status "private by profile, live public: FAIL" 1
+expect_match  "the visibility difference is reported" "FAIL  repos/my-org/app private is false, profile wants true"
+expect_match  "and the publicRepos findings alongside it" 'repos/my-org/app is public and secret scanning is "disabled"'
+expect_match  "all of them" "private vulnerability reporting is disabled"
+expect_no_match "no NOTE: the block applies" "not applicable"
+
+# The reverse direction: public by profile, private live. The message must not claim the repo is public.
+mkrepo "$d/r-priv-pub-bad.json" true '{"secret_scanning":{"status":"disabled"}}'
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-priv-pub-bad.json" \
+  --vuln-reporting "$d/vuln-off.json" --fork-approval "$d/fork-loose.json"
+expect_status "public by profile, live private: FAIL" 1
+expect_match  "secret scanning says what is true" 'repos/my-org/cli should be public by profile (the live repo is not) and secret scanning is "disabled"'
+expect_match  "so does vulnerability reporting" "(the live repo is not) and private vulnerability reporting is disabled"
+expect_match  "and fork approval" "(the live repo is not) and its fork pull request approval policy"
+expect_no_match "none of them claims the repo is public" "cli is public and"
+
+# files.* is doctor's: settings-diff says so with an uncounted NOTE, only where the block applies.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --repo-settings "$d/r-pub-ok.json" \
+  --vuln-reporting "$d/vuln-on.json" --fork-approval "$d/fork-strict.json"
+expect_match  "a public repo with required files gets the pointer" "NOTE  publicRepos.files is checked by doctor, not here"
+expect_status "and it is not a difference" 0
+run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json" --repo-settings "$d/r-priv-bad.json"
+expect_no_match "a private repo gets no files pointer" "checked by doctor"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-vo.json" --repo-settings "$d/r-pub-ok.json" --vuln-reporting "$d/vuln-on.json"
+expect_no_match "a block with no files requirement gets none" "checked by doctor"
+
+# Visibility unknown (repo settings not read) and the profile says private.
+run "$DIFF" --repo my-org/app --effective "$d/eff-app2.json"
+expect_status "repo settings not read, profile private: not a difference" 0
+expect_match  "SKIP: can't tell if it is public" "SKIP  publicRepos: couldn't tell whether the repo is public"
+
+# No block in the profile: nothing at all, even on a public repo.
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-nopub.json" --repo-settings "$d/r-pub-bad.json"
+expect_status "no publicRepos block: a public repo is not held to one" 0
+expect_no_match "no publicRepos output whatsoever" "publicRepos"
+run "$DIFF" --repo my-org/app --effective "$d/eff-cli-nopub.json" --repo-settings "$d/r-priv-bad.json"
+expect_no_match "and no NOTE for a private repo" "not applicable"
+
+# Requirements the profile does not name are not checked.
+jq '.defaults.publicRepos = {"privateVulnerabilityReporting": true}' "$EXAMPLE" > "$d/pub-vuln-only.json"
+"$RESOLVE" --profile "$d/pub-vuln-only.json" --repo my-org/cli --language shell > "$d/eff-cli-vo.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-vo.json" --repo-settings "$d/r-pub-bad.json" --vuln-reporting "$d/vuln-on.json"
+expect_status "a block naming one requirement checks only that one" 0
+expect_no_match "scanning is not mentioned" "secret scanning"
+jq '.defaults.publicRepos = {"secretScanning": false, "privateVulnerabilityReporting": false}' "$EXAMPLE" > "$d/pub-false.json"
+"$RESOLVE" --profile "$d/pub-false.json" --repo my-org/cli --language shell > "$d/eff-cli-f.json"
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli-f.json" --repo-settings "$d/r-pub-bad.json" --vuln-reporting "$d/vuln-off.json"
+expect_status "false means no opinion: it never requires a setting off or on" 0
+
+run "$DIFF" --repo my-org/cli --effective "$d/eff-cli.json" --vuln-reporting "$d/broken.json"
+expect_status "a malformed --vuln-reporting file is a usage error" 2
 
 echo
 printf '%s passed, %s failed\n' "$pass" "$fail"

@@ -450,6 +450,16 @@ Then, against `effective`:
 | `dependabot` non-empty | `.github/dependabot.yml` exists, with an `updates` entry per listed ecosystem **whose manifest exists** (npm: `package.json`; pip/uv: `pyproject.toml` or `requirements*.txt`; github-actions: `.github/workflows/`) | **FAIL** for the file, **WARN** per missing ecosystem |
 | `claudeSettings` present | `.claude/settings.json` declares each named marketplace and plugin | **WARN** per missing entry |
 | always | `.claude/maintainerd.json` agrees with the effective `commands` and `coverage` | **WARN** per key |
+| `publicRepos.files.license` | A licence file at the root: `LICENSE`, `LICENSE.md`, `LICENSE.txt` or `COPYING` | **FAIL** |
+| `publicRepos.files.securityPolicy` | `SECURITY.md` at the root, in `.github/`, or in `docs/` | **FAIL** |
+| `publicRepos.files.contributing` | `CONTRIBUTING.md` in one of the same three places | **FAIL** |
+
+**The three `publicRepos.files.*` rows run only when the repo is public by the same rule check 15
+uses**: `effective.private` is `false`, **or** the live `repos/<slug>` response says `private: false`.
+Read visibility from that same response check 15 captures, so both checks agree on whether the block
+applies. A private repo on both measures skips the rows (report `n/a (repo is private)`), and a
+repo whose visibility could not be read reports them as couldn't verify. Existence only: the profile
+requires that a licence exists, never which one.
 
 **An ecosystem with no manifest is skipped, not required.** Before reporting a missing `updates`
 entry, look for the ecosystem's manifest (the table above names them; for any other ecosystem, its
@@ -529,11 +539,22 @@ gh api "repos/<config.repo>"                                          > "$tmp/re
 gh api "repos/<config.repo>/branches/<branch>/protection"             > "$tmp/prot.json"    # 404 body is fine
 gh api "repos/<config.repo>/rulesets?includes_parents=true"                                 # then each by id
 gh api "repos/<config.repo>/labels" --paginate --jq '[.[].name]'      > "$tmp/labels.json"
+# only when effective.publicRepos is set (a failed read is fine: it becomes couldn't verify)
+gh api "repos/<config.repo>/private-vulnerability-reporting"          > "$tmp/vuln.json"
+gh api "repos/<config.repo>/actions/permissions/fork-pr-contributor-approval" > "$tmp/fork.json"
 
 plugins/core/scripts/settings-diff.sh --repo <config.repo> --effective "$tmp/eff.json" \
   --repo-settings "$tmp/repo.json" --protection "$tmp/prot.json" \
-  --rulesets "$tmp/rules.json" --labels "$tmp/labels.json"
+  --rulesets "$tmp/rules.json" --labels "$tmp/labels.json" \
+  --vuln-reporting "$tmp/vuln.json" --fork-approval "$tmp/fork.json"
 ```
+
+When the profile has a `publicRepos` block, the helper reports a `publicRepos` section: findings only
+when the repo is public by profile or live (a private-by-profile repo that is live public gets the
+visibility FAIL **and** these findings), one `NOTE` when it is private on both measures, and
+`couldn't verify` for any requirement whose read failed or whose `security_and_analysis` field is
+absent (GitHub shows it to an admin or security manager only). The fix calls follow the same rule as
+every other: printed, never run.
 
 Report its output as findings — each difference a **FAIL**, each `couldn't verify` as exactly that,
 each `NOTE` a **PASS** that carries the note's text and is surfaced by name, not folded into a count.

@@ -36,6 +36,13 @@
       "greptileRules": false,
       "claudeMd": true
     },
+    "publicRepos": {
+      "secretScanning": true,
+      "pushProtection": true,
+      "privateVulnerabilityReporting": true,
+      "forkPrApproval": "all_external_contributors",
+      "files": { "license": true, "securityPolicy": true, "contributing": false }
+    },
     "claudeSettings": {
       "marketplaces": ["my-org/maintainerd"],
       "plugins": ["maintainerd-core@maintainerd", "repo-ops@maintainerd", "audits@maintainerd"]

@@ -50,6 +50,12 @@ belongs to a person at a keyboard. See **Who applies what** below.
     "review": { "bots": ["some-reviewer[bot]"], "approvalThreshold": "approved" },
     "requireIssueForDeferredWork": true,
     "files": { "prTemplate": true, "codeowners": "* @a-maintainer", "greptileRules": true },
+    "publicRepos": {                           // optional; requirements that apply only to a public repo
+      "secretScanning": true,
+      "pushProtection": true,
+      "forkPrApproval": "all_external_contributors",
+      "files": { "license": true }
+    },
     "claudeSettings": {                        // optional; without it, check 14 can't judge settings.json
       "marketplaces": ["my-org/maintainerd"],
       "plugins": ["maintainerd-core@maintainerd", "repo-ops@maintainerd"]
@@ -178,6 +184,39 @@ setting as usual.
   every repo, with `carries "visibility", which is fixed org-wide`. Upgrade maintainerd in
   every consumer before adding the key to a profile.
 
+### Conditional on visibility: `defaults.publicRepos`
+
+An optional block of requirements that apply only to a repo that is **public**. It is fleet policy:
+legal only in `defaults`, and rejected in a `languages` block or a `repoOverrides` entry with the
+fixed-org-wide message plus `publicRepos is fleet policy and is legal only in defaults`. A repo's
+override declares a fact (`"visibility": "public"`), not a security posture, and a requirement one
+repo could switch off is the exemption this schema rules out. A relaxation may be added later as an
+optional key without a version bump; the design records why it is not there yet
+(`docs/design/public-repo-settings.md` in the maintainerd repo).
+
+- **When it applies.** `settings-diff.sh` applies the block when `effective.private` is `false`
+  **or** the live repo's `private` is `false`, so a private-by-profile repo made public by accident
+  is held to it too (and also gets the visibility `FAIL`; fixing the visibility clears the second
+  set). Private on both measures prints one `NOTE  publicRepos: not applicable (repo is private)`,
+  uncounted. Visibility unknown (repo settings not read) is a `SKIP`. The resolver does not decide
+  this: it never reads the live repo, and `effective.publicRepos` is just `defaults.publicRepos`.
+- **Every key is a requirement or absent, and a requirement never turns a setting off.** `false`
+  means no opinion, the same as leaving the key out.
+- **Keys.** `secretScanning`, `pushProtection` (`true` needs `secretScanning: true`, a validation
+  error otherwise) and `privateVulnerabilityReporting`, all booleans; `forkPrApproval`, one of
+  `first_time_contributors_new_to_github`, `first_time_contributors`, `all_external_contributors`,
+  loosest to strictest, which is a floor (a stricter repo conforms); and `files.license`,
+  `files.securityPolicy`, `files.contributing`, booleans that require the file to exist, never its
+  content. An unknown key anywhere in the block is a validation error.
+- **Reads.** `repos/{slug}` (`security_and_analysis`, shown to an admin or security manager only),
+  `repos/{slug}/private-vulnerability-reporting` (`--vuln-reporting`) and
+  `repos/{slug}/actions/permissions/fork-pr-contributor-approval` (`--fork-approval`). An input not
+  passed, a failed read, or a missing `security_and_analysis` is `SKIP`, never a pass and never
+  "disabled". The `files.*` requirements are not read by `settings-diff.sh`, which prints an
+  uncounted `NOTE` saying so; `doctor` checks file existence (check 14).
+- **Upgrade order.** An older `profile-resolve.sh` has no allow-list for `defaults`, so it ignores
+  the block: a fleet can add it first, and older readers just do not report on it.
+
 `defaults` may also carry the resolvable keys, as the base layer for every language. Most
 profiles don't need to; the layer exists so the merge has one rule rather than two.
 
@@ -303,6 +342,7 @@ stops being followed (SC1091) under the profile's invocation.
 | Key | Type | Meaning and where it lands |
 | --- | --- | --- |
 | `private` | bool | `PATCH repos/{slug}` `private`. A single repo may declare an exception with `repoOverrides.<key>.visibility`; this key itself is never settable per repo. |
+| `publicRepos` | object, optional | Requirements that apply only to a public repo — see "Conditional on visibility". Absent: nothing changes for any repo. |
 | `defaultBranch` | string | The branch protection is applied to, and what `bootstrap` writes as `defaultBranch`. |
 | `merge.squash` / `.mergeCommit` / `.rebase` | bool | `allow_squash_merge` / `allow_merge_commit` / `allow_rebase_merge`. |
 | `merge.deleteBranchOnMerge` | bool | `delete_branch_on_merge`. |
@@ -548,7 +588,8 @@ also offers. Settings live outside that boundary permanently.
 `languages` is a non-empty object; `languages` values carry only the six resolvable keys
 (`requiredChecks`, `coverage`, `commands`, `dependabot`, `mergeQueue`, `protection`) and
 `repoOverrides` values carry those six plus the optional `visibility`; `coverage` is either `null` or an object
-with `mode: "ratchet"`; `requiredChecks` is an array of strings.
+with `mode: "ratchet"`; `requiredChecks` is an array of strings; `defaults.publicRepos`, when present, is an
+object of the keys above and appears nowhere else.
 
 ---
 
