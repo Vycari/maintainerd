@@ -189,6 +189,11 @@ findings="$(jq -n \
   # in particular is shown only to an admin or security manager.
   def fork_ranks: ["first_time_contributors_new_to_github","first_time_contributors","all_external_contributors"];
 
+  # What to call the repo in a finding: "is public" only when the live repo is. A repo that is
+  # public by profile but private live is reported as what it is.
+  def pub_subject: if ($repo != null and $repo.private == false) then "repos/\($slug) is public"
+                   else "repos/\($slug) should be public by profile (the live repo is not)" end;
+
   def sa_status($k):
     if ($repo.security_and_analysis | type) != "object" then null
     elif ($repo.security_and_analysis[$k] | type) != "object" then null
@@ -205,7 +210,7 @@ findings="$(jq -n \
         elif $st == "enabled" then []
         else
           [{ sev: "FAIL", section: "publicRepos",
-             msg: "repos/\($slug) is public and \($label) is \($st | tojson), profile wants \"enabled\"",
+             msg: "\(pub_subject) and \($label) is \($st | tojson), profile wants \"enabled\"",
              fix: ("gh api --method PATCH \"repos/\($slug)\" --input - <<'"'"'JSON'"'"'\n"
                   + ({ security_and_analysis:
                          ( (if $key == "secret_scanning_push_protection" and sa_status("secret_scanning") != "enabled"
@@ -225,7 +230,9 @@ findings="$(jq -n \
           elif ($public | not) then
             [{ sev: "NOTE", section: "publicRepos", msg: "publicRepos: not applicable (repo is private)" }]
           else
-            sa_finding($p.secretScanning; "secret_scanning"; "secret scanning"; "secretScanning")
+            ( if ($p.files | type) == "object" and ([$p.files[] | select(. == true)] | length) > 0
+                then [{ sev: "NOTE", section: "publicRepos", msg: "publicRepos.files is checked by doctor, not here" }] else [] end )
+            + sa_finding($p.secretScanning; "secret_scanning"; "secret scanning"; "secretScanning")
             + sa_finding($p.pushProtection; "secret_scanning_push_protection"; "push protection"; "pushProtection")
             + ( if $p.privateVulnerabilityReporting != true then []
                 elif $vuln == null then
@@ -236,7 +243,7 @@ findings="$(jq -n \
                 elif $vuln.enabled then []
                 else
                   [{ sev: "FAIL", section: "publicRepos",
-                     msg: "repos/\($slug) is public and private vulnerability reporting is disabled, profile wants it enabled",
+                     msg: "\(pub_subject) and private vulnerability reporting is disabled, profile wants it enabled",
                      fix: "gh api --method PUT \"repos/\($slug)/private-vulnerability-reporting\"" }]
                 end )
             + ( if ($p.forkPrApproval | type) != "string" then []
@@ -252,7 +259,7 @@ findings="$(jq -n \
                     elif $gi >= $wi then []
                     else
                       [{ sev: "FAIL", section: "publicRepos",
-                         msg: "repos/\($slug) is public and its fork pull request approval policy is \($got | tojson), profile wants at least \($p.forkPrApproval | tojson)",
+                         msg: "\(pub_subject) and its fork pull request approval policy is \($got | tojson), profile wants at least \($p.forkPrApproval | tojson)",
                          fix: "gh api --method PUT \"repos/\($slug)/actions/permissions/fork-pr-contributor-approval\" -f approval_policy=\($p.forkPrApproval)" }]
                     end
                 end )
