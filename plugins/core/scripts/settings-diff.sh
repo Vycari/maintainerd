@@ -14,7 +14,8 @@
 # references/profile-schema.md. Not vendored into consuming repos: it runs inside a skill.
 #
 #   settings-diff.sh --repo my-org/app --effective eff.json \
-#       --repo-settings repo.json --protection prot.json --rulesets rules.json --labels labels.json
+#       --repo-settings repo.json --protection prot.json --rulesets rules.json --labels labels.json \
+#       --vuln-reporting vuln.json --fork-approval fork.json
 #
 # Capture the inputs with:
 #   gh api "repos/my-org/app"                                        > repo.json
@@ -23,6 +24,10 @@
 #   #   ...then each ruleset by id, since the list omits `rules`:
 #   #   gh api "repos/my-org/app/rulesets/<id>" | jq -s '.' > rules.json
 #   gh api "repos/my-org/app/labels" --paginate --jq '[.[].name]'    > labels.json
+#   gh api "repos/my-org/app/private-vulnerability-reporting"        > vuln.json   # {"enabled": bool}
+#   gh api "repos/my-org/app/actions/permissions/fork-pr-contributor-approval" > fork.json
+#   #   (only read when defaults.publicRepos is set; repo.json also carries security_and_analysis,
+#   #   which GitHub shows to an admin or security manager only)
 #
 # An input that was NOT passed is reported as "couldn't verify", never as a pass. Nor is
 # a read that FAILED: GitHub answers "you may not read this" and "this branch has no
@@ -57,12 +62,14 @@ usage: settings-diff.sh --repo SLUG --effective FILE [inputs]
   --protection      `gh api repos/{slug}/branches/{branch}/protection` response (404 body is fine).
   --rulesets        array of ruleset objects, each WITH its `rules` (fetch each by id).
   --labels          array of label names, or of label objects.
+  --vuln-reporting  `gh api repos/{slug}/private-vulnerability-reporting` response.
+  --fork-approval   `gh api repos/{slug}/actions/permissions/fork-pr-contributor-approval` response.
 
 Anything not passed is reported as "couldn't verify".
 USAGE
 }
 
-repo=""; eff=""; branch=""; repo_settings=""; protection=""; rulesets=""; labels=""
+repo=""; eff=""; branch=""; repo_settings=""; protection=""; rulesets=""; labels=""; vuln=""; fork=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -73,6 +80,8 @@ while [ $# -gt 0 ]; do
     --protection)    [ $# -ge 2 ] || { echo "settings-diff: --protection needs a value" >&2; exit 2; }; protection="$2"; shift 2 ;;
     --rulesets)      [ $# -ge 2 ] || { echo "settings-diff: --rulesets needs a value" >&2; exit 2; }; rulesets="$2"; shift 2 ;;
     --labels)        [ $# -ge 2 ] || { echo "settings-diff: --labels needs a value" >&2; exit 2; }; labels="$2"; shift 2 ;;
+    --vuln-reporting) [ $# -ge 2 ] || { echo "settings-diff: --vuln-reporting needs a value" >&2; exit 2; }; vuln="$2"; shift 2 ;;
+    --fork-approval) [ $# -ge 2 ] || { echo "settings-diff: --fork-approval needs a value" >&2; exit 2; }; fork="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "settings-diff: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -104,10 +113,13 @@ j_repo="$(read_json "$repo_settings" 'null')"
 j_prot="$(read_json "$protection"    'null')"
 j_rules="$(read_json "$rulesets"     'null')"
 j_labels="$(read_json "$labels"      'null')"
+j_vuln="$(read_json "$vuln"          'null')"
+j_fork="$(read_json "$fork"          'null')"
 
 findings="$(jq -n \
   --argjson e "$effective" --arg slug "$repo" --arg branch "$branch" --arg okey "$override_key" \
-  --argjson repo "$j_repo" --argjson prot "$j_prot" --argjson rules "$j_rules" --argjson labels "$j_labels" '
+  --argjson repo "$j_repo" --argjson prot "$j_prot" --argjson rules "$j_rules" --argjson labels "$j_labels" \
+  --argjson vuln "$j_vuln" --argjson fork "$j_fork" '
 
   def q: @sh;
 
@@ -167,6 +179,85 @@ findings="$(jq -n \
                 fix: "gh api --method PATCH \"repos/\($slug)\" -F \(.key)=\(.want | tojson)" })
       | visibility_findings + .
     end;
+
+  # ── public-only requirements (defaults.publicRepos) ────────────────────────
+  # The block applies when the repo is public by EITHER measure: the profile says so, or the
+  # live repo is. The second case is a private-by-profile repo made public by accident, which
+  # already gets the visibility FAIL above and is the repo that most needs secret scanning.
+  # Every requirement is a minimum and never turns a setting off. A missing input, a failed
+  # read, or a missing field is SKIP, never a pass and never "disabled": security_and_analysis
+  # in particular is shown only to an admin or security manager.
+  def fork_ranks: ["first_time_contributors_new_to_github","first_time_contributors","all_external_contributors"];
+
+  def sa_status($k):
+    if ($repo.security_and_analysis | type) != "object" then null
+    elif ($repo.security_and_analysis[$k] | type) != "object" then null
+    else ($repo.security_and_analysis[$k].status // null) end;
+
+  def sa_finding($want; $key; $label; $pkey):
+    if $want != true then []
+    elif $repo == null then
+      [{ sev: "SKIP", section: "publicRepos", msg: "publicRepos.\($pkey): repo settings not read — couldn'"'"'t verify \($label)" }]
+    else sa_status($key) as $st
+      | if ($st | type) != "string" then
+          [{ sev: "SKIP", section: "publicRepos",
+             msg: "publicRepos.\($pkey): the repo settings carry no security_and_analysis.\($key) (GitHub shows it to an admin or security manager only) — couldn'"'"'t verify \($label)" }]
+        elif $st == "enabled" then []
+        else
+          [{ sev: "FAIL", section: "publicRepos",
+             msg: "repos/\($slug) is public and \($label) is \($st | tojson), profile wants \"enabled\"",
+             fix: ("gh api --method PATCH \"repos/\($slug)\" --input - <<'"'"'JSON'"'"'\n"
+                  + ({ security_and_analysis:
+                         ( (if $key == "secret_scanning_push_protection" and sa_status("secret_scanning") != "enabled"
+                              then { secret_scanning: { status: "enabled" } } else {} end)
+                         + { ($key): { status: "enabled" } } ) } | tojson)
+                  + "\nJSON") }]
+        end
+    end;
+
+  def public_findings:
+    ($e.publicRepos // null) as $p
+    | if $p == null then []
+      else
+        ( ($e.private == false) or ($repo != null and $repo.private == false) ) as $public
+        | if ($public | not) and ($repo == null or (($repo.private | type) != "boolean")) then
+            [{ sev: "SKIP", section: "publicRepos", msg: "publicRepos: couldn'"'"'t tell whether the repo is public" }]
+          elif ($public | not) then
+            [{ sev: "NOTE", section: "publicRepos", msg: "publicRepos: not applicable (repo is private)" }]
+          else
+            sa_finding($p.secretScanning; "secret_scanning"; "secret scanning"; "secretScanning")
+            + sa_finding($p.pushProtection; "secret_scanning_push_protection"; "push protection"; "pushProtection")
+            + ( if $p.privateVulnerabilityReporting != true then []
+                elif $vuln == null then
+                  [{ sev: "SKIP", section: "publicRepos", msg: "publicRepos.privateVulnerabilityReporting: not read — couldn'"'"'t verify private vulnerability reporting" }]
+                elif ($vuln | type) != "object" or (($vuln.enabled | type) != "boolean") then
+                  [{ sev: "SKIP", section: "publicRepos",
+                     msg: "publicRepos.privateVulnerabilityReporting: the read returned no enabled flag\(if ($vuln | type) == "object" and ($vuln.message | type) == "string" then " (\($vuln.message))" else "" end) — couldn'"'"'t verify" }]
+                elif $vuln.enabled then []
+                else
+                  [{ sev: "FAIL", section: "publicRepos",
+                     msg: "repos/\($slug) is public and private vulnerability reporting is disabled, profile wants it enabled",
+                     fix: "gh api --method PUT \"repos/\($slug)/private-vulnerability-reporting\"" }]
+                end )
+            + ( if ($p.forkPrApproval | type) != "string" then []
+                elif $fork == null then
+                  [{ sev: "SKIP", section: "publicRepos", msg: "publicRepos.forkPrApproval: not read — couldn'"'"'t verify the fork pull request approval policy" }]
+                else
+                  ( if ($fork | type) == "object" then ($fork.approval_policy // null) else null end ) as $got
+                  | (fork_ranks | index([$got])) as $gi
+                  | (fork_ranks | index([$p.forkPrApproval])) as $wi
+                  | if $gi == null or $wi == null then
+                      [{ sev: "SKIP", section: "publicRepos",
+                         msg: "publicRepos.forkPrApproval: the read returned no recognised approval_policy\(if ($fork | type) == "object" and ($fork.message | type) == "string" then " (\($fork.message))" else "" end) — couldn'"'"'t verify" }]
+                    elif $gi >= $wi then []
+                    else
+                      [{ sev: "FAIL", section: "publicRepos",
+                         msg: "repos/\($slug) is public and its fork pull request approval policy is \($got | tojson), profile wants at least \($p.forkPrApproval | tojson)",
+                         fix: "gh api --method PUT \"repos/\($slug)/actions/permissions/fork-pr-contributor-approval\" -f approval_policy=\($p.forkPrApproval)" }]
+                    end
+                end )
+          end
+      end;
 
   # ── the required-check contexts a ruleset supplies, on top of protection ────
   def ruleset_contexts:
@@ -391,7 +482,7 @@ findings="$(jq -n \
                 fix: "gh label create \(. | q) --repo \($slug)" })
     end;
 
-  { findings: (repo_findings + protection_findings + merge_queue_findings + label_findings),
+  { findings: (repo_findings + public_findings + protection_findings + merge_queue_findings + label_findings),
     protectionDiffers: (([ protection_findings[] | select(.section == "protection" and .sev == "FAIL") ] | length) > 0),
     # "Known" means the current state was actually established: the branch is protected
     # and we read it, or GitHub told us it is not protected. A failed read is neither, and

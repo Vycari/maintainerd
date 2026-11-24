@@ -43,6 +43,12 @@ RESOLVABLE='["requiredChecks","coverage","commands","dependabot","mergeQueue","p
 # behind it, so it cannot be a floor.
 FLOORABLE='["requiredLinearHistory","allowForcePushes","allowDeletions","enforceAdmins","strictRequiredChecks","requiredReviews.count","requiredReviews.dismissStale"]'
 
+# The keys `defaults.publicRepos` may carry, the keys of its `files` block, and the
+# `forkPrApproval` values from loosest to strictest (settings-diff.sh ranks by this order).
+PUBLIC_KEYS='["secretScanning","pushProtection","privateVulnerabilityReporting","forkPrApproval","files"]'
+PUBLIC_FILES='["license","securityPolicy","contributing"]'
+FORK_POLICIES='["first_time_contributors_new_to_github","first_time_contributors","all_external_contributors"]'
+
 usage() {
   cat >&2 <<'USAGE'
 usage: profile-resolve.sh --profile FILE (--validate | --languages | --repo SLUG --language KEY)
@@ -85,7 +91,8 @@ jq -e 'type == "object"' "$profile" >/dev/null 2>&1 \
 # ── Shape ────────────────────────────────────────────────────────────────────
 # One jq pass, emitting one message per problem so a broken profile is fixed in one
 # round rather than one error at a time.
-errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" --argjson floorable "$FLOORABLE" '
+errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVABLE" --argjson floorable "$FLOORABLE" \
+  --argjson pubkeys "$PUBLIC_KEYS" --argjson pubfiles "$PUBLIC_FILES" --argjson forkpolicies "$FORK_POLICIES" '
   def is_str_array: type == "array" and (all(.[]; type == "string"));
   def is_nonempty_str_array: type == "array" and (all(.[]; type == "string" and length > 0 and (test("\\n") | not)));
 
@@ -124,6 +131,34 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
                   else [] end ) )
             else [] end );
 
+  # defaults.publicRepos: requirements that apply only to a public repo (settings-diff.sh
+  # decides whether they apply, since that needs the live repo). Every key is a requirement
+  # or absent, so each is typed here: an unknown key in a security block must fail at the
+  # profile, not be silently ignored by the diff.
+  def public_errors:
+    . as $p
+    | if type != "object" then ["defaults.publicRepos must be an object"] else
+        ( ($p | keys_unsorted) - $pubkeys
+          | map("defaults.publicRepos carries \"\(.)\", expected one of " + ($pubkeys | join(", "))) )
+        + [ ["secretScanning","pushProtection","privateVulnerabilityReporting"][]
+            | select(. as $k | ($p | has($k)) and (($p[$k] | type) != "boolean"))
+            | "defaults.publicRepos.\(.) must be a boolean" ]
+        + ( if ($p | has("forkPrApproval")) and (($p.forkPrApproval | type) != "string"
+              or ($forkpolicies | index([$p.forkPrApproval]) | not))
+              then ["defaults.publicRepos.forkPrApproval is \($p.forkPrApproval | tojson), expected one of " + ($forkpolicies | join(", "))]
+              else [] end )
+        + ( if ($p | has("files")) | not then []
+            elif ($p.files | type) != "object" then ["defaults.publicRepos.files must be an object"]
+            else ( ($p.files | keys_unsorted) - $pubfiles
+                   | map("defaults.publicRepos.files carries \"\(.)\", expected one of " + ($pubfiles | join(", "))) )
+                 + [ $pubfiles[] | select(. as $k | ($p.files | has($k)) and (($p.files[$k] | type) != "boolean"))
+                     | "defaults.publicRepos.files.\(.) must be a boolean" ]
+            end )
+        + ( if $p.pushProtection == true and $p.secretScanning != true
+              then ["defaults.publicRepos.pushProtection is true without secretScanning: true — GitHub has no push protection without secret scanning"]
+              else [] end )
+      end;
+
   # `$kind` is "languages" or "override". One allow-list serves both, with `visibility`
   # legal only in an override: adding it to $resolvable would legalize it per language.
   def block_errors($where; $kind):
@@ -138,6 +173,8 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
                        + ($resolvable | join(", ")) + " may vary per language or repo"
                        + ( if . == "private" and $kind == "override"
                              then ". To declare this one repo public, use \"visibility\": \"public\""
+                           elif . == "publicRepos"
+                             then " — publicRepos is fleet policy and is legal only in defaults"
                              else "" end ) end) )
         + ( if $kind == "override" and ($b | has("visibility"))
                 and (($b.visibility | type) != "string" or (["public","private"] | index([$b.visibility]) | not))
@@ -172,6 +209,8 @@ errors="$(jq -r --argjson known "$KNOWN_VERSION" --argjson resolvable "$RESOLVAB
   , ( if (.org | type) != "string" or (.org | length) == 0 then ["org must be a non-empty string"] else [] end )
   , ( if (.defaults | type) != "object" then ["defaults must be an object"] else [] end )
   , ( if (.defaults | type) == "object" then (.defaults | nested_errors("defaults")) else [] end )
+  , ( if (.defaults | type) == "object" and (.defaults | has("publicRepos"))
+        then (.defaults.publicRepos | public_errors) else [] end )
   , ( if (.defaults | type) == "object" and (.defaults | has("visibility"))
         then ["defaults carries \"visibility\" — the fleet-wide value is defaults.private; visibility is legal only in a repoOverrides entry"] else [] end )
   # `files.prTemplateHeadings`/`files.prTemplateSource` are the two keys pr-template-check.sh
