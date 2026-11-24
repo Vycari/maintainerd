@@ -1,6 +1,6 @@
 # Design: profile settings that apply only to public repos
 
-Status: proposed. Tracking issue: #97. This note covers design only. Once it is merged, the
+Status: accepted (open questions decided 2026-11-24). Tracking issue: #97. This note covers design only. Once it is merged, the
 implementation follows in the PRs listed under [Implementation phases](#implementation-phases).
 
 It picks up the four follow-up rows of
@@ -83,7 +83,7 @@ legal decision for the person who owns the repo.
 existing "fixed org-wide" message. A requirement that one repo could switch off is the exemption the
 schema doc rules out. A fleet that needs one public repo without, say, a security policy has to
 choose: drop the key for the whole fleet, or accept one open finding. See
-[Q2](#open-questions) for whether that is too strict.
+[Q2](#open-questions) for whether that is too strict (decided: no, for now).
 
 ### Validation
 
@@ -170,7 +170,7 @@ it before every reader is upgraded, and the only cost is that older readers do n
 
 ## Open questions
 
-**Q1. What should the example profile and the docs suggest for `forkPrApproval`?** The key is a
+**Q1. What should the example profile and the docs suggest for `forkPrApproval`?** Decided (Allen, 2026-11-24): **(b) `all_external_contributors`.** The key is a
 floor, so any value is valid. The question is which value maintainerd's own example shows.
 
 - **(a)** `first_time_contributors`: anyone whose first contribution to this repo is a fork PR waits
@@ -178,16 +178,16 @@ floor, so any value is valid. The question is which value maintainerd's own exam
 - **(b)** `all_external_contributors`: every fork PR from someone outside the org waits. This is the
   strictest, and the most work for a busy public repo.
 
-Recommendation: **(b)** for the example. The fleets this is written for have few outside
+Reasoning: **(b)** for the example. The fleets this is written for have few outside
 contributors, so the cost is small, and a contributor who has had one PR merged gets no wider CI
 access. A fleet with many outside contributors can choose (a) in its own profile.
 
-**Q2. Should a `repoOverrides` entry be able to relax a `publicRepos` requirement?** The design
+**Q2. Should a `repoOverrides` entry be able to relax a `publicRepos` requirement?** Decided (Allen, 2026-11-24): **no, for now.** The design
 above says no. The alternative is a named, per-key exception in the override, such as
 `"publicRepos": { "files": { "contributing": false } }`, reported as a `NOTE`. That follows the
 visibility precedent: declared, in a block a reviewer reads.
 
-Recommendation: **no for now**. Every requirement here is a security floor or the existence of a
+Reasoning: **no for now**. Every requirement here is a security floor or the existence of a
 file. A relaxation can be added later as an optional key without a version bump, and removing one
 once fleets depend on it would need a bump.
 
