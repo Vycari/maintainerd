@@ -43,7 +43,7 @@ except ImportError:
 STATE_VERSION = 1
 DEFAULT_FEED = "https://github.blog/changelog/feed/"
 DEFAULT_STATE_DIR = "planning/changelog-radar"
-RECENT_IDS_KEEP = 2000
+RECENT_IDS_KEEP = 500
 LOOKBACK_DAYS = 30
 BACKOFF = [5, 15, 30]
 
@@ -112,6 +112,29 @@ def clean_html(text):
         return ""
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_xhtml_text(content_elem):
+    """Extract and normalize text from an ElementTree node with space delimiters."""
+    if content_elem is None:
+        return ""
+    raw_text = " ".join(content_elem.itertext())
+    return re.sub(r"\s+", " ", raw_text).strip()
+
+
+def get_atom_link(entry_elem, ns="{http://www.w3.org/2005/Atom}"):
+    """Extract canonical entry URL, preferring rel='alternate' or elements without rel."""
+    links = entry_elem.findall(f"{ns}link") if ns else []
+    if not links:
+        links = entry_elem.findall("{http://www.w3.org/2005/Atom}link") or entry_elem.findall("link")
+    for l in links:
+        rel = l.attrib.get("rel", "alternate").strip()
+        if rel == "alternate" and "href" in l.attrib:
+            return l.attrib["href"].strip()
+    for l in links:
+        if "href" in l.attrib:
+            return l.attrib["href"].strip()
+    return ""
 
 
 # ── state ────────────────────────────────────────────────────────────────────────────────
@@ -261,15 +284,15 @@ def parse_feed_xml(content_bytes):
     entries = root.findall(f".//{ns}entry")
     for entry in entries:
         title = entry.findtext(f"{ns}title", default="").strip()
-        link_elem = entry.find(f"{ns}link")
-        link = link_elem.attrib.get("href", "").strip() if link_elem is not None else ""
+        link = get_atom_link(entry, ns)
         entry_id = entry.findtext(f"{ns}id", default="").strip() or link
         pub_date = parse_rfc822_or_iso(
             entry.findtext(f"{ns}published", default="") or entry.findtext(f"{ns}updated", default="")
         )
-        content = clean_html(
-            entry.findtext(f"{ns}summary", default="") or entry.findtext(f"{ns}content", default="")
-        )
+        content_elem = entry.find(f"{ns}summary")
+        if content_elem is None:
+            content_elem = entry.find(f"{ns}content")
+        content = clean_html(extract_xhtml_text(content_elem)) if content_elem is not None else ""
         cats = [
             c.attrib.get("term", "").strip().lower()
             for c in entry.findall(f"{ns}category")
@@ -506,7 +529,7 @@ def get_feed_state(state, feed_url):
     }
 
 
-def prefilter(records, profile, state=None, feed_url=None):
+def prefilter(records, profile, state=None, feed_url=None, max_count=None):
     """Filter out seen/old records and score surviving records by relevance."""
     feed_state = get_feed_state(state, feed_url)
     recent_ids = set(feed_state.get("recentIds", []))
@@ -540,6 +563,8 @@ def prefilter(records, profile, state=None, feed_url=None):
     # Sort descending by score, then newest date descending (stable sort)
     survivors.sort(key=lambda x: x.get("published") or "", reverse=True)
     survivors.sort(key=lambda x: x["score"], reverse=True)
+    if max_count is not None and max_count >= 0:
+        survivors = survivors[:max_count]
     return survivors
 
 
@@ -591,7 +616,7 @@ def cmd_prefilter(args):
     # Read state (optional)
     state = load_state(args.state) if args.state else None
 
-    survivors = prefilter(records, profile, state, feed_url=feed_url)
+    survivors = prefilter(records, profile, state, feed_url=feed_url, max_count=args.max)
     print(json.dumps(survivors, indent=2))
 
 
@@ -697,6 +722,7 @@ def main():
     p_pref.add_argument("--state", default=None, help="State JSON file path")
     p_pref.add_argument("--feed", default=None, help="Feed URL (default: from config or GitHub changelog RSS)")
     p_pref.add_argument("--cwd", default=".", help="Repo working directory (to load config)")
+    p_pref.add_argument("--max", type=int, default=None, help="Maximum number of candidates to output")
     p_pref.set_defaults(func=cmd_prefilter)
 
     # advance

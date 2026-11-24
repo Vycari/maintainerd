@@ -46,13 +46,13 @@ The mechanical, deterministic steps live in `${CLAUDE_PLUGIN_ROOT}/scripts/chang
 
 ### 1. Build the repo profile in an isolated scratch directory
 
-Create a private per-run scratch directory to isolate concurrent runs:
+Create a deterministic scratch directory to isolate runs and support multi-turn workflows:
 
 ```bash
-SCRATCH=$(mktemp -d)
-trap 'rm -rf "$SCRATCH"' EXIT
+SCRATCH_DIR=".claude/scratch/changelog-radar"
+mkdir -p "$SCRATCH_DIR"
 
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" profile --cwd . > "$SCRATCH/profile.json"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" profile --cwd . > "$SCRATCH_DIR/profile.json"
 ```
 
 ### 2. Harvest and prefilter new updates
@@ -68,23 +68,25 @@ PREV_MARK=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" mark --st
 Run harvest and prefilter:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" harvest --cwd . > "$SCRATCH/harvest.json" || {
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" harvest --cwd . > "$SCRATCH_DIR/harvest.json" || {
   echo "HARVEST FAILED — stop" >&2
   exit 1
 }
 
+# In interactive mode: omit --max or set high limit. In scheduled mode: pass --max 2 to bound proposals.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" prefilter \
-  --profile "$SCRATCH/profile.json" \
-  --input "$SCRATCH/harvest.json" \
+  --profile "$SCRATCH_DIR/profile.json" \
+  --input "$SCRATCH_DIR/harvest.json" \
   --state "<stateFilePath>" \
-  --cwd . > "$SCRATCH/survivors.json" || {
+  --max 2 \
+  --cwd . > "$SCRATCH_DIR/survivors.json" || {
   echo "PREFILTER FAILED — stop" >&2
   exit 1
 }
 ```
 
 **Never label a command failure as a quiet day.** If harvest or prefilter exits non-zero, report the failure and stop.
-If `$SCRATCH/survivors.json` is empty `[]` after a successful harvest, report that no new relevant updates were found since the last run, and stop.
+If `$SCRATCH_DIR/survivors.json` is empty `[]` after a successful harvest, report that no new relevant updates were found since the last run, and stop.
 
 ### 3. Evaluate each survivor for concrete repo impact
 
@@ -100,7 +102,7 @@ For each surviving candidate:
    gh issue list --repo <config.repo> --state all --search "<keywords>"
    gh pr list --repo <config.repo> --state all --search "<keywords>"
    ```
-   to ensure an issue or PR doesn't already exist for this topic.
+   to ensure an issue or PR doesn't already exist for this topic (preventing re-filing rejected or closed items).
 3. **Filter noise**:
    Skip updates that don't apply to this repo (e.g. an Xcode runner update if this repo doesn't
    build macOS/iOS apps).
@@ -131,7 +133,7 @@ Out: <Explicitly deferred items>
 ```
 
 - **Interactive mode**: Show the draft to the user and ask for confirmation before filing.
-- **Scheduled mode**: Query existing repository labels first:
+- **Scheduled mode**: Bound proposals to maximum 1–2 issues per run. Query existing repository labels first:
   ```bash
   EXISTING_LABELS=$(gh label list --repo <config.repo> --json name -q '.[].name')
   ```
@@ -144,9 +146,12 @@ Only after issues have been evaluated and filed, advance the state file using th
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/changelog-radar.py" advance \
   --state "<stateFilePath>" \
-  --input "$SCRATCH/survivors.json" \
+  --input "$SCRATCH_DIR/survivors.json" \
   --expected-mark "$PREV_MARK" \
   --cwd .
+
+# Clean up scratch files upon completion
+rm -rf "$SCRATCH_DIR"
 ```
 
 Commit the updated state file if `<changelogRadarDir>` is tracked in git.

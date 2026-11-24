@@ -102,6 +102,65 @@ class FeedParsingTest(unittest.TestCase):
         self.assertEqual(r0["published"], "2026-10-15T12:00:00Z")
         self.assertIn("rust", r0["categories"])
 
+    def test_atom_link_alternate_preference(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        atom_multi_link = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Feed</title>
+  <entry>
+    <title>Multi-link Post</title>
+    <id>tag:blog,2026:multi-link</id>
+    <link rel="self" href="https://example.com/api/feed.atom"/>
+    <link rel="alternate" href="https://example.com/articles/canonical-link"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary>Testing link extraction preference.</summary>
+  </entry>
+  <entry>
+    <title>Implicit Alternate Link Post</title>
+    <id>tag:blog,2026:implicit-link</id>
+    <link href="https://example.com/articles/implicit-alternate"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary>Testing implicit link.</summary>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(atom_multi_link.encode("utf-8"))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["link"], "https://example.com/articles/canonical-link")
+        self.assertEqual(records[1]["link"], "https://example.com/articles/implicit-alternate")
+
+    def test_xhtml_nested_itertext_spacing(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        xhtml_atom = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>XHTML Content Entry</title>
+    <id>tag:blog,2026:xhtml-test</id>
+    <link href="https://example.com/xhtml-entry"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>GitHub Actions</p>
+        <p>workflow lockfiles in public preview.</p>
+      </div>
+    </content>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(xhtml_atom.encode("utf-8"))
+        self.assertEqual(len(records), 1)
+        summary = records[0]["summary"]
+        self.assertIn("GitHub Actions workflow lockfiles in public preview.", summary)
+        import re
+        self.assertTrue(bool(re.search(r"\bactions\b", summary, re.I)))
+        self.assertTrue(bool(re.search(r"\bworkflow\b", summary, re.I)))
+
 
 class ProfileAndPrefilterTest(unittest.TestCase):
     def setUp(self):
@@ -583,6 +642,7 @@ with cr.locked_state(r'{state_file}'):
 
             # Holder is actively holding lock until release_file exists.
             # Spawn a second process attempting to enter locked_state.
+            client_attempting = os.path.join(self.tmp.name, "client_attempting.txt")
             client_entered = os.path.join(self.tmp.name, "client_entered.txt")
             client_code = f"""
 import sys, os
@@ -590,13 +650,22 @@ sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
 import importlib
 cr = importlib.import_module('changelog-radar')
 
+with open(r'{client_attempting}', 'w') as f:
+    f.write('attempting')
 with cr.locked_state(r'{state_file}'):
     with open(r'{client_entered}', 'w') as f:
         f.write('entered')
 """
             client = subprocess.Popen([sys.executable, "-c", client_code])
             try:
-                time.sleep(0.1)
+                for _ in range(50):
+                    if os.path.exists(client_attempting):
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("Client process never signaled attempt to acquire lock")
+
+                time.sleep(0.05)
                 # Client must be blocked by the lock
                 self.assertIsNone(client.poll(), "Client entered locked_state while holder held the lock!")
                 self.assertFalse(os.path.exists(client_entered), "Client entered locked_state prematurely!")
@@ -611,8 +680,11 @@ with cr.locked_state(r'{state_file}'):
             finally:
                 if client.poll() is None:
                     client.kill()
+                    client.wait()
         finally:
-            proc.wait(timeout=5)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
     def test_advance_blocks_while_state_locked(self):
         """Verify that CLI advance blocks until parent sends release signal to lock holder."""
@@ -682,8 +754,11 @@ with cr.locked_state(r'{state_file}'):
             finally:
                 if adv_proc.poll() is None:
                     adv_proc.kill()
+                    adv_proc.wait()
         finally:
-            holder.wait(timeout=5)
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
 
     def test_advance_locked_cas_rejects_stale_concurrent_run(self):
         # Simulates two overlapping scans:
@@ -733,6 +808,70 @@ with cr.locked_state(r'{state_file}'):
         self.assertEqual(st["highWater"]["publishedDate"], "2026-10-15T12:00:00Z")
         self.assertIn("id-run1", st["recentIds"])
         self.assertNotIn("id-run2", st["recentIds"])
+
+    def test_prefilter_max_candidates_and_overflow(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": f"item-{i}",
+                "title": f"GitHub Actions Update {i}",
+                "link": f"https://example.com/{i}",
+                "published": f"2026-10-1{i}T12:00:00Z",
+                "categories": ["actions"],
+                "summary": f"Actions update number {i}",
+            }
+            for i in range(1, 4)
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_max.json")
+        rec_file = os.path.join(self.tmp.name, "rec_max.json")
+        state_file = os.path.join(self.tmp.name, "state_max.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Prefilter with --max 2 -> returns only 2 candidates
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--max", "2"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 2)
+        selected_ids = [s["id"] for s in survivors]
+
+        # Advance state with only these 2 survivors
+        survivors_file = os.path.join(self.tmp.name, "survivors_max.json")
+        with open(survivors_file, "w") as f:
+            json.dump(survivors, f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", survivors_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with open(state_file) as f:
+            st = json.load(f)
+        for sid in selected_ids:
+            self.assertIn(sid, st["recentIds"])
+
+        # Unselected 3rd item is NOT in recentIds and survives on subsequent run
+        proc2 = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        survivors2 = json.loads(proc2.stdout)
+        self.assertEqual(len(survivors2), 1)
+        self.assertNotIn(survivors2[0]["id"], selected_ids)
+
+    def test_recent_ids_retention_window_capped_at_500(self):
+        state_file = os.path.join(self.tmp.name, "state_retention.json")
+        items = [{"id": f"item-{i}", "published": "2026-10-14T12:00:00Z"} for i in range(600)]
+        in_file = os.path.join(self.tmp.name, "retention_in.json")
+        with open(in_file, "w") as f:
+            json.dump(items, f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", in_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertEqual(len(st["recentIds"]), 500)
 
 
 if __name__ == "__main__":
