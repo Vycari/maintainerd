@@ -123,6 +123,8 @@ case "$1 $2" in
     fi
     ;;
   "api repos/"*"/activity"*) serve activity ;;
+  # The PR's inline review comments (the verified read): none unless a case serves some.
+  "api repos/"*"/pulls/"*"/comments"*) if ls "$STUB_DIR"/inline* >/dev/null 2>&1; then serve inline; else echo '[]'; fi ;;
   "run view") serve joblog ;;
   "repo view")
     # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
@@ -1399,6 +1401,27 @@ COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-request-before-round "$CFG_FL" 3/5
   '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "verified: a request after the head commit but before VR's round started -> not approved"
+# ...and in an inline review comment, a reply in a resolved thread included. (VR-c1726d45, round 2)
+RESOLVED_THREAD='[{"resolved":true,"path":"a.py","line":3,"body":"P1 something"}]'
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-inline-request "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]" "$RESOLVED_THREAD"
+printf '%s' '[{"user":{"login":"alice"},"body":"thanks @greptileai review","created_at":"2026-10-16T00:05:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a person's inline reply with @greptileai in a resolved thread after the cutoff -> not approved"
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-inline-edited "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" "$RESOLVED_THREAD"
+printf '%s' '[{"user":{"login":"alice"},"body":"@greptileai review","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an inline comment edited to ask for a round after the cutoff -> not approved"
+ver_case ver-inline-old "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" "$RESOLVED_THREAD"
+printf '%s\n%s' '[{"user":{"login":"alice"},"body":"@greptileai review","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-15T00:00:00Z"}]' \
+  '[{"user":{"login":"greptile-apps[bot]"},"body":"Tag @greptileai to ask","created_at":"2026-10-16T00:05:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an old inline request before the cutoff and a bot's inline text (two pages) -> approved" approved 0
+ver_case ver-inline-fails "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '[]' >"$STUB_DIR/inline"
+touch "$STUB_DIR/inline.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an inline-comment read that fails keeps waiting" timeout 2
 COMMIT_DATE=none ver_case ver-no-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "verified: an unreadable head commit date keeps waiting, never approves" timeout 2

@@ -535,8 +535,8 @@ the response loop is the one in Phases 1-6, with these differences:
   `verified:` line counts. It reads the reviewer's check run (`gate_fix_verified` naming the
   score's commit), never the `Verified:` line of a summary comment, which anyone can write; a
   `Verified:` comment the script does not confirm is a stale score, waited on as before. A final
-  review of the head that is queued or running, or a person's re-review mention (in a comment or a
-  review body, since the head was committed or VR's round started, whichever is earlier), keeps it
+  review of the head that is queued or running, or a person's re-review mention (in a comment, a
+  review body or an inline review comment, since the head was committed or VR's round started, whichever is earlier), keeps it
   waiting.
 
 ### Exit
