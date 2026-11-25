@@ -230,7 +230,7 @@ the last push already fixed.
 
 (In [first-line mode](#first-line-mode-reviewmode-first-line) you never post a re-review request: a
 stale score waits for the first-line reviewer or foreman to request it, and a score on an ancestor
-may count as *covered*. Read that section instead of this one.)
+may count as *covered* or *verified*. Read that section instead of this one.)
 
 Treat STALE as **not met**, and do not push edits to move the number — there is nothing to act on
 until the bot has seen the current head. Wait one poll cycle (Phase 6 cadence). If the sha still
@@ -527,6 +527,17 @@ the response loop is the one in Phases 1-6, with these differences:
   open, and the first-line reviewer is happy on the head by a completed round. A stale score that is
   not covered is waited on, not acted on. The script cannot see whether that older score named a
   P1; treat one in the review text as open work.
+- **Verified.** Treat `approved` with a `verified:` line exactly like covered: a final-review score
+  *below* the bar on an ancestor, whose findings the first-line reviewer confirmed fixed on the head
+  instead of asking for a second round (foreman's `docs/design/vr-one-greptile-round.md` §3-§4).
+  The final review is done: no re-review request, no waiting for a round that will not come, and the
+  round summary says "verified: <score> on `<G>`, fixes confirmed on `<head>`". Only the script's
+  `verified:` line counts. It reads the reviewer's check run (`gate_fix_verified` naming the
+  score's commit), never the `Verified:` line of a summary comment, which anyone can write; a
+  `Verified:` comment the script does not confirm is a stale score, waited on as before. A final
+  review of the head that is queued or running, or a person's re-review mention (an issue comment,
+  review body or inline review comment, dated from its last edit, since the final reviewer took up
+  the commit it scored), keeps it waiting.
 
 ### Exit
 
@@ -1013,6 +1024,8 @@ and running the wrong one is the bug this section exists to prevent.
   since it is covered by `review.mechanicalCommits` (say so in the summary). Otherwise a stale score
   is not a met one.
 - The score **meets the threshold** — denominators match, numerator `>= n`.
+- (First-line mode: `wait-for-review.sh` reporting `approved` with a `covered:` or `verified:` line
+  stands in for the two conditions above; see [Stage 2](#stage-2-the-final-reviewer).)
 - No unresolved review threads, no new comments since the last push, checks green — as above.
 - No human has `CHANGES_REQUESTED` outstanding. A human block outranks any score.
 

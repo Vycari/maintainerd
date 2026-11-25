@@ -49,6 +49,15 @@ serve() {
   cat "$f"
   [ ! -f "$f.fail" ] || exit 1
 }
+# cur_prview — the PR fixture as it stands now (the one the last poll read, its sequence not advanced).
+cur_prview() {
+  local n f
+  n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
+  f="$STUB_DIR/prview.$n"
+  [ -f "$f" ] || f="$STUB_DIR/prview"
+  [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+  printf '%s' "$f"
+}
 echo "$*" >>"$STUB_DIR/.calls"
 echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
 case "$1 $2" in
@@ -78,6 +87,16 @@ case "$1 $2" in
     esac
     ;;
   "api graphql")
+    # The verified read's reviews query: the "reviewsgql" fixture, else the PR fixture's reviews as
+    # they stand now (with their edit times).
+    case "$*" in *"reviews(first:100"*)
+      if ls "$STUB_DIR"/reviewsgql* >/dev/null 2>&1; then serve reviewsgql; exit $?; fi
+      jq -c '{data: {repository: {pullRequest: {reviews: {pageInfo: {hasNextPage: false, endCursor: null},
+        nodes: [.reviews[]? | {author, body, submittedAt, lastEditedAt: (.lastEditedAt // null),
+                               updatedAt: (.updatedAt // .submittedAt)}]}}}}}' "$(cur_prview)"
+      exit 0
+      ;;
+    esac
     # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
     # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
     # rung0late: a jq filter applied to the second and later rung-0 (Greptile Review) reads, so a
@@ -87,6 +106,8 @@ case "$1 $2" in
       [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
       ;;
     *"checkName=Greptile Review"*)
+      # gatehook: an executable run on this read, before it is served (a request posted meanwhile).
+      [ ! -x "$STUB_DIR/gatehook" ] || "$STUB_DIR/gatehook"
       if [ -f "$STUB_DIR/rung0late" ]; then
         n=$(($(cat "$STUB_DIR/.count.rung0" 2>/dev/null || echo 0) + 1))
         printf '%s' "$n" >"$STUB_DIR/.count.rung0"
@@ -123,6 +144,26 @@ case "$1 $2" in
     fi
     ;;
   "api repos/"*"/activity"*) serve activity ;;
+  # The PR's inline review comments (the verified read): none unless a case serves some.
+  "api repos/"*"/pulls/"*"/comments"*) if ls "$STUB_DIR"/inline* >/dev/null 2>&1; then serve inline; else echo '[]'; fi ;;
+  # The final reviewer's own runs on the verdict commit (the verified read): the "verdictruns"
+  # fixture, else one Greptile Review run by greptile-apps started at 2026-10-15T06:00:00Z.
+  # A "verdictrunsall" fixture is served only to a read that asks for every run (filter=all), as
+  # GitHub's default (filter=latest) keeps only the newest run per name.
+  "api repos/"*"/commits/"*"/check-runs"*)
+    if [ -e "$STUB_DIR/verdictrunsall" ] && [[ "$*" == *"filter=all"* ]]; then cat "$STUB_DIR/verdictrunsall"
+    elif ls "$STUB_DIR"/verdictruns* >/dev/null 2>&1; then serve verdictruns; else
+      echo '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}'
+    fi
+    ;;
+  # Its issue comments (the verified read): the "issuecomments" fixture, else the PR fixture's
+  # comments as they stand now, in REST's shape.
+  "api repos/"*"/issues/"*"/comments"*)
+    if ls "$STUB_DIR"/issuecomments* >/dev/null 2>&1; then serve issuecomments; else
+      jq -c '[.comments[]? | {user: {login: (.author.login // "")}, body, created_at: .createdAt,
+        updated_at: (.updatedAt // .createdAt)}]' "$(cur_prview)"
+    fi
+    ;;
   "run view") serve joblog ;;
   "repo view")
     # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
@@ -689,10 +730,13 @@ expect "an in-progress check run keeps waiting, lower rungs do not pre-empt it" 
 
 # write_suites <suites-json> [suites-hasNextPage] — the head commit's checkSuites connection, raw,
 # for the cases that need several runs, ids, or page flags.
+# COMMIT_DATE (env, optional): the head commit's committedDate; "none" leaves it out.
 write_suites() {
-  jq -c --argjson suites "$1" --argjson more "${2:-false}" --arg oid "$HEAD_SHA" '
-    .data.repository.pullRequest.commits = {nodes: [{commit: {oid: $oid,
-      checkSuites: {pageInfo: {hasNextPage: $more}, nodes: $suites}}}]}' \
+  jq -c --argjson suites "$1" --argjson more "${2:-false}" --arg oid "$HEAD_SHA" \
+    --arg cd "${COMMIT_DATE:-2026-10-15T12:00:00Z}" '
+    .data.repository.pullRequest.commits = {nodes: [{commit: ({oid: $oid}
+      + (if $cd == "none" then {} else {committedDate: $cd} end) + {
+      checkSuites: {pageInfo: {hasNextPage: $more}, nodes: $suites}})}]}' \
     "$STUB_DIR/threads" >"$STUB_DIR/threads.tmp" && mv "$STUB_DIR/threads.tmp" "$STUB_DIR/threads"
 }
 cr_run() { # <databaseId> <status> [text] — a "Vycari Review" run; QUEUED carries no timestamps
@@ -704,9 +748,11 @@ cr_run() { # <databaseId> <status> [text] — a "Vycari Review" run; QUEUED carr
       conclusion: null, startedAt: null, completedAt: null, text: null}'
   fi
 }
+# SUITE_DATE (env, optional): the suite's createdAt (default 2026-10-15T12:00:00Z); "none" leaves it out.
 cr_suite() { # <slug> <runs-json-array> [runs-hasNextPage]
-  jq -n -c --arg slug "$1" --argjson runs "$2" --argjson more "${3:-false}" \
-    '{app: {slug: $slug}, checkRuns: {pageInfo: {hasNextPage: $more}, nodes: $runs}}'
+  jq -n -c --arg slug "$1" --argjson runs "$2" --argjson more "${3:-false}" --arg cd "${SUITE_DATE:-2026-10-15T12:00:00Z}" \
+    '{app: {slug: $slug}, checkRuns: {pageInfo: {hasNextPage: $more}, nodes: $runs}}
+     + (if $cd == "none" then {} else {createdAt: $cd} end)'
 }
 
 new_case cr-queued-rerun-hides-older-pass
@@ -1273,6 +1319,288 @@ write_config "$CFG_FL_RUNG0"
 printf '%s' '., (.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED")' >"$STUB_DIR/rung0late"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "covered, rung 0: a changes-requested on a later page of the rung-0 re-read is never approved over"
+
+# Verified (foreman docs/design/vr-one-greptile-round.md §3-§4): Greptile scored an ancestor below
+# the bar once, and VR's check run on the head says it verified each fix, so no second round comes.
+# ver_run <conclusion> <json> [title] [startedAt] — VR's run on the head, started by default at
+# 2026-10-16T00:00:00Z (the head commit is dated 2026-10-15T12:00:00Z unless COMMIT_DATE says otherwise).
+ver_run() {
+  jq -n -c --arg c "$1" --arg t "$2" --arg title "${3:-Confidence Score: 5/5}" \
+    --arg st "${4:-2026-10-16T00:00:00Z}" '{databaseId: 100,
+    name: "Vycari Review", status: "COMPLETED", conclusion: $c, startedAt: $st,
+    completedAt: "2026-10-16T00:01:00Z", title: $title, text: ("```json\n" + $t + "\n```")}'
+}
+# ver_json <reviewed_sha> <happy> <verdict_sha-json> — VR's verdict, with gate_fix_verified when the
+# third argument is not null.
+ver_json() {
+  jq -n -c --arg sha "$1" --argjson happy "$2" --argjson v "$3" '{score: 5, max: 5, reviewed_sha: $sha,
+    round: 2, mode: "first-line", open: {p0: 0, p1: 0, p2: 0}, findings: [], disputed: [], escalated: [],
+    happy: $happy, greptile_requested: null}
+    + (if $v == null then {} else {gate_fix_verified: {verdict_sha: $v, score: 3, findings: ["GR-1"], delta_lines: 12}} end)'
+}
+# gr_run <status> — Greptile's own run on the head.
+gr_run() {
+  jq -n -c --arg s "$1" '{databaseId: 300, name: "Greptile Review", status: $s,
+    conclusion: (if $s == "COMPLETED" then "SUCCESS" else null end), startedAt: null, completedAt: null, title: null, text: null}'
+}
+VERIFIED_JSON="$(ver_json "$HEAD_SHA" true "\"$OLD_SHA\"")"
+# ver_case <case> <config> <score> <sha7> <compare-status> <suites-json> <threads-json> [extra prview jq]
+ver_case() {
+  new_case "$1"
+  write_config "$2"
+  write_prview "" ".comments = [$(bot_comment "$(greptile_text "$3" "$4")")]${8:+ | $8}"
+  write_threads "" "$7"
+  write_suites "$6"
+  printf '%s' "$5" >"$STUB_DIR/compare"
+}
+VER_SUITES="[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]")]"
+
+ver_case ver-ok "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: Greptile 3/5 on an ancestor + VR's run verifies its fixes on head -> approved" approved 0
+expect_contains "verified: the output names verified" "verified: greptile-apps 3/5 on bbbbbbb"
+expect_not_contains "verified: ...and is not reported as covered" "covered:"
+[ "$(calls_of 'checkName=Greptile Review')" -ge 1 ] && ok "verified: the head's Greptile Review runs are read last" ||
+  bad "verified: Greptile Review read" "$(cat "$STUB_DIR/.calls")"
+
+# The summary comment's "Verified:" line alone proves nothing: anyone can write a comment.
+ver_case ver-comment-only "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$HEAD_SHA" true null)")]")]" '[]' \
+  ".comments += [{author: {login: \"vycari-review\"}, body: \"Verified: no Greptile round needed. VR confirmed each Greptile finding on bbbbbbb fixed on this head.\", createdAt: \"2026-10-16T00:02:00Z\"}]"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a Verified: comment without gate_fix_verified in the check run -> keeps waiting" timeout 2
+
+ver_case ver-sha-mismatch "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$HEAD_SHA" true '"cccccccc33333333333333333333333333333333"')")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a verdict_sha that is not Greptile's reviewed commit -> keeps waiting" timeout 2
+
+ver_case ver-bad-sha "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$HEAD_SHA" true '"bbbbbbb; rm"')")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a verdict_sha that is not a sha -> keeps waiting" timeout 2
+
+ver_case ver-neutral "$CFG_FL" 3/5 bbbbbbb ahead "[$(cr_suite vycari-review "[$(ver_run NEUTRAL "$VERIFIED_JSON")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: VR's run did not conclude success -> keeps waiting" timeout 2
+
+ver_case ver-unhappy "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$HEAD_SHA" false "\"$OLD_SHA\"")")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: VR not happy on head -> keeps waiting" timeout 2
+
+ver_case ver-other-app "$CFG_FL" 3/5 bbbbbbb ahead "[$(cr_suite someone-else "[$(ver_run SUCCESS "$VERIFIED_JSON")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a same-named run from another App is not VR's -> keeps waiting" timeout 2
+
+ver_case ver-unchanged-repost "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$OLD_SHA" true "\"$OLD_SHA\"")" "unchanged since bbbbbbb")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an 'unchanged since' re-post does not carry verified to a new head -> keeps waiting" timeout 2
+
+# A Greptile run on the head, in any state, means Greptile is (or was) reviewing it: wait and score.
+for st in QUEUED IN_PROGRESS COMPLETED; do
+  ver_case "ver-greptile-$st" "$CFG_FL" 3/5 bbbbbbb ahead \
+    "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]"), $(cr_suite greptile-apps "[$(gr_run "$st")]")]" '[]'
+  run_tool "$WFR" 7 "${FAST[@]}"
+  expect "verified: a $st Greptile Review run on the head -> keeps waiting" timeout 2
+done
+# ...matched by App, as the merge gate matches it: another App's same-named run is not Greptile's.
+ver_case ver-greptile-name-other-app "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]"), $(cr_suite someone-else "[$(gr_run IN_PROGRESS)]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a Greptile Review run from another App does not hold it -> approved" approved 0
+# ...and with rung 0 on Greptile's own run, a pending one keeps the wait going there too.
+ver_case ver-rung0-pending "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]"), $(cr_suite greptile-apps "[$(gr_run IN_PROGRESS)]")]" '[]'
+write_config "$CFG_FL_RUNG0"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified, rung 0: a pending Greptile run on the head -> keeps waiting" timeout 2
+ver_case ver-greptile-truncated "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]"), $(cr_suite greptile-apps '[]' true)]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a truncated Greptile Review run list -> keeps waiting" timeout 2
+
+# Someone asked Greptile for a round after VR's round started: that round is waited for.
+ver_case ver-human-request "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@GreptileAI review", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a person's @greptileai since VR's round started -> keeps waiting" timeout 2
+ver_case ver-old-request "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: the request that produced Greptile's verdict, before VR's round -> approved" approved 0
+# ...in a submitted review body too, whatever its state. (VR-c1726d45)
+ver_case ver-review-request "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.reviews = [{author: {login: "alice"}, state: "COMMENTED", body: "@greptileai review", submittedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a person's review body with @greptileai after the cutoff -> not approved"
+# ...and from the head's commit, not only from VR's round: a request made after the push but before
+# VR's round started may still be on its way to Greptile. (VR-5cfeb6e0)
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-request-before-round "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request after the head commit but before VR's round started -> not approved"
+# ...and in an inline review comment, a reply in a resolved thread included. (VR-c1726d45, round 2)
+RESOLVED_THREAD='[{"resolved":true,"path":"a.py","line":3,"body":"P1 something"}]'
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-inline-request "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]" "$RESOLVED_THREAD"
+printf '%s' '[{"user":{"login":"alice"},"body":"thanks @greptileai review","created_at":"2026-10-16T00:05:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a person's inline reply with @greptileai in a resolved thread after the cutoff -> not approved"
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-inline-edited "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" "$RESOLVED_THREAD"
+printf '%s' '[{"user":{"login":"alice"},"body":"@greptileai review","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an inline comment edited to ask for a round after the cutoff -> not approved"
+ver_case ver-inline-old "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" "$RESOLVED_THREAD"
+printf '%s\n%s' '[{"user":{"login":"alice"},"body":"@greptileai review","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-15T00:00:00Z"}]' \
+  '[{"user":{"login":"greptile-apps[bot]"},"body":"Tag @greptileai to ask","created_at":"2026-10-16T00:05:00Z","updated_at":"2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an old inline request before the cutoff and a bot's inline text (two pages) -> approved" approved 0
+ver_case ver-inline-fails "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '[]' >"$STUB_DIR/inline"
+touch "$STUB_DIR/inline.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an inline-comment read that fails keeps waiting" timeout 2
+# A request posted while the verified read runs (here: during its check-run read) is still seen: the
+# request sources are read last. (VR-c5963309)
+ver_case ver-request-late "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '#!/usr/bin/env bash\nf="%s/prview"\njq -c %q "$f" >"$f.new" && mv "$f.new" "$f"\n' "$STUB_DIR" \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]' >"$STUB_DIR/gatehook"
+chmod +x "$STUB_DIR/gatehook"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request that appears only during the check-run read -> not approved"
+# Edited items count from their last edit. (VR-74edbdc1)
+ver_case ver-edited-comment "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z", updatedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an old issue comment edited to ask for a round after the cutoff -> not approved"
+ver_case ver-edited-review "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.reviews = [{author: {login: "alice"}, state: "COMMENTED", body: "@greptileai review", submittedAt: "2026-10-15T00:00:00Z", lastEditedAt: "2026-10-16T00:05:00Z", updatedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an old review body edited to ask for a round after the cutoff -> not approved"
+ver_case ver-undated-review "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"author":{"login":"alice"},"body":"@greptileai review","submittedAt":null,"lastEditedAt":null,"updatedAt":null}]}}}}}' >"$STUB_DIR/reviewsgql"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request with no readable time counts as recent -> not approved"
+ver_case ver-reviews-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"errors":[{"message":"x"}]}' >"$STUB_DIR/reviewsgql"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an unreadable reviews read keeps waiting" timeout 2
+ver_case ver-issue-comments-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '[]' >"$STUB_DIR/issuecomments"
+touch "$STUB_DIR/issuecomments.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a failed issue-comments read keeps waiting" timeout 2
+# A future-dated head commit cannot hide requests: the head's check suites bound the cutoff.
+# (VR-2184980a)
+COMMIT_DATE=2030-01-01T00:00:00Z SUITE_DATE=2026-10-16T00:00:00Z ver_case ver-future-commit "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:00:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a future-dated head commit does not hide a request after the push -> not approved"
+ver_case ver-no-suite-date "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=none; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]")]")" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: no readable check-suite time keeps waiting" timeout 2
+# ...nor can the head's only suite being VR's own, made at the round's start: the final reviewer's run
+# on the verdict commit predates the push. (VR-2184980a, round 4)
+COMMIT_DATE=2030-01-01T00:00:00Z ver_case ver-only-vr-suite "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:10:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:01:00Z"}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a future commit and only VR's suite (made at the round start) do not hide a request -> not approved"
+# ...nor can a retry of the final reviewer's run on G: every run is read, not only the latest.
+# (Greptile on maintainerd#153)
+COMMIT_DATE=2030-01-01T00:00:00Z ver_case ver-verdict-retried "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:10:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:07:00Z"}]}' >"$STUB_DIR/verdictruns"
+printf '%s' '{"total_count":2,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:07:00Z"},{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:01:00Z"}]}' >"$STUB_DIR/verdictrunsall"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a retried Greptile run on the verdict commit does not hide a request -> not approved"
+ver_case ver-no-verdict-run "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"someone-else"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: no Greptile run of its own on the verdict commit keeps waiting" timeout 2
+ver_case ver-verdict-run-undated "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":null}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a Greptile run on the verdict commit with no readable start keeps waiting" timeout 2
+ver_case ver-verdict-runs-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '{}' >"$STUB_DIR/verdictruns"
+touch "$STUB_DIR/verdictruns.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a failed read of the verdict commit's runs keeps waiting" timeout 2
+# Git committer dates keep their offset: one is read as the time it names, not refused.
+COMMIT_DATE=2026-10-15T20:00:00+08:00 ver_case ver-offset-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a committer date with an offset is read, and an older request does not hold it -> approved" approved 0
+# A busy PR's comments outgrow one argument (128 KiB): they go through pipes. (VR-5cfeb6e0)
+ver_case ver-big-inline "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+jq -n -c '[range(400) | {id: ., user: {login: "alice"}, body: ("x" * 500), path: "a.py", line: 3,
+  created_at: "2026-10-16T00:05:00Z", updated_at: "2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+[ "$(wc -c <"$STUB_DIR/inline")" -gt 131072 ] && ok "verified: the big inline fixture is over 128 KiB" ||
+  bad "verified: big inline fixture" "$(wc -c <"$STUB_DIR/inline") bytes"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a 200 KB inline comment list with no request still approves" approved 0
+COMMIT_DATE=none ver_case ver-no-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an unreadable head commit date keeps waiting, never approves" timeout 2
+ver_case ver-bot-mention "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "greptile-apps"}, body: "Tag @greptileai to ask questions", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a reviewer's own text naming the mention is not a request -> approved" approved 0
+
+ver_case ver-open-thread "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" "$THREAD_OPEN"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an open thread blocks it -> keeps waiting" timeout 2
+
+ver_case ver-not-ancestor "$CFG_FL" 3/5 bbbbbbb diverged "$VER_SUITES" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: Greptile's commit is not an ancestor of the head -> keeps waiting" timeout 2
+
+ver_case ver-compare-fails "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+touch "$STUB_DIR/compare.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an unreadable ancestry check -> keeps waiting" timeout 2
+
+ver_case ver-late-head "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf 'cccccccc33333333333333333333333333333333' >"$STUB_DIR/prhead"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a head that moved by the re-read -> keeps waiting" timeout 2
+
+# Reads 1-3 are the poll's and fl_read's; the 4th, the Greptile Review read, shows a new thread.
+ver_case ver-late-thread "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+mv "$STUB_DIR/threads" "$STUB_DIR/threads.1"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.2"
+cp "$STUB_DIR/threads.1" "$STUB_DIR/threads.3"
+jq -c "$LATE_THREAD" "$STUB_DIR/threads.1" >"$STUB_DIR/threads.4"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a thread that only the last (Greptile Review) read shows is never approved over"
+
+ver_case ver-changes-requested "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' '.reviewDecision = "CHANGES_REQUESTED"'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a human's changes-requested still blocks"
+
+# A below-bar score on the head itself is Greptile's word on the head: findings, as before.
+ver_case ver-score-on-head "$CFG_FL" 3/5 aaaaaaa ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$(ver_json "$HEAD_SHA" true "\"$HEAD_SHA\"")")]")]" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a below-bar score on the head is not verified away -> findings:0" findings:0 1
+
+ver_case ver-late "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '4' >"$STUB_DIR/flsleep"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a read that ends past the deadline -> timeout, not approved" timeout 2
+
+ver_case ver-default-mode "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+write_config '{"review":{"approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified, inert: without review.mode first-line the same data keeps waiting" timeout 2
 
 new_case fl-final-on-head
 write_config "$CFG_FL"

@@ -596,7 +596,9 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   even when an older run completed. Check suites or runs truncated by the query's page limits also
   keep the wait going rather than letting the lower rungs decide. A shadow-mode run (conclusion `NEUTRAL`, or `"mode": "shadow"` in its JSON) is never a verdict and is ignored the same way. A run whose text is missing or does not parse (non-integer score, no sha, no JSON) is
   ignored so the lower rungs — the body block, then the bot's comment, then its review — decide.
-  Unset = no check-run query is sent and behaviour is unchanged.
+  Unset = no check-run query is sent and behaviour is unchanged. (Separately, in first-line mode the
+  verified read below looks for a run of this name, `"Greptile Review"` when unset, from a
+  `review.bots` App on the head; see `review.firstLine.*`.)
 - `review.blockMarker` *(optional; default `"<!-- greptile_comment -->"`)* — the opening marker of the
   score block in the PR description that `wait-for-review.sh` scopes its
   search to. The closing marker is derived by adding a slash (`<!-- /greptile_comment -->`). The
@@ -765,10 +767,37 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   (the last with an issue reference); the first-line reviewer holds its hand-off until they are
   answered. The verdict JSON in the check run's `output.text` is
   `{score, max, reviewed_sha, round, mode: "first-line", open: {p0,p1,p2}, findings: [ids],
-  disputed: [ids], escalated: [ids], happy: bool, greptile_requested: sha|null}`; a title beginning
+  disputed: [ids], escalated: [ids], happy: bool, greptile_requested: sha|null,
+  gate_fix_verified?: {verdict_sha, score, findings, delta_lines}}`; a title beginning
   `Needs maintainer: P0 dispute` also marks an escalation, `Review unavailable` an unavailable
   reviewer, and `unchanged since` a pure-rebase re-post that counts as the earlier round's verdict.
   **Happy is the reviewer's to compute**; nothing here recomputes it.
+
+  **Covered and verified staleness** (`wait-for-review.sh`'s default stage, first-line mode only).
+  *Covered*: a final-review score at or above the threshold on an ancestor of the head still yields
+  `approved` (with a `covered:` line) when no review thread is open and the first-line reviewer is
+  happy on the head. *Verified* (foreman's `docs/design/vr-one-greptile-round.md` §3-§4, inert until
+  the reviewer publishes it): a score **below** the threshold on an ancestor G yields `approved` (with
+  a `verified:` line) when the first-line reviewer's check run on the head (`checkName` from
+  `checkApp`, concluded `success`, happy, `reviewed_sha` the head itself) carries
+  `"gate_fix_verified": {"verdict_sha": G, ...}`: it confirmed each final-review finding on G fixed
+  and asked for no second round. The summary comment's `Verified:` line is never read, since anyone
+  can write a comment. Verified also needs exactly one published score, G a proper ancestor of the
+  head, no open review thread and no "changes requested", and no check run named
+  `review.checkName` (default `"Greptile Review"`) from a `review.bots` App on the head, in any
+  state: a final review of the head is waited for and scored as usual. Read last, right before
+  approving: no issue comment, review body or inline review comment (a reply in a resolved thread
+  included) by anyone but the reviewers carries the `review.rereviewCommand` mention, dated from its
+  last edit, at or after the cutoff. The cutoff is the earliest of that round's start, the head
+  commit's committer date, the head's earliest check suite and the start of the final reviewer's
+  own `review.checkName` run on G (from a `review.bots` App). Those last two are GitHub's times, and
+  the run on G predates the head's push, so a future-dated commit cannot hide a request: any
+  person's request since the final reviewer took up G counts. An item with no readable time counts
+  as recent, and any read that fails, no such run on G, or a cutoff that cannot be read keeps the
+  wait going. Both read the head, decision, threads
+  and scores again before approving, as for mechanical commits, and neither is reported past the
+  deadline. Any doubt keeps the wait going, as without them. `address-review`
+  treats both alike: no re-review request, no waiting.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file
   to update (`notesFile`), an optional README section to sync (`readmeSection`), and whether to
