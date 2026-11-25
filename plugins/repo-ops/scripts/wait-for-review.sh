@@ -50,6 +50,17 @@
 # again: any change since the poll's read (a new below-bar score included) is not covered. Judging
 # whether that score carried a P1 is the merge gate's job, as it is for a score on the head.
 #
+# Verified (first-line mode, default stage): a score BELOW the threshold on an ancestor G of the head
+# also yields `approved` when the first-line reviewer verified the final reviewer's fixes instead of
+# asking it for a second round (foreman's docs/design/vr-one-greptile-round.md §3-§4). The evidence
+# is the first-line reviewer's check run on the head, never the "Verified:" text of its summary
+# comment: from its App, concluded SUCCESS, happy, naming the head, and carrying
+# "gate_fix_verified": {"verdict_sha": G, ...}. No review thread may be open, nobody but the reviewers
+# may have posted the re-review mention since that round started, and the head may carry no check run
+# of review.checkName (default "Greptile Review") from a review.bots App, in any state: a final review
+# of the head is waited for and scored as usual. The same re-reads as covered staleness apply, the
+# check-run read comes last, and a second detail line (`verified:`) says so. Any doubt waits as before.
+#
 # Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
 # score names the head", so an approval still needs a happy first-line round on the head, and open
 # threads are reported as findings): a score at or above the threshold on an
@@ -161,6 +172,11 @@ if [ "$(cfg '.review.mode' '')" = "first-line" ]; then
   FL_APP="$(cfg '.review.firstLine.checkApp' 'vycari-review')"
   FL_UNAVAILABLE_MIN="$(cfg '.review.firstLine.unavailableMinutes' '45')"
   is_uint "$FL_UNAVAILABLE_MIN" || die 3 "review.firstLine.unavailableMinutes must be a non-negative integer"
+  # The verified read (verified_by_first_line): the final reviewer's own check run, by the name the
+  # merge gate reads it by (review.checkName, default "Greptile Review") and owned by an App whose
+  # slug is a review.bots login, and the mention that asks it for a round.
+  FL_GATE_CHECK="$(cfg '.review.checkName' 'Greptile Review')"
+  FL_REREVIEW="$(cfg '.review.rereviewCommand' '@greptileai review')"
 fi
 [ "$STAGE" != "vr" ] || [ "$FIRST_LINE" = "1" ] ||
   die 3 "--stage vr needs review.mode \"first-line\" in the repository's config"
@@ -189,6 +205,14 @@ BOTS_JSON="$(printf '%s' "$WAIT_CONFIG_JSON" | jq -c '
   if (.review // {}) | has("bots") then .review.bots else ["coderabbitai[bot]","gemini-code-assist[bot]"] end
   | if type == "array" then map('"$NORM_LOGIN"') else error("bots") end')" ||
   die 3 "review.bots must be an array of logins"
+# The reviewers' own logins (both stages), whose comments are never a person's re-review request.
+REVIEWER_LOGINS_JSON="$BOTS_JSON"
+if [ "$FIRST_LINE" = "1" ]; then
+  REVIEWER_LOGINS_JSON="$(printf '%s' "$WAIT_CONFIG_JSON" | jq -c --argjson b "$BOTS_JSON" '
+    ((.review // {}).firstLine // {}) | (if has("bots") then .bots else ["vycari-review[bot]"] end)
+    | if type == "array" then map(select(type == "string") | '"$NORM_LOGIN"') + $b else $b end')" ||
+    die 3 "review.firstLine.bots must be an array of logins"
+fi
 
 case "$THRESHOLD" in
   approved) THR_NUM="" THR_DEN="" ;;
@@ -305,11 +329,15 @@ check_run_score() {
 VR_KIND=""
 VR_N=0
 VR_DETAIL=""
+VR_RUN=""  # the run vr_read judged, and its verdict JSON (the verified read needs both)
+VR_JSON=""
 vr_read() {
   local run title json head="$2" reviewed requested
   VR_KIND="none"
   VR_N=0
   VR_DETAIL=""
+  VR_RUN=""
+  VR_JSON=""
   run="$(newest_check_run "$1" "$head" "$FL_APP" "$FL_NAME")" || return 0
   [ -n "$run" ] || return 0
   if [ "$run" = '"INCOMPLETE"' ]; then
@@ -346,6 +374,8 @@ vr_read() {
     LAST_ERR="first-line: the check run's output.text is not the first-line JSON contract"
     return 0
   fi
+  VR_RUN="$run"
+  VR_JSON="$json"
   # A pure-rebase re-post carries the earlier round's JSON on the new head: terminal for this head.
   # Any other verdict must name the head, or it is the previous head's.
   reviewed="$(printf '%s' "$json" | jq -r '.reviewed_sha // ""')"
@@ -748,8 +778,10 @@ covered_by_mechanical() {
 # that landed mid-poll, a moved head or a failed read fails it. When rung 0 needs its own read for
 # those scores, that read's threads and decision are held to MECH_THREADS and MECH_DECISION too. It is the last read before a covered
 # approval, so the verdict rests on it. Both covered-staleness paths read through it.
+FL_PR="" # fl_read's PR re-read, taken after the happy first-line read
 fl_read() {
   local vr_gql now_pr now_gql now_head
+  FL_PR=""
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
   # Every page carries the decision; each must still be the one the poll judged on.
@@ -761,6 +793,7 @@ fl_read() {
   now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
   now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
   [ "$now_head" = "$1 $MECH_DECISION" ] || return 1
+  FL_PR="$now_pr"
   # The scores are read as poll_once reads them: rung 0 needs its own check name's runs; without
   # rung 0, a fresh first-line read carries the description's last editor. Either way this read is
   # taken after the PR re-read, so it must not show a thread or a decision the poll did not judge on:
@@ -816,6 +849,76 @@ covered_by_first_line() {
   fl_read "$head" || return 1
   [ "$VR_KIND" = "happy" ] || return 1
   COVERED_NOTE="  covered: $first; first-line reviewer happy on ${head:0:7}"
+  return 0
+}
+
+# verified_by_first_line <scores> <head> — a verified hand-off (first-line mode only; foreman's
+# docs/design/vr-one-greptile-round.md §3-§4). The final reviewer reviewed an ANCESTOR G of the head
+# once and scored it below the bar; the first-line reviewer then confirmed each of its findings fixed
+# on the head and asked for no second round. True only when all of these hold, on reads taken in
+# this order, the last one last:
+#   - exactly one score is published, from the bot ladder (not rung 0), it names a commit G, and it
+#     is below the bar with the bar's denominator (at or above it is plain covered staleness);
+#   - fl_read: the first-line reviewer is happy on the head, with the same open threads, review
+#     decision, head and scores the poll judged on;
+#   - that run concluded SUCCESS, its JSON names the head itself (an "unchanged since" re-post is not
+#     enough here), and carries gate_fix_verified whose verdict_sha is G (as a prefix, either way);
+#   - G is a proper ancestor of the head (compare: ahead);
+#   - no comment by anyone but the reviewers (review.bots, review.firstLine.bots) carrying the
+#     review.rereviewCommand mention was posted since the first-line round started: someone asked for
+#     a final round, so it is waited for;
+#   - a last read of the head commit's check runs named review.checkName shows the head unmoved, the
+#     same threads and decision, nothing truncated, and no run by a review.bots App: a final review
+#     of the head, queued, running or done, means the head is the final reviewer's to score.
+# The comment text "Verified: ..." is never read: anyone can write a comment, only the App writes its
+# check run. Anything unreadable or doubtful is "not verified", and the poll keeps waiting as before.
+verified_by_first_line() {
+  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql
+  COVERED_NOTE=""
+  [ -n "$scores" ] || return 1
+  [ "$(printf '%s\n' "$scores" | grep -c .)" = "1" ] || return 1
+  line="$scores"
+  bot="${line%% *}"
+  case "$bot" in checkrun:*) return 1 ;; esac
+  score="$(printf '%s' "$line" | cut -d' ' -f2)"
+  reviewed="$(printf '%s' "$line" | cut -d' ' -f3 | tr 'A-F' 'a-f')"
+  [ -n "$reviewed" ] || return 1
+  ! is_head_sha "$reviewed" "$head" || return 1
+  num="${score%%/*}"
+  den="${score##*/}"
+  { is_uint "$num" && [ "$den" = "$THR_DEN" ] && [ "$num" -lt "$THR_NUM" ]; } || return 1
+  fl_read "$head" || return 1
+  [ "$VR_KIND" = "happy" ] || return 1
+  [ "$(printf '%s' "$VR_RUN" | jq -r '.conclusion // ""')" = "SUCCESS" ] || return 1
+  is_head_sha "$(printf '%s' "$VR_JSON" | jq -r '.reviewed_sha // ""')" "$head" || return 1
+  verdict="$(printf '%s' "$VR_JSON" | jq -r '
+    .gate_fix_verified | select(type == "object") | .verdict_sha
+    | select(type == "string" and test("^[0-9a-fA-F]{7,64}$")) | ascii_downcase' 2>/dev/null)" || return 1
+  [ -n "$verdict" ] || return 1
+  case "$verdict" in "$reviewed"*) ;; *) case "$reviewed" in "$verdict"*) ;; *) return 1 ;; esac ;; esac
+  [ "$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" --jq .status 2>/dev/null)" = "ahead" ] || return 1
+  started="$(printf '%s' "$VR_RUN" | jq -r '.startedAt // ""')"
+  [ -n "$started" ] || return 1
+  mention="$(printf '%s' "$FL_REREVIEW" | tr 'A-Z' 'a-z' | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^@/) { print $i; exit } }')"
+  [ -n "$mention" ] || mention="$(printf '%s' "$FL_REREVIEW" | tr 'A-Z' 'a-z')"
+  [ -n "$mention" ] || return 1
+  printf '%s' "$FL_PR" | jq -e --arg m "$mention" --arg t "$started" --argjson bots "$REVIEWER_LOGINS_JSON" '
+    [.comments[]? | select(((.createdAt // "") >= $t)
+        and ((.author.login // "" | '"$NORM_LOGIN"') as $a | any($bots[]; . == $a) | not)
+        and ((.body // "") | ascii_downcase | contains($m)))]
+    | length == 0' >/dev/null 2>&1 || return 1
+  gql="$(fetch_gql "$FL_GATE_CHECK")" || return 1
+  [ "$(unresolved_threads "$gql")" = "$MECH_THREADS" ] || return 1
+  printf '%s' "$gql" | jq -s -e --arg d "$MECH_DECISION" --arg head "$head" --arg name "$FL_GATE_CHECK" \
+    --argjson bots "$BOTS_JSON" '
+    [.[].data.repository.pullRequest] as $p
+    | ($p | all((.reviewDecision // "") == $d))
+      and ($p[0].commits.nodes | length == 1 and .[0].commit.oid == $head)
+      and ([$p[].commits.nodes[]?.commit.checkSuites]
+           | all(.pageInfo.hasNextPage != true and all(.nodes[]?; .checkRuns.pageInfo.hasNextPage != true))
+           and ([.[].nodes[]? | select((.app.slug // "") as $s | any($bots[]; . == $s))
+                 | .checkRuns.nodes[]? | select(.name == $name)] | length == 0))' >/dev/null 2>&1 || return 1
+  COVERED_NOTE="  verified: $bot $score on ${reviewed:0:7}; the first-line reviewer verified its fixes on ${head:0:7}, no final-review round needed"
   return 0
 }
 
@@ -1096,6 +1199,14 @@ poll_once() {
         # First-line mode only: nothing is open and the first-line reviewer is happy on the head.
         stale=0
       fi
+    fi
+    # Verified (first-line mode only): the bar was not met on an ancestor, and the first-line
+    # reviewer verified the final reviewer's fixes on the head instead of asking for a second round.
+    # It stands in for the met bar, the way covered staleness stands in for the head.
+    if [ "$stale" = "1" ] && [ "$all_met" = "0" ] && [ "$FIRST_LINE" = "1" ] && [ "$n" -eq 0 ] &&
+      [ "$decision" != "CHANGES_REQUESTED" ] && verified_by_first_line "$scores" "$head"; then
+      stale=0
+      all_met=1
     fi
     [ "$stale" = "0" ] || return 0
   fi
