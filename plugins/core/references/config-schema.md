@@ -789,9 +789,12 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   approving: no issue comment, review body or inline review comment (a reply in a resolved thread
   included) by anyone but the reviewers carries the `review.rereviewCommand` mention, dated from its
   last edit, at or after the cutoff. The cutoff is the earliest of that round's start, the head
-  commit's committer date and the head's earliest check suite (GitHub's time, so a future-dated
-  commit cannot hide a request). An item with no readable time counts as recent, and any read that
-  fails or a cutoff that cannot be read keeps the wait going. Both read the head, decision, threads
+  commit's committer date, the head's earliest check suite and the start of the final reviewer's
+  own `review.checkName` run on G (from a `review.bots` App). Those last two are GitHub's times, and
+  the run on G predates the head's push, so a future-dated commit cannot hide a request: any
+  person's request since the final reviewer took up G counts. An item with no readable time counts
+  as recent, and any read that fails, no such run on G, or a cutoff that cannot be read keeps the
+  wait going. Both read the head, decision, threads
   and scores again before approving, as for mechanical commits, and neither is reported past the
   deadline. Any doubt keeps the wait going, as without them. `address-review`
   treats both alike: no re-review request, no waiting.

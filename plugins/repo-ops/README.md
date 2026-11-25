@@ -283,7 +283,8 @@ is on that host. Both tools share this.
   `review.bots` App on the head, in any state; the same re-reads as covered staleness apply. Read
   last: no re-review mention from a person in an issue comment, review body or inline review
   comment, dated from its last edit, since the earliest of that round's start, the head's committer
-  date and its earliest check suite. Anything doubtful keeps waiting.
+  date, its earliest check suite and the start of the final reviewer's own run on G (which predates
+  the push). Anything doubtful keeps waiting.
 - **Mechanical commits** (any mode, `review.mechanicalCommits`): a score at or above the threshold on
   an ancestor G of the head is not stale when G..head is one linear chain of verified mechanical
   commits of one entry in the PR base's config (never one the PR adds): right author and committer, GitHub-verified, trailer present,

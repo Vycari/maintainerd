@@ -60,8 +60,9 @@
 # final review of the head is waited for and scored as usual. The same re-reads as covered staleness
 # apply, then that check-run read, and last a read of every place a person can ask for a final round
 # (issue comments, review bodies, inline review comments, each dated from its last edit): a request
-# by anyone but the reviewers since the earliest of the round's start, the head's committer date and
-# its earliest check suite's creation keeps the wait going. A second detail line (`verified:`) says
+# by anyone but the reviewers since the earliest of the round's start, the head's committer date, its
+# earliest check suite's creation and the start of the final reviewer's own run on G (which predates
+# the push) keeps the wait going. A second detail line (`verified:`) says
 # so. Any doubt waits as before.
 #
 # Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
@@ -912,15 +913,16 @@ no_rereview_request() {
 #   - a read of the head commit's check runs named review.checkName shows the head unmoved, the same
 #     threads and decision, nothing truncated, and no run by a review.bots App: a final review of the
 #     head, queued, running or done, means the head is the final reviewer's to score. The same read
-#     gives the cutoff: the earliest of the round's start, the head's committer date and its
-#     earliest check suite's creation (GitHub's time, which the pusher cannot set);
+#     gives the cutoff: the earliest of the round's start, the head's committer date, its earliest
+#     check suite's creation and the start of the final reviewer's own run on G (read before it;
+#     GitHub's times, which the pusher cannot set, and the last predates the push);
 #   - last, no_rereview_request: no issue comment, review body or inline review comment by anyone
 #     but the reviewers carries the review.rereviewCommand mention, dated from its last edit, at or
 #     after the cutoff. Someone asked for a final round, so it is waited for.
 # The comment text "Verified: ..." is never read: anyone can write a comment, only the App writes its
 # check run. Anything unreadable or doubtful is "not verified", and the poll keeps waiting as before.
 verified_by_first_line() {
-  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql cut
+  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql cut g graw gstart
   COVERED_NOTE=""
   [ -n "$scores" ] || return 1
   [ "$(printf '%s\n' "$scores" | grep -c .)" = "1" ] || return 1
@@ -944,6 +946,20 @@ verified_by_first_line() {
   [ -n "$verdict" ] || return 1
   case "$verdict" in "$reviewed"*) ;; *) case "$reviewed" in "$verdict"*) ;; *) return 1 ;; esac ;; esac
   [ "$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" --jq .status 2>/dev/null)" = "ahead" ] || return 1
+  # When the final reviewer started its review of G: the start of its own review.checkName run on G,
+  # from a review.bots App (the earliest, when there are several). GitHub records it, G is an ancestor
+  # of the head, so it predates the head's push whatever the head's own dates say. No such run, or
+  # no readable start, is "not verified" (design §3 condition 2 needs that run anyway).
+  g="$verdict"
+  [ "${#reviewed}" -le "${#verdict}" ] || g="$reviewed"
+  graw="$(gh api "repos/$WAIT_REPO/commits/$g/check-runs" --method GET -f check_name="$FL_GATE_CHECK" --paginate 2>/dev/null)" || return 1
+  gstart="$(printf '%s' "$graw" | jq -s -r --arg name "$FL_GATE_CHECK" --argjson bots "$BOTS_JSON" "$JQ_TS"'
+    if all(.[]; (.check_runs | type) == "array") | not then empty
+    else [.[].check_runs[] | select(.name == $name)
+          | select((.app.slug // "") as $s | any($bots[]; . == $s)) | .started_at | ts]
+      | if length == 0 or any(.[]; . == null) then empty else min | floor end
+    end' 2>/dev/null)" || return 1
+  is_uint "$gstart" || return 1
   started="$(printf '%s' "$VR_RUN" | jq -r '.startedAt // ""')"
   [ -n "$started" ] || return 1
   mention="$(printf '%s' "$FL_REREVIEW" | tr 'A-Z' 'a-z' | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^@/) { print $i; exit } }')"
@@ -961,17 +977,19 @@ verified_by_first_line() {
            and ([.[].nodes[]? | select((.app.slug // "") as $s | any($bots[]; . == $s))
                  | .checkRuns.nodes[]? | select(.name == $name)] | length == 0))' >/dev/null 2>&1 || return 1
   # The cutoff for a person's request: the earliest of the first-line round's start, the head
-  # commit's committer date and the head's earliest check suite. The committer date alone is the
-  # pusher's to set (a future one would hide every request); a check suite's creation time is
-  # GitHub's. Anything unreadable is "not verified".
-  cut="$(printf '%s' "$gql" | jq -s -r --arg s "$started" "$JQ_TS"'
+  # commit's committer date, the head's earliest check suite and the final reviewer's run on G. The
+  # committer date alone is the pusher's to set (a future one would hide every request), and the
+  # head's only suite may be the first-line reviewer's own, made at the round's start; the run on G
+  # predates the push, so any person's request since the final reviewer took up G counts. Anything
+  # unreadable is "not verified".
+  cut="$(printf '%s' "$gql" | jq -s -r --arg s "$started" --argjson g "$gstart" "$JQ_TS"'
     [.[].data.repository.pullRequest.commits.nodes[]?.commit] as $c
     | [$c[].committedDate | ts] as $cd
     | [$c[].checkSuites.nodes[]? | .createdAt | ts] as $su
     | ($s | ts) as $st
     | if $st == null or ($cd | length) == 0 or any($cd[]; . == null)
          or ($su | length) == 0 or any($su[]; . == null)
-      then empty else [$st] + $cd + $su | min | floor end' 2>/dev/null)" || return 1
+      then empty else [$st, $g] + $cd + $su | min | floor end' 2>/dev/null)" || return 1
   is_uint "$cut" || return 1
   # Read last, right before approving: a request posted while the reads above ran is still seen.
   no_rereview_request "$cut" "$mention" || return 1

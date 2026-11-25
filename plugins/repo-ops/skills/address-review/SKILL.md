@@ -536,8 +536,8 @@ the response loop is the one in Phases 1-6, with these differences:
   score's commit), never the `Verified:` line of a summary comment, which anyone can write; a
   `Verified:` comment the script does not confirm is a stale score, waited on as before. A final
   review of the head that is queued or running, or a person's re-review mention (an issue comment,
-  review body or inline review comment, dated from its last edit, since the head was pushed or VR's
-  round started, whichever is earlier), keeps it waiting.
+  review body or inline review comment, dated from its last edit, since the final reviewer took up
+  the commit it scored), keeps it waiting.
 
 ### Exit
 

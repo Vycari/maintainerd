@@ -146,6 +146,13 @@ case "$1 $2" in
   "api repos/"*"/activity"*) serve activity ;;
   # The PR's inline review comments (the verified read): none unless a case serves some.
   "api repos/"*"/pulls/"*"/comments"*) if ls "$STUB_DIR"/inline* >/dev/null 2>&1; then serve inline; else echo '[]'; fi ;;
+  # The final reviewer's own runs on the verdict commit (the verified read): the "verdictruns"
+  # fixture, else one Greptile Review run by greptile-apps started at 2026-10-15T06:00:00Z.
+  "api repos/"*"/commits/"*"/check-runs"*)
+    if ls "$STUB_DIR"/verdictruns* >/dev/null 2>&1; then serve verdictruns; else
+      echo '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}'
+    fi
+    ;;
   # Its issue comments (the verified read): the "issuecomments" fixture, else the PR fixture's
   # comments as they stand now, in REST's shape.
   "api repos/"*"/issues/"*"/comments"*)
@@ -1494,6 +1501,27 @@ ver_case ver-no-suite-date "$CFG_FL" 3/5 bbbbbbb ahead \
   "$(SUITE_DATE=none; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]")]")" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "verified: no readable check-suite time keeps waiting" timeout 2
+# ...nor can the head's only suite being VR's own, made at the round's start: the final reviewer's run
+# on the verdict commit predates the push. (VR-2184980a, round 4)
+COMMIT_DATE=2030-01-01T00:00:00Z ver_case ver-only-vr-suite "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:10:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:01:00Z"}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a future commit and only VR's suite (made at the round start) do not hide a request -> not approved"
+ver_case ver-no-verdict-run "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"someone-else"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: no Greptile run of its own on the verdict commit keeps waiting" timeout 2
+ver_case ver-verdict-run-undated "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":null}]}' >"$STUB_DIR/verdictruns"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a Greptile run on the verdict commit with no readable start keeps waiting" timeout 2
+ver_case ver-verdict-runs-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '{}' >"$STUB_DIR/verdictruns"
+touch "$STUB_DIR/verdictruns.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a failed read of the verdict commit's runs keeps waiting" timeout 2
 # Git committer dates keep their offset: one is read as the time it names, not refused.
 COMMIT_DATE=2026-10-15T20:00:00+08:00 ver_case ver-offset-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
   '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z"}]'
