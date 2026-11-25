@@ -8,7 +8,7 @@
 # lowest acceptable value, not a value to beat.
 #
 # Canonical source: maintainerd, plugins/core/scripts/coverage-check.sh
-# maintainerd-core: 0.6.40
+# maintainerd-core: 0.6.41
 # A consuming repo carries a copy at .claude/maintainerd/coverage-check.sh so CI can run
 # it without the plugin installed. The `maintainerd-core:` line above is the version this
 # copy was taken from; the release tooling rewrites it, and `doctor` compares it with the

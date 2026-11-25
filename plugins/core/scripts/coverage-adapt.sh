@@ -6,7 +6,7 @@
 #     {"metric": "lines", "percent": <float>}
 #
 # Canonical source: maintainerd, plugins/core/scripts/coverage-adapt.sh
-# maintainerd-core: 0.6.40
+# maintainerd-core: 0.6.41
 # A consuming repo carries a copy at .claude/maintainerd/coverage-adapt.sh so CI can run
 # it without the plugin installed. The `maintainerd-core:` line above is the version this
 # copy was taken from; the release tooling rewrites it, and `doctor` compares it with the
