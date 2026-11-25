@@ -148,8 +148,11 @@ case "$1 $2" in
   "api repos/"*"/pulls/"*"/comments"*) if ls "$STUB_DIR"/inline* >/dev/null 2>&1; then serve inline; else echo '[]'; fi ;;
   # The final reviewer's own runs on the verdict commit (the verified read): the "verdictruns"
   # fixture, else one Greptile Review run by greptile-apps started at 2026-10-15T06:00:00Z.
+  # A "verdictrunsall" fixture is served only to a read that asks for every run (filter=all), as
+  # GitHub's default (filter=latest) keeps only the newest run per name.
   "api repos/"*"/commits/"*"/check-runs"*)
-    if ls "$STUB_DIR"/verdictruns* >/dev/null 2>&1; then serve verdictruns; else
+    if [ -e "$STUB_DIR/verdictrunsall" ] && [[ "$*" == *"filter=all"* ]]; then cat "$STUB_DIR/verdictrunsall"
+    elif ls "$STUB_DIR"/verdictruns* >/dev/null 2>&1; then serve verdictruns; else
       echo '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}'
     fi
     ;;
@@ -1509,6 +1512,15 @@ COMMIT_DATE=2030-01-01T00:00:00Z ver_case ver-only-vr-suite "$CFG_FL" 3/5 bbbbbb
 printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:01:00Z"}]}' >"$STUB_DIR/verdictruns"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect_not_approved "verified: a future commit and only VR's suite (made at the round start) do not hide a request -> not approved"
+# ...nor can a retry of the final reviewer's run on G: every run is read, not only the latest.
+# (Greptile on maintainerd#153)
+COMMIT_DATE=2030-01-01T00:00:00Z ver_case ver-verdict-retried "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:10:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:07:00Z"}]}' >"$STUB_DIR/verdictruns"
+printf '%s' '{"total_count":2,"check_runs":[{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:07:00Z"},{"name":"Greptile Review","app":{"slug":"greptile-apps"},"status":"completed","conclusion":"success","started_at":"2026-10-16T00:01:00Z"}]}' >"$STUB_DIR/verdictrunsall"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a retried Greptile run on the verdict commit does not hide a request -> not approved"
 ver_case ver-no-verdict-run "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
 printf '%s' '{"total_count":1,"check_runs":[{"name":"Greptile Review","app":{"slug":"someone-else"},"status":"completed","conclusion":"success","started_at":"2026-10-15T06:00:00Z"}]}' >"$STUB_DIR/verdictruns"
 run_tool "$WFR" 7 "${FAST[@]}"

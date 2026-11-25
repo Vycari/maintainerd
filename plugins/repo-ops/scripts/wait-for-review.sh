@@ -948,11 +948,12 @@ verified_by_first_line() {
   [ "$(gh api "repos/$WAIT_REPO/compare/$reviewed...$head" --jq .status 2>/dev/null)" = "ahead" ] || return 1
   # When the final reviewer started its review of G: the start of its own review.checkName run on G,
   # from a review.bots App (the earliest, when there are several). GitHub records it, G is an ancestor
-  # of the head, so it predates the head's push whatever the head's own dates say. No such run, or
-  # no readable start, is "not verified" (design §3 condition 2 needs that run anyway).
+  # of the head, so it predates the head's push whatever the head's own dates say. Every run on G is
+  # read (filter=all: GitHub's default keeps only the latest, and a retry would hide the first). No
+  # such run, or no readable start, is "not verified" (design §3 condition 2 needs that run anyway).
   g="$verdict"
   [ "${#reviewed}" -le "${#verdict}" ] || g="$reviewed"
-  graw="$(gh api "repos/$WAIT_REPO/commits/$g/check-runs" --method GET -f check_name="$FL_GATE_CHECK" --paginate 2>/dev/null)" || return 1
+  graw="$(gh api "repos/$WAIT_REPO/commits/$g/check-runs" --method GET -f check_name="$FL_GATE_CHECK" -f filter=all --paginate 2>/dev/null)" || return 1
   gstart="$(printf '%s' "$graw" | jq -s -r --arg name "$FL_GATE_CHECK" --argjson bots "$BOTS_JSON" "$JQ_TS"'
     if all(.[]; (.check_runs | type) == "array") | not then empty
     else [.[].check_runs[] | select(.name == $name)
