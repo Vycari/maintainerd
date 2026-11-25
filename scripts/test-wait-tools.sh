@@ -49,6 +49,15 @@ serve() {
   cat "$f"
   [ ! -f "$f.fail" ] || exit 1
 }
+# cur_prview — the PR fixture as it stands now (the one the last poll read, its sequence not advanced).
+cur_prview() {
+  local n f
+  n="$(cat "$STUB_DIR/.count.prview" 2>/dev/null || echo 1)"
+  f="$STUB_DIR/prview.$n"
+  [ -f "$f" ] || f="$STUB_DIR/prview"
+  [ -f "$f" ] || f="$(ls "$STUB_DIR"/prview.[0-9]* 2>/dev/null | sort | tail -n 1)"
+  printf '%s' "$f"
+}
 echo "$*" >>"$STUB_DIR/.calls"
 echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
 case "$1 $2" in
@@ -78,6 +87,16 @@ case "$1 $2" in
     esac
     ;;
   "api graphql")
+    # The verified read's reviews query: the "reviewsgql" fixture, else the PR fixture's reviews as
+    # they stand now (with their edit times).
+    case "$*" in *"reviews(first:100"*)
+      if ls "$STUB_DIR"/reviewsgql* >/dev/null 2>&1; then serve reviewsgql; exit $?; fi
+      jq -c '{data: {repository: {pullRequest: {reviews: {pageInfo: {hasNextPage: false, endCursor: null},
+        nodes: [.reviews[]? | {author, body, submittedAt, lastEditedAt: (.lastEditedAt // null),
+                               updatedAt: (.updatedAt // .submittedAt)}]}}}}}' "$(cur_prview)"
+      exit 0
+      ;;
+    esac
     # flsleep: the first-line reviewer's check-run read is slow by that many seconds.
     # flhook: an executable run on that read, before it is served (a score that lands mid-poll).
     # rung0late: a jq filter applied to the second and later rung-0 (Greptile Review) reads, so a
@@ -87,6 +106,8 @@ case "$1 $2" in
       [ ! -x "$STUB_DIR/flhook" ] || "$STUB_DIR/flhook"
       ;;
     *"checkName=Greptile Review"*)
+      # gatehook: an executable run on this read, before it is served (a request posted meanwhile).
+      [ ! -x "$STUB_DIR/gatehook" ] || "$STUB_DIR/gatehook"
       if [ -f "$STUB_DIR/rung0late" ]; then
         n=$(($(cat "$STUB_DIR/.count.rung0" 2>/dev/null || echo 0) + 1))
         printf '%s' "$n" >"$STUB_DIR/.count.rung0"
@@ -125,6 +146,14 @@ case "$1 $2" in
   "api repos/"*"/activity"*) serve activity ;;
   # The PR's inline review comments (the verified read): none unless a case serves some.
   "api repos/"*"/pulls/"*"/comments"*) if ls "$STUB_DIR"/inline* >/dev/null 2>&1; then serve inline; else echo '[]'; fi ;;
+  # Its issue comments (the verified read): the "issuecomments" fixture, else the PR fixture's
+  # comments as they stand now, in REST's shape.
+  "api repos/"*"/issues/"*"/comments"*)
+    if ls "$STUB_DIR"/issuecomments* >/dev/null 2>&1; then serve issuecomments; else
+      jq -c '[.comments[]? | {user: {login: (.author.login // "")}, body, created_at: .createdAt,
+        updated_at: (.updatedAt // .createdAt)}]' "$(cur_prview)"
+    fi
+    ;;
   "run view") serve joblog ;;
   "repo view")
     # STUB_REPO_HOST: the host of the checkout's repository (default github.com).
@@ -709,9 +738,11 @@ cr_run() { # <databaseId> <status> [text] — a "Vycari Review" run; QUEUED carr
       conclusion: null, startedAt: null, completedAt: null, text: null}'
   fi
 }
+# SUITE_DATE (env, optional): the suite's createdAt (default 2026-10-15T12:00:00Z); "none" leaves it out.
 cr_suite() { # <slug> <runs-json-array> [runs-hasNextPage]
-  jq -n -c --arg slug "$1" --argjson runs "$2" --argjson more "${3:-false}" \
-    '{app: {slug: $slug}, checkRuns: {pageInfo: {hasNextPage: $more}, nodes: $runs}}'
+  jq -n -c --arg slug "$1" --argjson runs "$2" --argjson more "${3:-false}" --arg cd "${SUITE_DATE:-2026-10-15T12:00:00Z}" \
+    '{app: {slug: $slug}, checkRuns: {pageInfo: {hasNextPage: $more}, nodes: $runs}}
+     + (if $cd == "none" then {} else {createdAt: $cd} end)'
 }
 
 new_case cr-queued-rerun-hides-older-pass
@@ -1422,6 +1453,60 @@ printf '[]' >"$STUB_DIR/inline"
 touch "$STUB_DIR/inline.fail"
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "verified: an inline-comment read that fails keeps waiting" timeout 2
+# A request posted while the verified read runs (here: during its check-run read) is still seen: the
+# request sources are read last. (VR-c5963309)
+ver_case ver-request-late "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '#!/usr/bin/env bash\nf="%s/prview"\njq -c %q "$f" >"$f.new" && mv "$f.new" "$f"\n' "$STUB_DIR" \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]' >"$STUB_DIR/gatehook"
+chmod +x "$STUB_DIR/gatehook"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request that appears only during the check-run read -> not approved"
+# Edited items count from their last edit. (VR-74edbdc1)
+ver_case ver-edited-comment "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z", updatedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an old issue comment edited to ask for a round after the cutoff -> not approved"
+ver_case ver-edited-review "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.reviews = [{author: {login: "alice"}, state: "COMMENTED", body: "@greptileai review", submittedAt: "2026-10-15T00:00:00Z", lastEditedAt: "2026-10-16T00:05:00Z", updatedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: an old review body edited to ask for a round after the cutoff -> not approved"
+ver_case ver-undated-review "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"data":{"repository":{"pullRequest":{"reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"author":{"login":"alice"},"body":"@greptileai review","submittedAt":null,"lastEditedAt":null,"updatedAt":null}]}}}}}' >"$STUB_DIR/reviewsgql"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request with no readable time counts as recent -> not approved"
+ver_case ver-reviews-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '%s' '{"errors":[{"message":"x"}]}' >"$STUB_DIR/reviewsgql"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an unreadable reviews read keeps waiting" timeout 2
+ver_case ver-issue-comments-fail "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+printf '[]' >"$STUB_DIR/issuecomments"
+touch "$STUB_DIR/issuecomments.fail"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a failed issue-comments read keeps waiting" timeout 2
+# A future-dated head commit cannot hide requests: the head's check suites bound the cutoff.
+# (VR-2184980a)
+COMMIT_DATE=2030-01-01T00:00:00Z SUITE_DATE=2026-10-16T00:00:00Z ver_case ver-future-commit "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=2026-10-16T00:00:00Z; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]")" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a future-dated head commit does not hide a request after the push -> not approved"
+ver_case ver-no-suite-date "$CFG_FL" 3/5 bbbbbbb ahead \
+  "$(SUITE_DATE=none; echo "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON")]")]")" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: no readable check-suite time keeps waiting" timeout 2
+# Git committer dates keep their offset: one is read as the time it names, not refused.
+COMMIT_DATE=2026-10-15T20:00:00+08:00 ver_case ver-offset-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a committer date with an offset is read, and an older request does not hold it -> approved" approved 0
+# A busy PR's comments outgrow one argument (128 KiB): they go through pipes. (VR-5cfeb6e0)
+ver_case ver-big-inline "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+jq -n -c '[range(400) | {id: ., user: {login: "alice"}, body: ("x" * 500), path: "a.py", line: 3,
+  created_at: "2026-10-16T00:05:00Z", updated_at: "2026-10-16T00:05:00Z"}]' >"$STUB_DIR/inline"
+[ "$(wc -c <"$STUB_DIR/inline")" -gt 131072 ] && ok "verified: the big inline fixture is over 128 KiB" ||
+  bad "verified: big inline fixture" "$(wc -c <"$STUB_DIR/inline") bytes"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: a 200 KB inline comment list with no request still approves" approved 0
 COMMIT_DATE=none ver_case ver-no-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "verified: an unreadable head commit date keeps waiting, never approves" timeout 2

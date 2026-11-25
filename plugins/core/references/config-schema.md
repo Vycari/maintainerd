@@ -783,15 +783,17 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `"gate_fix_verified": {"verdict_sha": G, ...}`: it confirmed each final-review finding on G fixed
   and asked for no second round. The summary comment's `Verified:` line is never read, since anyone
   can write a comment. Verified also needs exactly one published score, G a proper ancestor of the
-  head, no open review thread and no "changes requested", no comment, submitted review body or
-  inline review comment (a reply in a resolved thread included; an inline read that fails keeps the
-  wait going) carrying the `review.rereviewCommand` mention by anyone but the reviewers since the head was
-  committed or that round started, whichever is earlier (an unreadable head commit date keeps the
-  wait going), and no
-  check run named `review.checkName` (default `"Greptile Review"`) from a `review.bots` App on the
-  head, in any state: a final review of the head is waited for and scored as usual. Both read the
-  head, decision, threads and scores again before approving, as for mechanical commits, and neither
-  is reported past the deadline. Any doubt keeps the wait going, as without them. `address-review`
+  head, no open review thread and no "changes requested", and no check run named
+  `review.checkName` (default `"Greptile Review"`) from a `review.bots` App on the head, in any
+  state: a final review of the head is waited for and scored as usual. Read last, right before
+  approving: no issue comment, review body or inline review comment (a reply in a resolved thread
+  included) by anyone but the reviewers carries the `review.rereviewCommand` mention, dated from its
+  last edit, at or after the cutoff. The cutoff is the earliest of that round's start, the head
+  commit's committer date and the head's earliest check suite (GitHub's time, so a future-dated
+  commit cannot hide a request). An item with no readable time counts as recent, and any read that
+  fails or a cutoff that cannot be read keeps the wait going. Both read the head, decision, threads
+  and scores again before approving, as for mechanical commits, and neither is reported past the
+  deadline. Any doubt keeps the wait going, as without them. `address-review`
   treats both alike: no re-review request, no waiting.
 - `release.*` *(optional; `null`/omitted = no versioned releases — the repo ships continuously)* —
   the version-bump mechanism (`versionCommand` with `{level}`, `versionPushesTag`), the notes file

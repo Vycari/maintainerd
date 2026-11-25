@@ -55,12 +55,14 @@
 # asking it for a second round (foreman's docs/design/vr-one-greptile-round.md §3-§4). The evidence
 # is the first-line reviewer's check run on the head, never the "Verified:" text of its summary
 # comment: from its App, concluded SUCCESS, happy, naming the head, and carrying
-# "gate_fix_verified": {"verdict_sha": G, ...}. No review thread may be open, nobody but the reviewers
-# may have posted the re-review mention (comment, review body or inline review comment) since the head was committed or that
-# round started, whichever is earlier, and the head may carry no check run
-# of review.checkName (default "Greptile Review") from a review.bots App, in any state: a final review
-# of the head is waited for and scored as usual. The same re-reads as covered staleness apply, the
-# check-run read comes last, and a second detail line (`verified:`) says so. Any doubt waits as before.
+# "gate_fix_verified": {"verdict_sha": G, ...}. No review thread may be open, and the head may carry no
+# check run of review.checkName (default "Greptile Review") from a review.bots App, in any state: a
+# final review of the head is waited for and scored as usual. The same re-reads as covered staleness
+# apply, then that check-run read, and last a read of every place a person can ask for a final round
+# (issue comments, review bodies, inline review comments, each dated from its last edit): a request
+# by anyone but the reviewers since the earliest of the round's start, the head's committer date and
+# its earliest check suite's creation keeps the wait going. A second detail line (`verified:`) says
+# so. Any doubt waits as before.
 #
 # Mechanical commits (review.mechanicalCommits, any mode; in first-line mode they waive only "the
 # score names the head", so an approval still needs a happy first-line round on the head, and open
@@ -251,7 +253,7 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
   repository(owner:$owner,name:$name){pullRequest(number:$number){
     reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
-    commits(last:1){nodes{commit{oid committedDate checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
+    commits(last:1){nodes{commit{oid committedDate checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug} createdAt
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
         nodes{databaseId name status conclusion startedAt completedAt title text}}}}}}}
     reviewThreads(first:100,after:$endCursor){
@@ -779,10 +781,8 @@ covered_by_mechanical() {
 # that landed mid-poll, a moved head or a failed read fails it. When rung 0 needs its own read for
 # those scores, that read's threads and decision are held to MECH_THREADS and MECH_DECISION too. It is the last read before a covered
 # approval, so the verdict rests on it. Both covered-staleness paths read through it.
-FL_PR="" # fl_read's PR re-read, taken after the happy first-line read
 fl_read() {
   local vr_gql now_pr now_gql now_head
-  FL_PR=""
   vr_gql="$(fetch_gql "$FL_NAME")" || return 1
   [ "$(unresolved_threads "$vr_gql")" = "$MECH_THREADS" ] || return 1
   # Every page carries the decision; each must still be the one the poll judged on.
@@ -794,7 +794,6 @@ fl_read() {
   now_pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json headRefOid,baseRefOid,reviewDecision,body,comments,reviews 2>/dev/null)" || return 1
   now_head="$(printf '%s' "$now_pr" | jq -r '"\(.headRefOid) \(.reviewDecision // "")"' 2>/dev/null)" || return 1
   [ "$now_head" = "$1 $MECH_DECISION" ] || return 1
-  FL_PR="$now_pr"
   # The scores are read as poll_once reads them: rung 0 needs its own check name's runs; without
   # rung 0, a fresh first-line read carries the description's last editor. Either way this read is
   # taken after the PR re-read, so it must not show a thread or a decision the poll did not judge on:
@@ -853,6 +852,51 @@ covered_by_first_line() {
   return 0
 }
 
+# JQ_TS — a jq `ts` def: an ISO-8601 time (Z or a +hh:mm / -hhmm offset, fractions dropped) as
+# epoch seconds, or null when it is not one. Git committer dates keep their offset, so Z alone is not
+# enough.
+JQ_TS='def ts: if type != "string" then null else
+  ((capture("^(?<b>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<z>Z|(?<sg>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")) // null) as $x
+  | if $x == null then null
+    else ((($x.b + "Z") | try fromdateiso8601 catch null) as $e
+      | if $e == null then null elif $x.z == "Z" then $e
+        else $e - ((if $x.sg == "+" then 1 else -1 end) * (($x.h | tonumber) * 3600 + ($x.m | tonumber) * 60)) end)
+    end end;'
+
+# The PR's reviews with their edit times, which neither `gh pr view` nor REST carries.
+REVIEWS_QUERY='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
+  repository(owner:$owner,name:$name){pullRequest(number:$number){
+    reviews(first:100,after:$endCursor){pageInfo{hasNextPage endCursor}
+      nodes{author{login} body submittedAt lastEditedAt updatedAt}}}}}'
+
+# no_rereview_request <cutoff-epoch> <mention> — true when every place a person can ask the final
+# reviewer for a round was read and none holds the mention, by anyone but the reviewers
+# (review.bots, review.firstLine.bots), dated at or after the cutoff: issue comments, review bodies
+# and inline review comments (a reply in a resolved thread included). Each item is dated from its
+# last edit (the latest of the times it carries); an item whose time cannot be read counts as recent.
+# Any failed or unreadable read is false. The lists go through pipes, never argv, since a busy PR's
+# comments outgrow an argument's size limit.
+no_rereview_request() {
+  local cut="$1" m="$2" raw ic rv il
+  raw="$(gh api "repos/$WAIT_REPO/issues/$WAIT_PR/comments" --paginate 2>/dev/null)" || return 1
+  ic="$(printf '%s' "$raw" | jq -c 'if type == "array" then .[] else error("not a list") end
+    | {dates: [.created_at, .updated_at], login: (.user.login // ""), body: (.body // "")}' 2>/dev/null)" || return 1
+  raw="$(gh api graphql --paginate -f query="$REVIEWS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>/dev/null)" || return 1
+  rv="$(printf '%s' "$raw" | jq -c '.data.repository.pullRequest.reviews.nodes
+    | if type == "array" then .[] else error("not a list") end
+    | {dates: [.submittedAt, .lastEditedAt, .updatedAt], login: (.author.login // ""), body: (.body // "")}' 2>/dev/null)" || return 1
+  raw="$(gh api "repos/$WAIT_REPO/pulls/$WAIT_PR/comments" --paginate 2>/dev/null)" || return 1
+  il="$(printf '%s' "$raw" | jq -c 'if type == "array" then .[] else error("not a list") end
+    | {dates: [.created_at, .updated_at], login: (.user.login // ""), body: (.body // "")}' 2>/dev/null)" || return 1
+  printf '%s\n%s\n%s\n' "$ic" "$rv" "$il" | jq -s -e --arg m "$m" --argjson cut "$cut" \
+    --argjson bots "$REVIEWER_LOGINS_JSON" "$JQ_TS"'
+    map(select((.login | '"$NORM_LOGIN"') as $a | any($bots[]; . == $a) | not)
+        | select(.body | ascii_downcase | contains($m))
+        | select([.dates[] | select(. != null) | ts] as $d
+                 | ($d | length) == 0 or any($d[]; . == null) or ($d | max) >= $cut))
+    | length == 0' >/dev/null 2>&1
+}
+
 # verified_by_first_line <scores> <head> — a verified hand-off (first-line mode only; foreman's
 # docs/design/vr-one-greptile-round.md §3-§4). The final reviewer reviewed an ANCESTOR G of the head
 # once and scored it below the bar; the first-line reviewer then confirmed each of its findings fixed
@@ -865,17 +909,18 @@ covered_by_first_line() {
 #   - that run concluded SUCCESS, its JSON names the head itself (an "unchanged since" re-post is not
 #     enough here), and carries gate_fix_verified whose verdict_sha is G (as a prefix, either way);
 #   - G is a proper ancestor of the head (compare: ahead);
-#   - a last read of the head commit's check runs named review.checkName shows the head unmoved, the
-#     same threads and decision, nothing truncated, and no run by a review.bots App: a final review
-#     of the head, queued, running or done, means the head is the final reviewer's to score;
-#   - no comment, submitted review body or inline review comment by anyone but the reviewers (review.bots,
-#     review.firstLine.bots) carries the review.rereviewCommand mention since the head was committed
-#     or the first-line round started, whichever is earlier: someone asked for a final round, so it is
-#     waited for. A head commit date that cannot be read is "not verified".
+#   - a read of the head commit's check runs named review.checkName shows the head unmoved, the same
+#     threads and decision, nothing truncated, and no run by a review.bots App: a final review of the
+#     head, queued, running or done, means the head is the final reviewer's to score. The same read
+#     gives the cutoff: the earliest of the round's start, the head's committer date and its
+#     earliest check suite's creation (GitHub's time, which the pusher cannot set);
+#   - last, no_rereview_request: no issue comment, review body or inline review comment by anyone
+#     but the reviewers carries the review.rereviewCommand mention, dated from its last edit, at or
+#     after the cutoff. Someone asked for a final round, so it is waited for.
 # The comment text "Verified: ..." is never read: anyone can write a comment, only the App writes its
 # check run. Anything unreadable or doubtful is "not verified", and the poll keeps waiting as before.
 verified_by_first_line() {
-  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql committed inline
+  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql cut
   COVERED_NOTE=""
   [ -n "$scores" ] || return 1
   [ "$(printf '%s\n' "$scores" | grep -c .)" = "1" ] || return 1
@@ -915,31 +960,21 @@ verified_by_first_line() {
            | all(.pageInfo.hasNextPage != true and all(.nodes[]?; .checkRuns.pageInfo.hasNextPage != true))
            and ([.[].nodes[]? | select((.app.slug // "") as $s | any($bots[]; . == $s))
                  | .checkRuns.nodes[]? | select(.name == $name)] | length == 0))' >/dev/null 2>&1 || return 1
-  # A person's request for a final round, in a comment, a submitted review body or an inline review
-  # comment (a reply in a resolved thread included), since the head was committed or the first-line
-  # round started, whichever is earlier (a request made before the round began may still be on its
-  # way to the final reviewer). An unreadable cutoff or inline read is "not verified"; an item whose
-  # time cannot be read counts as recent. An inline comment counts from its last edit.
-  committed="$(printf '%s' "$gql" | jq -s -r '.[0].data.repository.pullRequest.commits.nodes[0].commit.committedDate // ""' 2>/dev/null)" || return 1
-  [ -n "$committed" ] || return 1
-  inline="$(gh api "repos/$WAIT_REPO/pulls/$WAIT_PR/comments" --paginate 2>/dev/null)" || return 1
-  inline="$(printf '%s' "$inline" | jq -s -c 'if all(.[]; type == "array") then add // [] else error("not a list") end' 2>/dev/null)" || return 1
-  [ -n "$inline" ] || return 1
-  printf '%s' "$FL_PR" | jq -e --arg m "$mention" --arg s "$started" --arg c "$committed" \
-    --argjson bots "$REVIEWER_LOGINS_JSON" --argjson inline "$inline" '
-    def ts: (. // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null;
-    def latest: map(ts) | if any(. == null) then null else max end;
-    ($s | ts) as $st | ($c | ts) as $ct
-    | if $st == null or $ct == null then false
-      else ([$st, $ct] | min) as $cut
-      | [(.comments[]? | {at: .createdAt, author, body}), (.reviews[]? | {at: (.submittedAt // .createdAt), author, body}),
-         ($inline[] | {at: ([.created_at, (.updated_at // .created_at)] | latest | if . == null then "" else todate end),
-                       author: {login: (.user.login // "")}, body})]
-      | map(select(((.at | ts) as $t | $t == null or $t >= $cut)
-          and ((.author.login // "" | '"$NORM_LOGIN"') as $a | any($bots[]; . == $a) | not)
-          and ((.body // "") | ascii_downcase | contains($m))))
-      | length == 0
-      end' >/dev/null 2>&1 || return 1
+  # The cutoff for a person's request: the earliest of the first-line round's start, the head
+  # commit's committer date and the head's earliest check suite. The committer date alone is the
+  # pusher's to set (a future one would hide every request); a check suite's creation time is
+  # GitHub's. Anything unreadable is "not verified".
+  cut="$(printf '%s' "$gql" | jq -s -r --arg s "$started" "$JQ_TS"'
+    [.[].data.repository.pullRequest.commits.nodes[]?.commit] as $c
+    | [$c[].committedDate | ts] as $cd
+    | [$c[].checkSuites.nodes[]? | .createdAt | ts] as $su
+    | ($s | ts) as $st
+    | if $st == null or ($cd | length) == 0 or any($cd[]; . == null)
+         or ($su | length) == 0 or any($su[]; . == null)
+      then empty else [$st] + $cd + $su | min | floor end' 2>/dev/null)" || return 1
+  is_uint "$cut" || return 1
+  # Read last, right before approving: a request posted while the reads above ran is still seen.
+  no_rereview_request "$cut" "$mention" || return 1
   COVERED_NOTE="  verified: $bot $score on ${reviewed:0:7}; the first-line reviewer verified its fixes on ${head:0:7}, no final-review round needed"
   return 0
 }
