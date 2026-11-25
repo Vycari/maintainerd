@@ -783,8 +783,10 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   `"gate_fix_verified": {"verdict_sha": G, ...}`: it confirmed each final-review finding on G fixed
   and asked for no second round. The summary comment's `Verified:` line is never read, since anyone
   can write a comment. Verified also needs exactly one published score, G a proper ancestor of the
-  head, no open review thread and no "changes requested", no comment carrying the
-  `review.rereviewCommand` mention by anyone but the reviewers since that round started, and no
+  head, no open review thread and no "changes requested", no comment or submitted review body
+  carrying the `review.rereviewCommand` mention by anyone but the reviewers since the head was
+  committed or that round started, whichever is earlier (an unreadable head commit date keeps the
+  wait going), and no
   check run named `review.checkName` (default `"Greptile Review"`) from a `review.bots` App on the
   head, in any state: a final review of the head is waited for and scored as usual. Both read the
   head, decision, threads and scores again before approving, as for mechanical commits, and neither

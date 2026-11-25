@@ -689,10 +689,13 @@ expect "an in-progress check run keeps waiting, lower rungs do not pre-empt it" 
 
 # write_suites <suites-json> [suites-hasNextPage] — the head commit's checkSuites connection, raw,
 # for the cases that need several runs, ids, or page flags.
+# COMMIT_DATE (env, optional): the head commit's committedDate; "none" leaves it out.
 write_suites() {
-  jq -c --argjson suites "$1" --argjson more "${2:-false}" --arg oid "$HEAD_SHA" '
-    .data.repository.pullRequest.commits = {nodes: [{commit: {oid: $oid,
-      checkSuites: {pageInfo: {hasNextPage: $more}, nodes: $suites}}}]}' \
+  jq -c --argjson suites "$1" --argjson more "${2:-false}" --arg oid "$HEAD_SHA" \
+    --arg cd "${COMMIT_DATE:-2026-10-15T12:00:00Z}" '
+    .data.repository.pullRequest.commits = {nodes: [{commit: ({oid: $oid}
+      + (if $cd == "none" then {} else {committedDate: $cd} end) + {
+      checkSuites: {pageInfo: {hasNextPage: $more}, nodes: $suites}})}]}' \
     "$STUB_DIR/threads" >"$STUB_DIR/threads.tmp" && mv "$STUB_DIR/threads.tmp" "$STUB_DIR/threads"
 }
 cr_run() { # <databaseId> <status> [text] — a "Vycari Review" run; QUEUED carries no timestamps
@@ -1276,10 +1279,12 @@ expect_not_approved "covered, rung 0: a changes-requested on a later page of the
 
 # Verified (foreman docs/design/vr-one-greptile-round.md §3-§4): Greptile scored an ancestor below
 # the bar once, and VR's check run on the head says it verified each fix, so no second round comes.
-# ver_run <conclusion> <json> [title] — VR's run on the head, started at 2026-10-16T00:00:00Z.
+# ver_run <conclusion> <json> [title] [startedAt] — VR's run on the head, started by default at
+# 2026-10-16T00:00:00Z (the head commit is dated 2026-10-15T12:00:00Z unless COMMIT_DATE says otherwise).
 ver_run() {
-  jq -n -c --arg c "$1" --arg t "$2" --arg title "${3:-Confidence Score: 5/5}" '{databaseId: 100,
-    name: "Vycari Review", status: "COMPLETED", conclusion: $c, startedAt: "2026-10-16T00:00:00Z",
+  jq -n -c --arg c "$1" --arg t "$2" --arg title "${3:-Confidence Score: 5/5}" \
+    --arg st "${4:-2026-10-16T00:00:00Z}" '{databaseId: 100,
+    name: "Vycari Review", status: "COMPLETED", conclusion: $c, startedAt: $st,
     completedAt: "2026-10-16T00:01:00Z", title: $title, text: ("```json\n" + $t + "\n```")}'
 }
 # ver_json <reviewed_sha> <happy> <verdict_sha-json> — VR's verdict, with gate_fix_verified when the
@@ -1382,6 +1387,21 @@ ver_case ver-old-request "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
   '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-15T00:00:00Z"}]'
 run_tool "$WFR" 7 "${FAST[@]}"
 expect "verified: the request that produced Greptile's verdict, before VR's round -> approved" approved 0
+# ...in a submitted review body too, whatever its state. (VR-c1726d45)
+ver_case ver-review-request "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
+  '.reviews = [{author: {login: "alice"}, state: "COMMENTED", body: "@greptileai review", submittedAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a person's review body with @greptileai after the cutoff -> not approved"
+# ...and from the head's commit, not only from VR's round: a request made after the push but before
+# VR's round started may still be on its way to Greptile. (VR-5cfeb6e0)
+COMMIT_DATE=2026-10-16T00:00:00Z ver_case ver-request-before-round "$CFG_FL" 3/5 bbbbbbb ahead \
+  "[$(cr_suite vycari-review "[$(ver_run SUCCESS "$VERIFIED_JSON" "" 2026-10-16T00:10:00Z)]")]" '[]' \
+  '.comments += [{author: {login: "alice"}, body: "@greptileai review", createdAt: "2026-10-16T00:05:00Z"}]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect_not_approved "verified: a request after the head commit but before VR's round started -> not approved"
+COMMIT_DATE=none ver_case ver-no-commit-date "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]'
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "verified: an unreadable head commit date keeps waiting, never approves" timeout 2
 ver_case ver-bot-mention "$CFG_FL" 3/5 bbbbbbb ahead "$VER_SUITES" '[]' \
   '.comments += [{author: {login: "greptile-apps"}, body: "Tag @greptileai to ask questions", createdAt: "2026-10-16T00:05:00Z"}]'
 run_tool "$WFR" 7 "${FAST[@]}"

@@ -56,7 +56,8 @@
 # is the first-line reviewer's check run on the head, never the "Verified:" text of its summary
 # comment: from its App, concluded SUCCESS, happy, naming the head, and carrying
 # "gate_fix_verified": {"verdict_sha": G, ...}. No review thread may be open, nobody but the reviewers
-# may have posted the re-review mention since that round started, and the head may carry no check run
+# may have posted the re-review mention (comment or review body) since the head was committed or that
+# round started, whichever is earlier, and the head may carry no check run
 # of review.checkName (default "Greptile Review") from a review.bots App, in any state: a final review
 # of the head is waited for and scored as usual. The same re-reads as covered staleness apply, the
 # check-run read comes last, and a second detail line (`verified:`) says so. Any doubt waits as before.
@@ -250,7 +251,7 @@ THREADS_QUERY_CHECKS='query($owner:String!,$name:String!,$number:Int!,$checkName
   repository(owner:$owner,name:$name){pullRequest(number:$number){
     reviewDecision
     userContentEdits(first:1){nodes{editor{login}}}
-    commits(last:1){nodes{commit{oid checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
+    commits(last:1){nodes{commit{oid committedDate checkSuites(first:50){pageInfo{hasNextPage} nodes{app{slug}
       checkRuns(first:20,filterBy:{checkName:$checkName}){pageInfo{hasNextPage}
         nodes{databaseId name status conclusion startedAt completedAt title text}}}}}}}
     reviewThreads(first:100,after:$endCursor){
@@ -864,16 +865,17 @@ covered_by_first_line() {
 #   - that run concluded SUCCESS, its JSON names the head itself (an "unchanged since" re-post is not
 #     enough here), and carries gate_fix_verified whose verdict_sha is G (as a prefix, either way);
 #   - G is a proper ancestor of the head (compare: ahead);
-#   - no comment by anyone but the reviewers (review.bots, review.firstLine.bots) carrying the
-#     review.rereviewCommand mention was posted since the first-line round started: someone asked for
-#     a final round, so it is waited for;
 #   - a last read of the head commit's check runs named review.checkName shows the head unmoved, the
 #     same threads and decision, nothing truncated, and no run by a review.bots App: a final review
-#     of the head, queued, running or done, means the head is the final reviewer's to score.
+#     of the head, queued, running or done, means the head is the final reviewer's to score;
+#   - no comment or submitted review body by anyone but the reviewers (review.bots,
+#     review.firstLine.bots) carries the review.rereviewCommand mention since the head was committed
+#     or the first-line round started, whichever is earlier: someone asked for a final round, so it is
+#     waited for. A head commit date that cannot be read is "not verified".
 # The comment text "Verified: ..." is never read: anyone can write a comment, only the App writes its
 # check run. Anything unreadable or doubtful is "not verified", and the poll keeps waiting as before.
 verified_by_first_line() {
-  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql
+  local scores="$1" head="$2" line bot score reviewed num den verdict started mention gql committed
   COVERED_NOTE=""
   [ -n "$scores" ] || return 1
   [ "$(printf '%s\n' "$scores" | grep -c .)" = "1" ] || return 1
@@ -902,11 +904,6 @@ verified_by_first_line() {
   mention="$(printf '%s' "$FL_REREVIEW" | tr 'A-Z' 'a-z' | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^@/) { print $i; exit } }')"
   [ -n "$mention" ] || mention="$(printf '%s' "$FL_REREVIEW" | tr 'A-Z' 'a-z')"
   [ -n "$mention" ] || return 1
-  printf '%s' "$FL_PR" | jq -e --arg m "$mention" --arg t "$started" --argjson bots "$REVIEWER_LOGINS_JSON" '
-    [.comments[]? | select(((.createdAt // "") >= $t)
-        and ((.author.login // "" | '"$NORM_LOGIN"') as $a | any($bots[]; . == $a) | not)
-        and ((.body // "") | ascii_downcase | contains($m)))]
-    | length == 0' >/dev/null 2>&1 || return 1
   gql="$(fetch_gql "$FL_GATE_CHECK")" || return 1
   [ "$(unresolved_threads "$gql")" = "$MECH_THREADS" ] || return 1
   printf '%s' "$gql" | jq -s -e --arg d "$MECH_DECISION" --arg head "$head" --arg name "$FL_GATE_CHECK" \
@@ -918,6 +915,24 @@ verified_by_first_line() {
            | all(.pageInfo.hasNextPage != true and all(.nodes[]?; .checkRuns.pageInfo.hasNextPage != true))
            and ([.[].nodes[]? | select((.app.slug // "") as $s | any($bots[]; . == $s))
                  | .checkRuns.nodes[]? | select(.name == $name)] | length == 0))' >/dev/null 2>&1 || return 1
+  # A person's request for a final round, in a comment or a submitted review body, since the head was
+  # committed or the first-line round started, whichever is earlier (a request made before the round
+  # began may still be on its way to the final reviewer). An unreadable cutoff is "not verified"; an
+  # item whose time cannot be read counts as recent.
+  committed="$(printf '%s' "$gql" | jq -s -r '.[0].data.repository.pullRequest.commits.nodes[0].commit.committedDate // ""' 2>/dev/null)" || return 1
+  [ -n "$committed" ] || return 1
+  printf '%s' "$FL_PR" | jq -e --arg m "$mention" --arg s "$started" --arg c "$committed" \
+    --argjson bots "$REVIEWER_LOGINS_JSON" '
+    def ts: (. // "") | sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null;
+    ($s | ts) as $st | ($c | ts) as $ct
+    | if $st == null or $ct == null then false
+      else ([$st, $ct] | min) as $cut
+      | [(.comments[]? | {at: .createdAt, author, body}), (.reviews[]? | {at: (.submittedAt // .createdAt), author, body})]
+      | map(select(((.at | ts) as $t | $t == null or $t >= $cut)
+          and ((.author.login // "" | '"$NORM_LOGIN"') as $a | any($bots[]; . == $a) | not)
+          and ((.body // "") | ascii_downcase | contains($m))))
+      | length == 0
+      end' >/dev/null 2>&1 || return 1
   COVERED_NOTE="  verified: $bot $score on ${reviewed:0:7}; the first-line reviewer verified its fixes on ${head:0:7}, no final-review round needed"
   return 0
 }

@@ -279,7 +279,8 @@ is on that host. Both tools share this.
   line, when the first-line reviewer's check run on the head (its App, concluded success, happy,
   naming the head) carries `gate_fix_verified` with `verdict_sha` G: it confirmed the final
   reviewer's fixes and asked for no second round. The summary comment's `Verified:` text is never
-  read. No open thread, no re-review mention from a person since that round started, and no
+  read. No open thread, no re-review mention from a person (in a comment or a review body) since
+  the head was committed or that round started, whichever is earlier, and no
   `review.checkName` (default `Greptile Review`) run from a `review.bots` App on the head, in any
   state; the same re-reads as covered staleness apply. Anything doubtful keeps waiting.
 - **Mechanical commits** (any mode, `review.mechanicalCommits`): a score at or above the threshold on
