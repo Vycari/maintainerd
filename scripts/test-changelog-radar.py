@@ -1,0 +1,995 @@
+#!/usr/bin/env python3
+"""Tests for plugins/research/scripts/changelog-radar.py.
+
+Exercises:
+  - Feed parsing (RSS 2.0 and Atom feeds, dates, categories, HTML cleaning)
+  - Profile generation (extracting from .claude/maintainerd.json, workflows, dependencies)
+  - Prefilter scoring (term matching, score calculation, seen ID suppression, date filtering)
+  - State management (save, load, advance high-water mark, seen ID tracking)
+
+Run:
+  python3 scripts/test-changelog-radar.py
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT = os.path.join(ROOT, "plugins", "research", "scripts", "changelog-radar.py")
+
+
+def run_script(args, input_data=None):
+    cmd = [sys.executable, SCRIPT, *args]
+    proc = subprocess.run(
+        cmd,
+        input=input_data,
+        capture_output=True,
+        text=True,
+    )
+    return proc
+
+
+SAMPLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>GitHub Changelog</title>
+    <link>https://github.blog/changelog/</link>
+    <item>
+      <title>GitHub Actions workflow lockfiles in public preview</title>
+      <link>https://github.blog/changelog/2026-10-14-github-actions-workflow-lockfiles-in-public-preview/</link>
+      <guid isPermaLink="true">https://github.blog/changelog/2026-10-14-github-actions-workflow-lockfiles-in-public-preview/</guid>
+      <pubDate>Wed, 14 Oct 2026 13:49:15 +0000</pubDate>
+      <category><![CDATA[actions]]></category>
+      <category><![CDATA[release]]></category>
+      <description><![CDATA[<p>GitHub Actions workflow dependency lockfiles are now in public preview.</p>]]></description>
+    </item>
+    <item>
+      <title>Unrelated Announcement</title>
+      <link>https://github.blog/changelog/unrelated/</link>
+      <guid>unrelated-1</guid>
+      <pubDate>Mon, 12 Oct 2026 10:00:00 +0000</pubDate>
+      <category>billing</category>
+      <description>Payment invoices updated.</description>
+    </item>
+  </channel>
+</rss>
+"""
+
+SAMPLE_ATOM = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Feed</title>
+  <entry>
+    <title>Rust 1.85 Released</title>
+    <id>tag:blog,2026:rust-185</id>
+    <link href="https://example.com/rust-185"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <category term="rust"/>
+    <summary>New cargo features released.</summary>
+  </entry>
+</feed>
+"""
+
+
+class FeedParsingTest(unittest.TestCase):
+    def test_parse_rss(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        records = cr.parse_feed_xml(SAMPLE_RSS.encode("utf-8"))
+        self.assertEqual(len(records), 2)
+        r0 = records[0]
+        self.assertEqual(r0["title"], "GitHub Actions workflow lockfiles in public preview")
+        self.assertEqual(r0["published"], "2026-10-14T13:49:15Z")
+        self.assertIn("actions", r0["categories"])
+        self.assertIn("public preview", r0["summary"])
+
+    def test_parse_atom(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        records = cr.parse_feed_xml(SAMPLE_ATOM.encode("utf-8"))
+        self.assertEqual(len(records), 1)
+        r0 = records[0]
+        self.assertEqual(r0["title"], "Rust 1.85 Released")
+        self.assertEqual(r0["id"], "tag:blog,2026:rust-185")
+        self.assertEqual(r0["published"], "2026-10-15T12:00:00Z")
+        self.assertIn("rust", r0["categories"])
+
+    def test_atom_link_alternate_preference(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        atom_multi_link = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Feed</title>
+  <entry>
+    <title>Multi-link Post</title>
+    <id>tag:blog,2026:multi-link</id>
+    <link rel="self" href="https://example.com/api/feed.atom"/>
+    <link rel="alternate" href="https://example.com/articles/canonical-link"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary>Testing link extraction preference.</summary>
+  </entry>
+  <entry>
+    <title>Implicit Alternate Link Post</title>
+    <id>tag:blog,2026:implicit-link</id>
+    <link href="https://example.com/articles/implicit-alternate"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary>Testing implicit link.</summary>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(atom_multi_link.encode("utf-8"))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["link"], "https://example.com/articles/canonical-link")
+        self.assertEqual(records[1]["link"], "https://example.com/articles/implicit-alternate")
+
+    def test_xhtml_nested_itertext_spacing(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        xhtml_atom = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>XHTML Content Entry</title>
+    <id>tag:blog,2026:xhtml-test</id>
+    <link href="https://example.com/xhtml-entry"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>GitHub Actions</p>
+        <p>workflow lockfiles in public preview.</p>
+      </div>
+    </content>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(xhtml_atom.encode("utf-8"))
+        self.assertEqual(len(records), 1)
+        summary = records[0]["summary"]
+        self.assertIn("GitHub Actions workflow lockfiles in public preview.", summary)
+        import re
+        self.assertTrue(bool(re.search(r"\bactions\b", summary, re.I)))
+        self.assertTrue(bool(re.search(r"\bworkflow\b", summary, re.I)))
+
+    def test_atom_empty_summary_falls_back_to_content(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        atom_xml = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Empty Summary Entry</title>
+    <id>tag:blog,2026:empty-summary</id>
+    <link href="https://example.com/empty-summary"/>
+    <published>2026-10-15T12:00:00Z</published>
+    <summary/>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>GitHub Actions runner update in content body.</p>
+      </div>
+    </content>
+  </entry>
+</feed>
+"""
+        records = cr.parse_feed_xml(atom_xml.encode("utf-8"))
+        self.assertEqual(len(records), 1)
+        summary = records[0]["summary"]
+        self.assertIn("GitHub Actions runner update in content body.", summary)
+
+
+class ProfileAndPrefilterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_profile_extraction(self):
+        # Create minimal mock repo
+        d = self.tmp.name
+        claude_dir = os.path.join(d, ".claude")
+        os.makedirs(claude_dir, exist_ok=True)
+        with open(os.path.join(claude_dir, "maintainerd.json"), "w") as f:
+            json.dump({
+                "language": "python",
+                "commands": {"test": "uv run pytest", "lint": "ruff check"},
+            }, f)
+
+        wf_dir = os.path.join(d, ".github", "workflows")
+        os.makedirs(wf_dir, exist_ok=True)
+        with open(os.path.join(wf_dir, "test.yml"), "w") as f:
+            f.write("""
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v1
+""")
+
+        proc = run_script(["profile", "--cwd", d])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+
+        self.assertIn("python", data["technologies"])
+        self.assertIn("actions/checkout", data["technologies"])
+        self.assertIn("ubuntu-latest", data["technologies"])
+        self.assertIn("pytest", data["terms"])
+        self.assertIn("ruff", data["terms"])
+        self.assertIn("uv", data["terms"])
+
+    def test_prefilter_relevance_scoring(self):
+        profile = {
+            "technologies": ["actions/checkout", "python", "uv"],
+            "terms": ["actions", "github actions", "lockfiles", "workflow", "python", "uv"],
+        }
+        records = [
+            {
+                "id": "item-1",
+                "title": "GitHub Actions workflow lockfiles in public preview",
+                "link": "https://example.com/item-1",
+                "published": "2026-10-14T13:49:15Z",
+                "categories": ["actions"],
+                "summary": "Lockfiles for GitHub actions.",
+            },
+            {
+                "id": "item-2",
+                "title": "Unrelated Notice About Invoices",
+                "link": "https://example.com/item-2",
+                "published": "2026-10-14T10:00:00Z",
+                "categories": ["billing"],
+                "summary": "Payment changes.",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "profile.json")
+        rec_file = os.path.join(self.tmp.name, "records.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(survivors[0]["id"], "item-1")
+        self.assertGreater(survivors[0]["score"], 0)
+        self.assertIn("actions", survivors[0]["matchedTerms"])
+
+    def test_state_advance_and_filtering(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [{
+            "id": "item-1",
+            "title": "GitHub Actions update",
+            "link": "https://example.com/1",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions update summary",
+        }]
+
+        prof_file = os.path.join(self.tmp.name, "profile.json")
+        rec_file = os.path.join(self.tmp.name, "records.json")
+        state_file = os.path.join(self.tmp.name, "changelog-state.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # First prefilter: item-1 passes
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 1)
+
+        # Advance state
+        proc = run_script(["advance", "--state", state_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0)
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertEqual(st["highWater"]["publishedDate"], "2026-10-14T12:00:00Z")
+        self.assertIn("item-1", st["recentIds"])
+
+        # Second prefilter: item-1 is dropped because it is seen
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 0)
+
+    def test_parse_non_feed_xml_fails(self):
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        error_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>AccessDenied</Code>
+  <Message>Rate limit exceeded</Message>
+</Error>"""
+        with self.assertRaises(SystemExit) as ctx:
+            cr.parse_feed_xml(error_xml)
+        self.assertIn("not an RSS or Atom feed", str(ctx.exception))
+
+    def test_generic_command_stopwords_no_false_positive(self):
+        d = self.tmp.name
+        claude_dir = os.path.join(d, ".claude")
+        os.makedirs(claude_dir, exist_ok=True)
+        with open(os.path.join(claude_dir, "maintainerd.json"), "w") as f:
+            json.dump({
+                "language": "python",
+                "commands": {"lint": "uv run ruff check"},
+            }, f)
+
+        proc = run_script(["profile", "--cwd", d])
+        self.assertEqual(proc.returncode, 0)
+        profile = json.loads(proc.stdout)
+        self.assertNotIn("check", profile["terms"])
+        self.assertNotIn("run", profile["terms"])
+
+        # Feed item titled 'Check your billing details'
+        records = [{
+            "id": "billing-1",
+            "title": "Check your billing details",
+            "link": "https://example.com/billing",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": [],
+            "summary": "Please review payment information.",
+        }]
+        prof_file = os.path.join(self.tmp.name, "prof_check.json")
+        rec_file = os.path.join(self.tmp.name, "rec_check.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 0)
+
+    def test_same_timestamp_and_backdated_unseen_entries_survive(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        record_a = {
+            "id": "post-a",
+            "title": "GitHub Actions Post A",
+            "link": "https://example.com/a",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions A",
+        }
+        record_b_same_date = {
+            "id": "post-b",
+            "title": "GitHub Actions Post B",
+            "link": "https://example.com/b",
+            "published": "2026-10-14T12:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions B",
+        }
+        record_c_older_date = {
+            "id": "post-c",
+            "title": "GitHub Actions Post C",
+            "link": "https://example.com/c",
+            "published": "2026-10-13T10:00:00Z",
+            "categories": ["actions"],
+            "summary": "Actions C",
+        }
+
+        prof_file = os.path.join(self.tmp.name, "p_time.json")
+        state_file = os.path.join(self.tmp.name, "s_time.json")
+        rec_a_file = os.path.join(self.tmp.name, "r_a.json")
+        rec_later_file = os.path.join(self.tmp.name, "r_later.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_a_file, "w") as f:
+            json.dump([record_a], f)
+        with open(rec_later_file, "w") as f:
+            json.dump([record_a, record_b_same_date, record_c_older_date], f)
+
+        # Advance state with A
+        proc = run_script(["advance", "--state", state_file, "--input", rec_a_file])
+        self.assertEqual(proc.returncode, 0)
+
+        # Run prefilter with A, B, C: B and C must survive even though their date <= A's date!
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_later_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0)
+        survivors = json.loads(proc.stdout)
+        survivor_ids = {s["id"] for s in survivors}
+        self.assertNotIn("post-a", survivor_ids)
+        self.assertIn("post-b", survivor_ids)
+        self.assertIn("post-c", survivor_ids)
+
+    def test_advance_compare_and_set_conflict(self):
+        state_file = os.path.join(self.tmp.name, "s_cas.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        input_file = os.path.join(self.tmp.name, "cas_in.json")
+        with open(input_file, "w") as f:
+            json.dump([{"id": "id-2", "published": "2026-10-15T12:00:00Z"}], f)
+
+        # Stale expected-mark fails
+        proc = run_script(["advance", "--state", state_file, "--input", input_file, "--expected-mark", "2026-10-10T00:00:00Z"])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("refusing to overwrite", proc.stderr)
+
+        # Matching expected-mark succeeds
+        proc = run_script(["advance", "--state", state_file, "--input", input_file, "--expected-mark", "2026-10-14T12:00:00Z"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_advance_only_marks_input_items(self):
+        state_file = os.path.join(self.tmp.name, "s_partial.json")
+        evaluated_file = os.path.join(self.tmp.name, "evaluated.json")
+        with open(evaluated_file, "w") as f:
+            json.dump([{"id": "evaluated-item-1", "published": "2026-10-14T12:00:00Z"}], f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", evaluated_file])
+        self.assertEqual(proc.returncode, 0)
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertIn("evaluated-item-1", st["recentIds"])
+        self.assertNotIn("unevaluated-item-2", st["recentIds"])
+
+    def test_prefilter_fails_on_empty_input(self):
+        prof_file = os.path.join(self.tmp.name, "p_empty.json")
+        empty_input = os.path.join(self.tmp.name, "empty_harvest.json")
+        with open(prof_file, "w") as f:
+            json.dump({"technologies": [], "terms": []}, f)
+        with open(empty_input, "w") as f:
+            pass  # 0 bytes
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", empty_input])
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is empty", proc.stderr)
+
+    def test_historical_entries_outside_lookback_dropped(self):
+        # State high-water mark is 2026-10-15
+        state_file = os.path.join(self.tmp.name, "s_lookback.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-15T12:00:00Z"},
+                "recentIds": ["recent-id-1"],
+            }, f)
+
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            # Recent backdated item (2 days before highWater) -> should survive
+            {
+                "id": "recent-backdated",
+                "title": "GitHub Actions Recent Backdated",
+                "link": "https://example.com/recent",
+                "published": "2026-10-13T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Recent update",
+            },
+            # Historical item (60 days before highWater) -> should be dropped as historical
+            {
+                "id": "old-historical",
+                "title": "GitHub Actions Old Historical",
+                "link": "https://example.com/old",
+                "published": "2026-08-01T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Historical update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_lb.json")
+        rec_file = os.path.join(self.tmp.name, "rec_lb.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        survivor_ids = {s["id"] for s in survivors}
+        self.assertIn("recent-backdated", survivor_ids)
+        self.assertNotIn("old-historical", survivor_ids)
+
+    def test_feed_switch_resets_highwater_date_cutoff(self):
+        # State saved highWater for Feed A is 2026-10-15
+        state_file = os.path.join(self.tmp.name, "s_feed_switch.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "feed": "https://feed-a.com/rss",
+                "highWater": {"publishedDate": "2026-10-15T12:00:00Z"},
+                "recentIds": ["feed-a-item-1"],
+            }, f)
+
+        profile = {"technologies": [], "terms": ["actions"]}
+        # Item from Feed B published on 2026-09-01 (>30 days before Feed A's highWater)
+        records = [
+            {
+                "id": "feed-b-sept-item",
+                "title": "GitHub Actions Feed B Announcement",
+                "link": "https://feed-b.com/item1",
+                "published": "2026-09-01T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Feed B update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_fs.json")
+        rec_file = os.path.join(self.tmp.name, "rec_fs.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Prefiltering with Feed B should not drop September post using Feed A's highWater
+        proc = run_script([
+            "prefilter",
+            "--profile", prof_file,
+            "--input", rec_file,
+            "--state", state_file,
+            "--feed", "https://feed-b.com/atom.xml",
+        ])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 1)
+        self.assertEqual(survivors[0]["id"], "feed-b-sept-item")
+
+    def test_multi_feed_state_preservation(self):
+        state_file = os.path.join(self.tmp.name, "s_multi_feed.json")
+        feed_a = "https://feed-a.com/rss"
+        feed_b = "https://feed-b.com/rss"
+
+        input_a = os.path.join(self.tmp.name, "in_a.json")
+        with open(input_a, "w") as f:
+            json.dump([{"id": "a-1", "published": "2026-10-15T12:00:00Z"}], f)
+
+        input_b = os.path.join(self.tmp.name, "in_b.json")
+        with open(input_b, "w") as f:
+            json.dump([{"id": "b-1", "published": "2026-09-01T12:00:00Z"}], f)
+
+        # Advance feed A
+        proc = run_script(["advance", "--state", state_file, "--input", input_a, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        # Check mark for feed A
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-10-15T12:00:00Z")
+
+        # Check mark for feed B before any advance
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_b])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "")
+
+        # Advance feed B
+        proc = run_script(["advance", "--state", state_file, "--input", input_b, "--feed", feed_b, "--expected-mark", ""])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        # Check mark for feed B
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_b])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-09-01T12:00:00Z")
+
+        # Check feed A's mark is still intact!
+        proc = run_script(["mark", "--state", state_file, "--feed", feed_a])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "2026-10-15T12:00:00Z")
+
+    def test_prefilter_equal_score_sorts_newest_date_first(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": "item-old",
+                "title": "GitHub Actions Old Post",
+                "link": "https://example.com/old",
+                "published": "2026-10-10T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions old update",
+            },
+            {
+                "id": "item-new",
+                "title": "GitHub Actions New Post",
+                "link": "https://example.com/new",
+                "published": "2026-10-15T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions new update",
+            },
+            {
+                "id": "item-mid",
+                "title": "GitHub Actions Mid Post",
+                "link": "https://example.com/mid",
+                "published": "2026-10-12T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions mid update",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_sort.json")
+        rec_file = os.path.join(self.tmp.name, "rec_sort.json")
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 3)
+        self.assertEqual([s["id"] for s in survivors], ["item-new", "item-mid", "item-old"])
+
+    def test_locked_state_mutual_exclusion(self):
+        """Hold locked_state in one process and check that another cannot enter until parent signals release."""
+        sys.path.insert(0, os.path.join(ROOT, "plugins", "research", "scripts"))
+        import importlib
+        cr = importlib.import_module("changelog-radar")
+
+        state_file = os.path.join(self.tmp.name, "lock_block_test.json")
+        held_file = os.path.join(self.tmp.name, "held.txt")
+        release_file = os.path.join(self.tmp.name, "release.txt")
+        done_file = os.path.join(self.tmp.name, "done.txt")
+
+        holder_code = f"""
+import sys, os, time
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with cr.locked_state(r'{state_file}'):
+    with open(r'{held_file}', 'w') as f:
+        f.write('held')
+    while not os.path.exists(r'{release_file}'):
+        time.sleep(0.01)
+    with open(r'{done_file}', 'w') as f:
+        f.write('done')
+"""
+        proc = subprocess.Popen([sys.executable, "-c", holder_code])
+        try:
+            for _ in range(50):
+                if os.path.exists(held_file):
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("Holder process never acquired lock")
+
+            # Holder is actively holding lock until release_file exists.
+            # Spawn a second process attempting to enter locked_state.
+            client_attempting = os.path.join(self.tmp.name, "client_attempting.txt")
+            client_entered = os.path.join(self.tmp.name, "client_entered.txt")
+            client_code = f"""
+import sys, os
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with open(r'{client_attempting}', 'w') as f:
+    f.write('attempting')
+with cr.locked_state(r'{state_file}'):
+    with open(r'{client_entered}', 'w') as f:
+        f.write('entered')
+"""
+            client = subprocess.Popen([sys.executable, "-c", client_code])
+            try:
+                for _ in range(50):
+                    if os.path.exists(client_attempting):
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("Client process never signaled attempt to acquire lock")
+
+                time.sleep(0.05)
+                # Client must be blocked by the lock
+                self.assertIsNone(client.poll(), "Client entered locked_state while holder held the lock!")
+                self.assertFalse(os.path.exists(client_entered), "Client entered locked_state prematurely!")
+
+                # Signal holder to release lock
+                with open(release_file, "w") as f:
+                    f.write("release")
+
+                client.wait(timeout=5)
+                self.assertEqual(client.returncode, 0)
+                self.assertTrue(os.path.exists(client_entered), "Client did not enter after lock was released")
+            finally:
+                if client.poll() is None:
+                    client.kill()
+                    client.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_advance_blocks_while_state_locked(self):
+        """Verify that CLI advance blocks until parent sends release signal to lock holder."""
+        state_file = os.path.join(self.tmp.name, "s_adv_block.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        held_file = os.path.join(self.tmp.name, "adv_held.txt")
+        release_file = os.path.join(self.tmp.name, "adv_release.txt")
+        done_file = os.path.join(self.tmp.name, "adv_done.txt")
+        input_file = os.path.join(self.tmp.name, "adv_in.json")
+        with open(input_file, "w") as f:
+            json.dump([{"id": "id-2", "published": "2026-10-15T12:00:00Z"}], f)
+
+        holder_code = f"""
+import sys, os, time
+sys.path.insert(0, r'{os.path.join(ROOT, 'plugins', 'research', 'scripts')}')
+import importlib
+cr = importlib.import_module('changelog-radar')
+
+with cr.locked_state(r'{state_file}'):
+    with open(r'{held_file}', 'w') as f:
+        f.write('held')
+    while not os.path.exists(r'{release_file}'):
+        time.sleep(0.01)
+    with open(r'{done_file}', 'w') as f:
+        f.write('done')
+"""
+        holder = subprocess.Popen([sys.executable, "-c", holder_code])
+        try:
+            for _ in range(50):
+                if os.path.exists(held_file):
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("Holder process never acquired lock")
+
+            # Start advance CLI process while holder holds the lock
+            adv_proc = subprocess.Popen([
+                sys.executable, SCRIPT,
+                "advance",
+                "--state", state_file,
+                "--input", input_file,
+                "--expected-mark", "2026-10-14T12:00:00Z",
+            ])
+            try:
+                time.sleep(0.1)
+                # advance must be blocked waiting on the lock
+                self.assertIsNone(adv_proc.poll(), "advance finished while holder held the lock!")
+                self.assertFalse(os.path.exists(done_file), "Holder finished before release signal was sent!")
+
+                # Signal holder to release the lock
+                with open(release_file, "w") as f:
+                    f.write("release")
+
+                adv_proc.wait(timeout=5)
+                self.assertEqual(adv_proc.returncode, 0, "advance failed after lock release")
+                self.assertTrue(os.path.exists(done_file), "Holder did not finish after release signal")
+
+                with open(state_file) as f:
+                    st = json.load(f)
+                self.assertEqual(st["highWater"]["publishedDate"], "2026-10-15T12:00:00Z")
+            finally:
+                if adv_proc.poll() is None:
+                    adv_proc.kill()
+                    adv_proc.wait()
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
+
+    def test_advance_locked_cas_rejects_stale_concurrent_run(self):
+        # Simulates two overlapping scans:
+        # Both start at mark 2026-10-14T12:00:00Z.
+        # Run 1 advances to 2026-10-15T12:00:00Z.
+        # Run 2 tries to advance with expected-mark 2026-10-14T12:00:00Z.
+        # With locked_state, Run 2 reads the updated state under lock and is rejected.
+        state_file = os.path.join(self.tmp.name, "s_concurrent.json")
+        with open(state_file, "w") as f:
+            json.dump({
+                "version": 1,
+                "highWater": {"publishedDate": "2026-10-14T12:00:00Z"},
+                "recentIds": ["id-1"],
+            }, f)
+
+        input_run1 = os.path.join(self.tmp.name, "run1.json")
+        with open(input_run1, "w") as f:
+            json.dump([{"id": "id-run1", "published": "2026-10-15T12:00:00Z"}], f)
+
+        input_run2 = os.path.join(self.tmp.name, "run2.json")
+        with open(input_run2, "w") as f:
+            json.dump([{"id": "id-run2", "published": "2026-10-16T12:00:00Z"}], f)
+
+        # Run 1 succeeds
+        proc1 = run_script([
+            "advance",
+            "--state", state_file,
+            "--input", input_run1,
+            "--expected-mark", "2026-10-14T12:00:00Z",
+        ])
+        self.assertEqual(proc1.returncode, 0, proc1.stderr)
+
+        # Run 2 (which had read 2026-10-14 before Run 1 finished) attempts CAS advance
+        proc2 = run_script([
+            "advance",
+            "--state", state_file,
+            "--input", input_run2,
+            "--expected-mark", "2026-10-14T12:00:00Z",
+        ])
+        self.assertNotEqual(proc2.returncode, 0)
+        self.assertIn("refusing to overwrite", proc2.stderr)
+        self.assertIn("another run advanced it since", proc2.stderr)
+
+        # Verify Run 1's data was not overwritten
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertEqual(st["highWater"]["publishedDate"], "2026-10-15T12:00:00Z")
+        self.assertIn("id-run1", st["recentIds"])
+        self.assertNotIn("id-run2", st["recentIds"])
+
+    def test_prefilter_max_candidates_and_overflow(self):
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": f"item-{i}",
+                "title": f"GitHub Actions Update {i}",
+                "link": f"https://example.com/{i}",
+                "published": f"2026-10-1{i}T12:00:00Z",
+                "categories": ["actions"],
+                "summary": f"Actions update number {i}",
+            }
+            for i in range(1, 4)
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_max.json")
+        rec_file = os.path.join(self.tmp.name, "rec_max.json")
+        state_file = os.path.join(self.tmp.name, "state_max.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Prefilter with --max 2 -> returns only 2 candidates
+        proc = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--max", "2"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors = json.loads(proc.stdout)
+        self.assertEqual(len(survivors), 2)
+        selected_ids = [s["id"] for s in survivors]
+
+        # Advance state with only these 2 survivors
+        survivors_file = os.path.join(self.tmp.name, "survivors_max.json")
+        with open(survivors_file, "w") as f:
+            json.dump(survivors, f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", survivors_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with open(state_file) as f:
+            st = json.load(f)
+        for sid in selected_ids:
+            self.assertIn(sid, st["recentIds"])
+
+        # Unselected 3rd item is NOT in recentIds and survives on subsequent run
+        proc2 = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        survivors2 = json.loads(proc2.stdout)
+        self.assertEqual(len(survivors2), 1)
+        self.assertNotIn(survivors2[0]["id"], selected_ids)
+
+    def test_overflow_candidates_pending_survives_past_lookback_cutoff(self):
+        """Verify unselected overflow candidates in pending survive past the 30-day lookback window."""
+        profile = {"technologies": [], "terms": ["actions"]}
+        records = [
+            {
+                "id": "item-today",
+                "title": "GitHub Actions Update Today",
+                "link": "https://example.com/today",
+                "published": "2026-11-20T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions update today",
+            },
+            {
+                "id": "item-recent",
+                "title": "GitHub Actions Update Recent",
+                "link": "https://example.com/recent",
+                "published": "2026-11-15T12:00:00Z",
+                "categories": ["actions"],
+                "summary": "Actions update recent",
+            },
+            {
+                "id": "item-old-backlog",
+                "title": "GitHub Actions Update Old Backlog",
+                "link": "https://example.com/old",
+                "published": "2026-10-10T12:00:00Z",  # 41 days older than item-today (> LOOKBACK_DAYS)
+                "categories": ["actions"],
+                "summary": "Actions update backlog",
+            },
+        ]
+
+        prof_file = os.path.join(self.tmp.name, "prof_overflow.json")
+        rec_file = os.path.join(self.tmp.name, "rec_overflow.json")
+        state_file = os.path.join(self.tmp.name, "state_overflow.json")
+        overflow_file = os.path.join(self.tmp.name, "pending_overflow.json")
+        survivors_file = os.path.join(self.tmp.name, "survivors_overflow.json")
+
+        with open(prof_file, "w") as f:
+            json.dump(profile, f)
+        with open(rec_file, "w") as f:
+            json.dump(records, f)
+
+        # Run 1: prefilter with --max 2 and --overflow
+        proc = run_script([
+            "prefilter", "--profile", prof_file, "--input", rec_file,
+            "--max", "2", "--overflow", overflow_file,
+        ])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        survivors1 = json.loads(proc.stdout)
+        self.assertEqual(len(survivors1), 2)
+        survivor1_ids = {s["id"] for s in survivors1}
+        self.assertEqual(survivor1_ids, {"item-today", "item-recent"})
+
+        with open(overflow_file) as f:
+            overflow1 = json.load(f)
+        self.assertEqual(len(overflow1), 1)
+        self.assertEqual(overflow1[0]["id"], "item-old-backlog")
+
+        # Advance with survivors and pending overflow
+        with open(survivors_file, "w") as f:
+            json.dump(survivors1, f)
+        proc_adv = run_script([
+            "advance", "--state", state_file, "--input", survivors_file, "--pending", overflow_file,
+        ])
+        self.assertEqual(proc_adv.returncode, 0, proc_adv.stderr)
+
+        with open(state_file) as f:
+            st1 = json.load(f)
+        self.assertEqual(st1["highWater"]["publishedDate"], "2026-11-20T12:00:00Z")
+        self.assertEqual(len(st1["pending"]), 1)
+        self.assertEqual(st1["pending"][0]["id"], "item-old-backlog")
+
+        # Run 2: prefilter with state file.
+        # Even though item-old-backlog is 41 days older than highWater (exceeding 30-day cutoff),
+        # it is in pending, so it is preserved and evaluated!
+        proc2 = run_script(["prefilter", "--profile", prof_file, "--input", rec_file, "--state", state_file])
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        survivors2 = json.loads(proc2.stdout)
+        self.assertEqual(len(survivors2), 1)
+        self.assertEqual(survivors2[0]["id"], "item-old-backlog")
+
+        # Advance Run 2 with item-old-backlog: it moves from pending to recentIds
+        with open(survivors_file, "w") as f:
+            json.dump(survivors2, f)
+        proc_adv2 = run_script(["advance", "--state", state_file, "--input", survivors_file])
+        self.assertEqual(proc_adv2.returncode, 0, proc_adv2.stderr)
+
+        with open(state_file) as f:
+            st2 = json.load(f)
+        self.assertIn("item-old-backlog", st2["recentIds"])
+        self.assertEqual(len(st2["pending"]), 0)
+
+    def test_recent_ids_retention_window_capped_at_500(self):
+        state_file = os.path.join(self.tmp.name, "state_retention.json")
+        items = [{"id": f"item-{i}", "published": "2026-10-14T12:00:00Z"} for i in range(600)]
+        in_file = os.path.join(self.tmp.name, "retention_in.json")
+        with open(in_file, "w") as f:
+            json.dump(items, f)
+
+        proc = run_script(["advance", "--state", state_file, "--input", in_file])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with open(state_file) as f:
+            st = json.load(f)
+        self.assertEqual(len(st["recentIds"]), 500)
+
+
+if __name__ == "__main__":
+    unittest.main()
