@@ -47,6 +47,8 @@ serve() {
   fi
   [ -n "$f" ] && [ -f "$f" ] || { echo "stub: no fixture $name" >&2; exit 1; }
   cat "$f"
+  # <fixture>.err: written to stderr (gh puts its own error line there, not on stdout).
+  [ ! -f "$f.err" ] || cat "$f.err" >&2
   [ ! -f "$f.fail" ] || exit 1
 }
 # cur_prview — the PR fixture as it stands now (the one the last poll read, its sequence not advanced).
@@ -483,6 +485,29 @@ touch "$STUB_DIR/remoteconfig.fail"
 write_threads "" '[]'
 run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
 [ "$RC" = "3" ] && ok "an unreadable remote config fails closed (exit 3)" || bad "remote config error" "rc=$RC out=$OUT"
+
+# gh_out's failure path: an error gh writes only to stderr still reaches the caller (maintainerd#154).
+new_case review-other-repo-no-config-stderr
+write_config "$CFG_5"
+write_prview "" '.labels = [{name:"greptile:skip"}]'
+: >"$STUB_DIR/remoteconfig"
+echo 'gh: Not Found (HTTP 404)' >"$STUB_DIR/remoteconfig.err"
+touch "$STUB_DIR/remoteconfig.fail"
+write_threads "" '[]'
+run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
+expect "a 404 on gh's stderr alone still reads as no config there -> defaults, timeout" timeout 2
+
+new_case review-other-repo-config-error-stderr
+write_config "$CFG_5"
+write_prview "" '.'
+: >"$STUB_DIR/remoteconfig"
+echo 'gh: HTTP 500' >"$STUB_DIR/remoteconfig.err"
+touch "$STUB_DIR/remoteconfig.fail"
+write_threads "" '[]'
+run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
+[ "$RC" = "3" ] && case "$ERR" in *"HTTP 500"*) true ;; *) false ;; esac &&
+  ok "an error on gh's stderr alone fails closed and is named in the message" ||
+  bad "stderr-only remote config error" "rc=$RC err=$ERR"
 
 # A PR URL on another host (GitHub Enterprise) is resolved on that host: every gh call goes there.
 new_case review-pr-url-enterprise
