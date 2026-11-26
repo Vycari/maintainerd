@@ -422,9 +422,9 @@ vr_read() {
 # when one is given. The one place the GraphQL query is sent.
 fetch_gql() {
   if [ -n "$1" ]; then
-    gh api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$1" 2>&1
+    gh_out api graphql --paginate -f query="$THREADS_QUERY_CHECKS" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" -f checkName="$1"
   else
-    gh api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR" 2>&1
+    gh_out api graphql --paginate -f query="$THREADS_QUERY" -F owner="$OWNER" -F name="$NAME" -F number="$WAIT_PR"
   fi
 }
 
@@ -1081,7 +1081,7 @@ poll_once() {
   DETAIL=""
   COVERED_NOTE="" # a note from an earlier poll must never ride on this poll's verdict
   MECH_HOLD=0
-  pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS" 2>&1)" || {
+  pr="$(gh_out pr view "$WAIT_PR" -R "$WAIT_REPO" --json "$PR_FIELDS")" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
   }

@@ -111,7 +111,7 @@ poll_once() {
 
   VERDICT=""
   DETAIL=""
-  pr="$(gh pr view "$WAIT_PR" -R "$WAIT_REPO" --json statusCheckRollup,state,headRefOid 2>&1)" || {
+  pr="$(gh_out pr view "$WAIT_PR" -R "$WAIT_REPO" --json statusCheckRollup,state,headRefOid)" || {
     LAST_ERR="gh pr view failed: $pr"
     return 1
   }
