@@ -762,7 +762,13 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   long a due round may go unconcluded before the reviewer reports itself unavailable (and
   `wait-for-review.sh --stage vr` uses it plus five minutes as its default deadline);
   `disputePrefix` *(default `"Disputed:"`)* is what a reply on a P0/P1 thread starts with to dispute
-  the finding. Around every push, `address-review` also answers every unresolved inline thread by a
+  the finding; `verifyGateFixes` *(default `false`)* turns on the reviewer's verified hand-off
+  (foreman's `docs/design/vr-one-greptile-round.md` §3): when the head fixes every final-review
+  finding on an ancestor in at most `verifyMaxLines` *(default `200`)* changed lines, touches no
+  review-memory risky path and leaves no finding disputed, the reviewer publishes `gate_fix_verified`
+  and posts no `review.rereviewCommand`. Foreman's publisher and merge gate and `ws prs` read these
+  two keys; nothing in this repository does. Set `verifyGateFixes` to `false`, or remove it, to roll
+  back. Around every push, `address-review` also answers every unresolved inline thread by a
   `review.bots` login: `Fixed in <sha>`, or a reply starting `disputePrefix`, `Declined:` or `Deferred:`
   (the last with an issue reference); the first-line reviewer holds its hand-off until they are
   answered. The verdict JSON in the check run's `output.text` is
@@ -777,7 +783,7 @@ Pointers to the markdown rule files. See [Guidelines files](#guidelines-files).
   *Covered*: a final-review score at or above the threshold on an ancestor of the head still yields
   `approved` (with a `covered:` line) when no review thread is open and the first-line reviewer is
   happy on the head. *Verified* (foreman's `docs/design/vr-one-greptile-round.md` §3-§4, inert until
-  the reviewer publishes it): a score **below** the threshold on an ancestor G yields `approved` (with
+  the reviewer publishes it, which it does only with `review.firstLine.verifyGateFixes` on): a score **below** the threshold on an ancestor G yields `approved` (with
   a `verified:` line) when the first-line reviewer's check run on the head (`checkName` from
   `checkApp`, concluded `success`, happy, `reviewed_sha` the head itself) carries
   `"gate_fix_verified": {"verdict_sha": G, ...}`: it confirmed each final-review finding on G fixed

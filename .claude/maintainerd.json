@@ -16,7 +16,8 @@
       "checkApp": "vycari-review",
       "maxRounds": 3,
       "unavailableMinutes": 45,
-      "disputePrefix": "Disputed:"
+      "disputePrefix": "Disputed:",
+      "verifyGateFixes": true
     }
   }
 }
