@@ -47,6 +47,8 @@ serve() {
   fi
   [ -n "$f" ] && [ -f "$f" ] || { echo "stub: no fixture $name" >&2; exit 1; }
   cat "$f"
+  # <fixture>.err: written to stderr (gh puts its own error line there, not on stdout).
+  [ ! -f "$f.err" ] || cat "$f.err" >&2
   [ ! -f "$f.fail" ] || exit 1
 }
 # cur_prview — the PR fixture as it stands now (the one the last poll read, its sequence not advanced).
@@ -60,6 +62,10 @@ cur_prview() {
 }
 echo "$*" >>"$STUB_DIR/.calls"
 echo "${GH_HOST:-}" >>"$STUB_DIR/.hosts"
+# stderrhint: every call also writes gh 2.105's open-PR hint to stderr, as `gh pr view` does on an
+# open PR even with --json (maintainerd#154). A tool must parse stdout alone.
+[ ! -f "$STUB_DIR/stderrhint" ] || printf '%s\n' \
+  'hint: if you need to wait for this pull request to be merged or for its checks to finish, use gh event listen' >&2
 case "$1 $2" in
   "pr view")
     case "$*" in
@@ -281,6 +287,15 @@ expect "5/5 on head with no open threads -> approved" approved 0
 run_tool "$WFR" 7 -R o/r --timeout-seconds 0 --interval-seconds 1
 expect "--timeout-seconds 0: a plain approval on the one look -> approved" approved 0
 
+# gh 2.105 prints a hint on stderr for an open PR; it must not reach the JSON parse (maintainerd#154).
+new_case review-approved-stderr-hint
+write_config "$CFG_5"
+write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
+write_threads "" '[]'
+touch "$STUB_DIR/stderrhint"
+run_tool "$WFR" 7 "${FAST[@]}"
+expect "a gh hint on stderr does not break the PR or GraphQL parse -> approved" approved 0
+
 new_case review-approved-resolved
 write_config "$CFG_5"
 write_prview "" ".comments = [$(bot_comment "$(greptile_text 5/5 aaaaaaa)")]"
@@ -444,6 +459,15 @@ run_tool "$WFR" https://github.com/x/y/pull/7 --timeout-seconds 3 --interval-sec
 expect "a PR URL for another repo is polled there and judged by THAT repo's config" no-review-scheduled 0
 grep -q 'pr view 7 -R x/y' "$STUB_DIR/.calls" && ok "the URL's repository, not the checkout's, is polled" || bad "url repo" "$(cat "$STUB_DIR/.calls")"
 
+new_case review-pr-url-other-repo-stderr-hint
+write_config "$CFG_5"
+write_prview "" '.labels = [{name:"greptile:skip"}]'
+echo '{"review":{"skipLabel":"greptile:skip","approvalThreshold":"5/5","bots":["greptile-apps[bot]"]}}' >"$STUB_DIR/remoteconfig"
+write_threads "" '[]'
+touch "$STUB_DIR/stderrhint"
+run_tool "$WFR" https://github.com/x/y/pull/7 --timeout-seconds 3 --interval-seconds 1
+expect "a gh hint on stderr does not break the remote config read" no-review-scheduled 0
+
 new_case review-other-repo-no-config
 write_config "$CFG_5"
 write_prview "" '.labels = [{name:"greptile:skip"}]'
@@ -461,6 +485,29 @@ touch "$STUB_DIR/remoteconfig.fail"
 write_threads "" '[]'
 run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
 [ "$RC" = "3" ] && ok "an unreadable remote config fails closed (exit 3)" || bad "remote config error" "rc=$RC out=$OUT"
+
+# gh_out's failure path: an error gh writes only to stderr still reaches the caller (maintainerd#154).
+new_case review-other-repo-no-config-stderr
+write_config "$CFG_5"
+write_prview "" '.labels = [{name:"greptile:skip"}]'
+: >"$STUB_DIR/remoteconfig"
+echo 'gh: Not Found (HTTP 404)' >"$STUB_DIR/remoteconfig.err"
+touch "$STUB_DIR/remoteconfig.fail"
+write_threads "" '[]'
+run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
+expect "a 404 on gh's stderr alone still reads as no config there -> defaults, timeout" timeout 2
+
+new_case review-other-repo-config-error-stderr
+write_config "$CFG_5"
+write_prview "" '.'
+: >"$STUB_DIR/remoteconfig"
+echo 'gh: HTTP 500' >"$STUB_DIR/remoteconfig.err"
+touch "$STUB_DIR/remoteconfig.fail"
+write_threads "" '[]'
+run_tool "$WFR" 7 -R x/y --timeout-seconds 2 --interval-seconds 1
+[ "$RC" = "3" ] && case "$ERR" in *"HTTP 500"*) true ;; *) false ;; esac &&
+  ok "an error on gh's stderr alone fails closed and is named in the message" ||
+  bad "stderr-only remote config error" "rc=$RC err=$ERR"
 
 # A PR URL on another host (GitHub Enterprise) is resolved on that host: every gh call goes there.
 new_case review-pr-url-enterprise
@@ -922,6 +969,12 @@ new_case checks-green
 rollup "" "$(check_run build COMPLETED SUCCESS), $(check_run lint COMPLETED SKIPPED), $(check_run docs COMPLETED NEUTRAL)"
 run_tool "$WFC" 7 "${FASTC[@]}"
 expect "all complete, none failed -> green" green 0
+
+new_case checks-green-stderr-hint
+rollup "" "$(check_run build COMPLETED SUCCESS)"
+touch "$STUB_DIR/stderrhint"
+run_tool "$WFC" 7 "${FASTC[@]}"
+expect "wait-for-checks: a gh hint on stderr does not break the PR parse -> green" green 0
 
 new_case checks-pr-url-enterprise
 rollup "" "$(check_run build COMPLETED SUCCESS)"

@@ -22,6 +22,25 @@ is_uint() {
   esac
 }
 
+# gh_out <gh-args...> — run gh with its stdout as the result, never its stderr. gh 2.105 started
+# printing a "hint: ... gh event listen" block on stderr for `gh pr view` on an open PR, even with
+# --json; a capture that merged stderr (2>&1) fed that hint to jq ahead of the JSON (maintainerd#154).
+# On success only stdout is printed and stderr is dropped. On failure stdout and then stderr are
+# printed (the caller's error message, and the "404"/"Not Found" match, need both), and gh's exit
+# status is returned.
+gh_out() {
+  local errf out rc
+  errf="$(mktemp)" || return 1
+  out="$(gh "$@" 2>"$errf")" && rc=0 || rc=$?
+  printf '%s' "$out"
+  if [ "$rc" -ne 0 ]; then
+    [ -z "$out" ] || [ ! -s "$errf" ] || printf '\n'
+    cat "$errf"
+  fi
+  rm -f "$errf"
+  return "$rc"
+}
+
 # parse_common_args "$@" — sets WAIT_PR, WAIT_REPO (may be empty), WAIT_HOST (the PR URL's host, else
 # empty; when set it is exported as GH_HOST), WAIT_TIMEOUT_SECONDS (may be empty),
 # WAIT_INTERVAL_SECONDS (may be empty), WAIT_CONFIG (may be empty), WAIT_STAGE (may be empty; only
@@ -166,7 +185,7 @@ load_config() {
       f="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/maintainerd.json"
       [ ! -f "$f" ] || WAIT_CONFIG_JSON="$(cat "$f")"
     else
-      if out="$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$WAIT_REPO/contents/.claude/maintainerd.json" 2>&1)"; then
+      if out="$(gh_out api -H 'Accept: application/vnd.github.raw+json' "repos/$WAIT_REPO/contents/.claude/maintainerd.json")"; then
         WAIT_CONFIG_JSON="$out"
       else
         case "$out" in
